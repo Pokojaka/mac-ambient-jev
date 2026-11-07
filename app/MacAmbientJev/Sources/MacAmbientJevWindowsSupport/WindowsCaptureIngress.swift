@@ -180,11 +180,13 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
     private var previousDeviceEnd: UInt64?
     private var previousQPC100ns: UInt64?
     private var previousQPCFrame: Int64?
-    // Positive mapped-start lead over raw QPC, including health-anchor shifts and
-    // faster device-clock drift; this bounds overlap allowed for forward reanchors.
+    // Positive mapped-start lead over the converted QPC, including health-anchor shifts
+    // and faster device-clock drift; this bounds overlap allowed for forward reanchors.
     private var timelineLeadFrames: Int64 = 0
     // Signed host-minus-mapped offset, slewed upward at no more than 200 ppm.
     private var clockOffsetFrames: Double = 0
+    // Frames the anchor was advanced past its target into published idle silence.
+    private var anchorShiftFrames: Int64 = 0
     private var currentPacketPosition: UInt64 = 0
     private var currentPacketQPC: UInt64 = 0
     private var currentPacketReadQPC: UInt64 = 0
@@ -774,9 +776,9 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
     }
 
     /// QPC-to-timeline conversion. Only a timeline behind QPC (device clock drift) is
-    /// subtracted; a lead from an idle-overlap anchor keeps the raw-QPC delivery grace.
+    /// subtracted; an idle-overlap anchor shift is not, so it keeps the delivery grace.
     private func timelineFrame(forHostFrame hostFrame: Int64) -> Int64 {
-        hostFrame - Int64(max(0, clockOffsetFrames).rounded())
+        hostFrame - Int64(max(0, clockOffsetFrames + Double(anchorShiftFrames)).rounded())
     }
 
     /// Consumer-side liveness check. `now` is supplied explicitly for deterministic tests.
@@ -830,7 +832,8 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
               let previousQPCFrame else {
             guard let frame = idleReanchorFrame(hostFrame),
                   resetAnchor(
-                       devicePosition: packet.devicePosition, frame: frame, hostFrame: hostFrame
+                       devicePosition: packet.devicePosition, frame: frame,
+                       targetFrame: hostFrame, hostFrame: hostFrame
                    ) != nil else {
                 return nil
             }
@@ -850,7 +853,8 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             }
             guard let frame = idleReanchorFrame(hostFrame),
                   resetAnchor(
-                       devicePosition: packet.devicePosition, frame: frame, hostFrame: hostFrame
+                       devicePosition: packet.devicePosition, frame: frame,
+                       targetFrame: hostFrame, hostFrame: hostFrame
                    ) != nil else {
                 return nil
             }
@@ -898,7 +902,8 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
                 let targetFrame = timelineFrame(forHostFrame: hostFrame)
                 guard let frame = forwardReanchorFrame(targetFrame, tolerance: tolerance),
                       resetAnchor(
-                          devicePosition: packet.devicePosition, frame: frame, hostFrame: hostFrame
+                          devicePosition: packet.devicePosition, frame: frame,
+                          targetFrame: targetFrame, hostFrame: hostFrame
                       ) != nil else {
                     return nil
                 }
@@ -908,13 +913,13 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             return nil
         }
 
-        timelineLeadFrames = max(0, mapped - hostFrame)
         if Double(lag) < clockOffsetFrames {
             clockOffsetFrames = Double(lag)
         } else {
             let maximumIncrease = Double(devicePeriod) * Self.maximumClockDriftRatio
             clockOffsetFrames += min(Double(lag) - clockOffsetFrames, maximumIncrease)
         }
+        timelineLeadFrames = max(0, mapped - timelineFrame(forHostFrame: hostFrame))
         // Device mapping preserves contiguous PCM; fill only the observed idle suffix.
         return PacketStartMapping(
             frame: mapped, gap: idleLoopback && mapped > sink.lastEndFrame ? .silence : .none
@@ -947,7 +952,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
     }
 
     private func resetAnchor(
-        devicePosition: UInt64, frame: Int64, hostFrame: Int64
+        devicePosition: UInt64, frame: Int64, targetFrame: Int64, hostFrame: Int64
     ) -> Int64? {
         guard frame >= 0 else {
             failTimestamp(.anchorFrame)
@@ -955,8 +960,9 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         }
         anchorDevicePosition = devicePosition
         anchorFrame = frame
-        timelineLeadFrames = max(0, frame - hostFrame)
         clockOffsetFrames = Double(hostFrame - frame)
+        anchorShiftFrames = frame - targetFrame
+        timelineLeadFrames = max(0, frame - timelineFrame(forHostFrame: hostFrame))
         return frame
     }
 
