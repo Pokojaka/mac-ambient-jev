@@ -181,7 +181,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
     private var previousQPC100ns: UInt64?
     private var previousQPCFrame: Int64?
     // Positive mapped-start lead over raw QPC, including health-anchor shifts and
-    // faster device-clock drift; forward reanchors consume this current lead.
+    // faster device-clock drift; this bounds overlap allowed for forward reanchors.
     private var timelineLeadFrames: Int64 = 0
     // Signed host-minus-mapped offset, slewed upward at no more than 200 ppm.
     private var clockOffsetFrames: Double = 0
@@ -382,6 +382,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
                 "Reconnect start QPC does not map to a representable frame"
             )
         }
+        // A fresh ingress has no device anchor or clock offset yet.
         reconnectStartFrame = frame
     }
 
@@ -769,7 +770,12 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
     /// The health-fill boundary at the watermark, excluding the 250 ms delivery grace.
     private func settledFrame(forWatermark watermark: UInt64) -> Int64? {
         guard watermark >= epochQPC100ns, let frame = frameForQPC(watermark) else { return nil }
-        return max(0, frame - deliveryGraceFrames)
+        return max(0, timelineFrame(forHostFrame: frame) - deliveryGraceFrames)
+    }
+
+    /// The single signed QPC-to-timeline conversion for an established device clock.
+    private func timelineFrame(forHostFrame hostFrame: Int64) -> Int64 {
+        hostFrame - Int64(clockOffsetFrames.rounded())
     }
 
     /// Consumer-side liveness check. `now` is supplied explicitly for deterministic tests.
@@ -885,11 +891,10 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             && relativeLag >= -tolerance && relativeLag < Double(devicePeriod)
         let difference = abs(forwardExcess)
         if difference > tolerance && !timestampJitter {
-            // Idle evidence selects silence and raw QPC; otherwise exclude tracked lag.
+            // Idle evidence selects silence; every forward target uses the same clock offset.
             let flagged = packet.flags & Self.discontinuityFlag != 0
             if Double(qpcDelta) > Double(deviceDelta), loopback || flagged {
-                let targetFrame = idleLoopback
-                    ? hostFrame : hostFrame - Int64(max(0, clockOffsetFrames).rounded())
+                let targetFrame = timelineFrame(forHostFrame: hostFrame)
                 guard let frame = forwardReanchorFrame(targetFrame, tolerance: tolerance),
                       resetAnchor(
                           devicePosition: packet.devicePosition, frame: frame, hostFrame: hostFrame
@@ -902,17 +907,6 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             return nil
         }
 
-        // Resync elapsed-position devices too, before published idle silence can overlap PCM.
-        if idleLoopback, Double(lag) > tolerance {
-            guard let frame = idleReanchorFrame(hostFrame),
-                  resetAnchor(
-                      devicePosition: packet.devicePosition, frame: frame, hostFrame: hostFrame
-                  ) != nil else {
-                return nil
-            }
-            return PacketStartMapping(frame: frame, gap: .silence)
-        }
-
         timelineLeadFrames = max(0, mapped - hostFrame)
         if Double(lag) < clockOffsetFrames {
             clockOffsetFrames = Double(lag)
@@ -920,7 +914,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             let maximumIncrease = Double(devicePeriod) * Self.maximumClockDriftRatio
             clockOffsetFrames += min(Double(lag) - clockOffsetFrames, maximumIncrease)
         }
-        // Preserve the observed idle suffix even when device mapping needs no resync.
+        // Device mapping preserves contiguous PCM; fill only the observed idle suffix.
         return PacketStartMapping(
             frame: mapped, gap: idleLoopback && mapped > sink.lastEndFrame ? .silence : .none
         )
@@ -936,15 +930,15 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         return idleReanchorFrame(targetFrame)
     }
 
-    private func idleReanchorFrame(_ hostFrame: Int64) -> Int64? {
+    private func idleReanchorFrame(_ targetFrame: Int64) -> Int64? {
         let endFrame = sink.lastEndFrame
-        guard hostFrame < endFrame else { return hostFrame }
+        guard targetFrame < endFrame else { return targetFrame }
         // Health's watermark is not a packet-delivery fence. A packet can start inside
         // already published idle silence. Preserve all its PCM by advancing the anchor,
         // but only within the grace and only across a proven synthesized idle suffix.
-        let (overlap, overflow) = endFrame.subtractingReportingOverflow(hostFrame)
+        let (overlap, overflow) = endFrame.subtractingReportingOverflow(targetFrame)
         guard loopback, let idleStart = trailingIdleSilenceStartFrame,
-              hostFrame >= idleStart, !overflow, overlap <= deliveryGraceFrames else {
+              targetFrame >= idleStart, !overflow, overlap <= deliveryGraceFrames else {
             failTimestamp(.idleAnchorOverlap)
             return nil
         }
