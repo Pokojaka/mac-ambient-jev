@@ -40,9 +40,11 @@ public sealed partial class MainWindow : Window
         SetTitleBar(UnifiedTitleBar);
         UpdateWindowScale(resize: true);
         Root.SizeChanged += (_, _) => UpdateTitleBarTitle();
+        Root.LayoutUpdated += (_, _) => AnchorRowDetails();
+        Root.PreviewKeyDown += OnRowDetailsKeyDown;
         Root.ActualThemeChanged += (_, _) =>
         {
-            if (_rowDetailsContent is { } content) content.RequestedTheme = Root.ActualTheme;
+            if (_rowDetailsContent?.Parent is FlyoutPresenter presenter) presenter.RequestedTheme = Root.ActualTheme;
         };
         _log.WriteFailed += OnLogWriteFailed;
         if (_log.StartupFailure is { } startupFailure) ShowFailure(startupFailure);
@@ -214,15 +216,12 @@ public sealed partial class MainWindow : Window
             var tail = _live?.Transcript.Tail;
             if (_live?.Transcript.SessionID != detailsTail.SessionID ||
                 tail is null || !tail.Rows.Any(row => row.RowID == _rowDetailsRowID))
-                _rowDetailsFlyout?.Hide();
+                CloseRowDetails();
             else if (tail.Revision != detailsTail.Revision)
             {
                 _rowDetailsTail = tail;
                 ++_rowDetailsRequest;
                 _ = RefreshRowDetailsAsync();
-                // A changed live row gets a new container; move the flyout to its new time button.
-                if (!DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, ReanchorRowDetails))
-                    _log.Warn("行の詳細の表示位置の更新を予約できません。");
             }
         }
         _scroll?.Refresh();
@@ -246,7 +245,7 @@ public sealed partial class MainWindow : Window
 
     private long _rowDetailsRequest;
     private bool _rowDetailsReading;
-    private Flyout? _rowDetailsFlyout;
+    private Microsoft.UI.Xaml.Controls.Primitives.Popup? _rowDetailsPopup;
     private EngineTranscriptPage? _rowDetailsTail;
     private string? _rowDetailsRowID;
     private StackPanel? _rowDetailsContent;
@@ -259,40 +258,77 @@ public sealed partial class MainWindow : Window
             var button = sender as Button ?? throw new InvalidOperationException("時刻ボタンを利用できません。");
             var row = button.DataContext as ShellTranscriptRowViewModel ?? throw new InvalidOperationException("文字起こしの行を利用できません。");
             var live = _live ?? throw new InvalidOperationException("文字起こし画面を利用できません。");
-            var previousFlyout = _rowDetailsFlyout;
-            _rowDetailsFlyout = null;
-            previousFlyout?.Hide();
-            var content = new StackPanel { Spacing = 4, MaxWidth = 400, RequestedTheme = Root.ActualTheme };
-            var flyout = new Flyout { Content = content, Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Right };
-            _rowDetailsFlyout = flyout;
+            CloseRowDetails();
+            var content = new StackPanel { Spacing = 4, MaxWidth = 400 };
+            var presenter = new FlyoutPresenter { Content = content, RequestedTheme = Root.ActualTheme };
+            presenter.KeyDown += OnRowDetailsKeyDown;
+            // A popup, unlike an open Flyout, can be moved: it follows the time button like a Mac popover.
+            var popup = new Microsoft.UI.Xaml.Controls.Primitives.Popup
+            { Child = presenter, IsLightDismissEnabled = true, XamlRoot = Root.XamlRoot };
+            _rowDetailsPopup = popup;
             _rowDetailsTail = live.Transcript.Tail;
             _rowDetailsRowID = row.RowID;
             _rowDetailsContent = content;
             ++_rowDetailsRequest;
             ShowRowDetailsLoading(content);
-            flyout.Closed += (_, _) =>
+            popup.Closed += (_, _) =>
             {
-                if (ReferenceEquals(_rowDetailsFlyout, flyout))
+                if (ReferenceEquals(_rowDetailsPopup, popup))
                 {
-                    _rowDetailsFlyout = null; _rowDetailsTail = null; _rowDetailsRowID = null;
+                    _rowDetailsPopup = null; _rowDetailsTail = null; _rowDetailsRowID = null;
                     _rowDetailsContent = null; ++_rowDetailsRequest;
                 }
             };
-            flyout.ShowAt(button);
+            PlaceRowDetails(popup, button);
+            popup.IsOpen = true;
             await RefreshRowDetailsAsync();
         }
         catch (Exception exception) { await ReportFailureAsync(exception); }
     }
 
-    private void ReanchorRowDetails()
+    private void CloseRowDetails()
     {
-        if (_closeStarted || _rowDetailsFlyout is not { } flyout || _rowDetailsRowID is not { } rowID || _live is not { } live) return;
+        if (_rowDetailsPopup is { } popup) popup.IsOpen = false;
+    }
+
+    private void OnRowDetailsKeyDown(object sender, KeyRoutedEventArgs args)
+    {
+        if (args.Key != Windows.System.VirtualKey.Escape || _rowDetailsPopup is not { IsOpen: true }) return;
+        CloseRowDetails();
+        args.Handled = true;
+    }
+
+    // Runs after every layout pass, when containers are realized: a replaced live row, a Follow scroll,
+    // a resized popup, or a resized status area moves the anchor, and the popup follows it.
+    private void AnchorRowDetails()
+    {
+        if (_closeStarted || _rowDetailsPopup is not { IsOpen: true } popup || _rowDetailsRowID is not { } rowID ||
+            _live is not { } live) return;
         var row = live.Rows.FirstOrDefault(candidate => candidate.RowID == rowID);
         var button = row is not null && TranscriptList.ContainerFromItem(row) is ListViewItem container
             ? FindDescendant<Button>(container) : null;
-        // A row virtualized out of view has no anchor; close like a transient Mac popover.
-        if (button is null) { flyout.Hide(); return; }
-        if (!ReferenceEquals(flyout.Target, button)) flyout.ShowAt(button);
+        if (button is null || !IsInTranscriptViewport(button)) { popup.IsOpen = false; return; }
+        PlaceRowDetails(popup, button);
+    }
+
+    // Right of the time button, vertically centred on it, and kept inside the window.
+    private void PlaceRowDetails(Microsoft.UI.Xaml.Controls.Primitives.Popup popup, FrameworkElement button)
+    {
+        var origin = button.TransformToVisual(null).TransformPoint(default);
+        var height = ((FrameworkElement)popup.Child).ActualHeight;
+        // Whole DIPs: the popup stores offsets as floats, and an inexact comparison would loop layout forever.
+        var x = Math.Round(origin.X + button.ActualWidth + 4);
+        var y = Math.Round(Math.Clamp(origin.Y + (button.ActualHeight - height) / 2, 0, Math.Max(0, Root.ActualHeight - height)));
+        if (Math.Abs(popup.HorizontalOffset - x) < 0.5 && Math.Abs(popup.VerticalOffset - y) < 0.5) return;
+        popup.HorizontalOffset = x;
+        popup.VerticalOffset = y;
+    }
+
+    private bool IsInTranscriptViewport(FrameworkElement element)
+    {
+        var bounds = element.TransformToVisual(TranscriptList).TransformBounds(
+            new Windows.Foundation.Rect(0, 0, element.ActualWidth, element.ActualHeight));
+        return bounds.Bottom > 0 && bounds.Top < TranscriptList.ActualHeight;
     }
 
     private static T? FindDescendant<T>(DependencyObject parent) where T : DependencyObject
@@ -322,18 +358,17 @@ public sealed partial class MainWindow : Window
         _rowDetailsReading = true;
         try
         {
-            while (!_closeStarted && _rowDetailsFlyout is not null && _rowDetailsRowID is { } rowID &&
+            while (!_closeStarted && _rowDetailsPopup is not null && _rowDetailsRowID is { } rowID &&
                 _rowDetailsContent is { } content && _live is { } live)
             {
                 var request = _rowDetailsRequest;
-                var requestedTail = _store?.State.Transcript.Tail;
-                var details = await live.ReadRowDetailsAsync(rowID);
+                var read = await live.ReadRowDetailsAsync(rowID);
                 if (request != _rowDetailsRequest) continue;
-                if (_closeStarted || _rowDetailsFlyout is null) return;
-                if (details is null)
+                if (_closeStarted || _rowDetailsPopup is null) return;
+                // A newer tail is on its way and its refresh requests again; keep the last details until then.
+                if (read is RowDetailsRead<ShellTranscriptRowDetails>.Superseded) return;
+                if (read is not RowDetailsRead<ShellTranscriptRowDetails>.Read { Details: var details })
                 {
-                    // A newer tail is on its way and its refresh re-requests; keep the last details until then.
-                    if (!ReferenceEquals(_store?.State.Transcript.Tail, requestedTail)) return;
                     ShowRowDetailsFailure(content);
                     return;
                 }
@@ -459,7 +494,7 @@ public sealed partial class MainWindow : Window
         if (_closeStarted) return;
         _closeStarted = true; Root.IsHitTestVisible = false;
         ++_rowDetailsRequest;
-        _rowDetailsFlyout?.Hide();
+        CloseRowDetails();
         _log.Info("shutdown started");
         Toolbar.IsEnabled = false; SavedSessionsButton.IsEnabled = false; ReturnToLatestButton.IsEnabled = false;
         ClosingStatus.Visibility = Visibility.Visible;

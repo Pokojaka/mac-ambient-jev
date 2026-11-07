@@ -10,9 +10,10 @@ public sealed partial class ShellStore
 
     /// <summary>
     /// Reads every speaker page for a row in the current tail, without retrying or changing revision.
-    /// Returns null on rejection, command failure, or an obsolete selection/revision; errors remain in State.
+    /// Rejections and command failures are Failed with the error in State; a newer selection, invalidation,
+    /// or tail revision, including the engine's stale_revision, is Superseded and is not an error.
     /// </summary>
-    public async Task<ShellRowDetails?> ReadRowDetailsAsync(string rowID)
+    public async Task<RowDetailsRead<ShellRowDetails>> ReadRowDetailsAsync(string rowID)
     {
         ArgumentException.ThrowIfNullOrEmpty(rowID);
         EngineTranscriptRowDetailsPayload? payload = null;
@@ -36,7 +37,7 @@ public sealed partial class ShellStore
             try { request = _client.SendAsync(new EngineCommand.TranscriptRowDetails(payload)); }
             catch (Exception exception) { HandleRequestFailure(name, exception, true); }
         }).ConfigureAwait(false);
-        if (payload is null || request is null) return null;
+        if (payload is null || request is null) return new RowDetailsRead<ShellRowDetails>.Failed();
 
         bool IsCurrent()
         {
@@ -57,18 +58,19 @@ public sealed partial class ShellStore
             catch (OperationCanceledException) when (_stop.IsCancellationRequested) { throw; }
             catch (Exception exception)
             {
+                var superseded = false;
                 await Post(() =>
                 {
-                    // The engine can publish a newer revision before this store receives it; the
-                    // caller re-requests when the new tail arrives, so a stale revision is not an error.
-                    if (exception is EngineRequestException { Failure.Code: EngineErrorCode.StaleRevision } ||
-                        exception is EngineRequestException && !IsCurrent()) RemovePending(name);
+                    // The engine can publish a newer revision before this store receives it.
+                    superseded = exception is EngineRequestException { Failure.Code: EngineErrorCode.StaleRevision } ||
+                        exception is EngineRequestException && !IsCurrent();
+                    if (superseded) RemovePending(name);
                     else HandleRequestFailure(name, exception, false);
                 }).ConfigureAwait(false);
-                return null;
+                return superseded ? new RowDetailsRead<ShellRowDetails>.Superseded() : new RowDetailsRead<ShellRowDetails>.Failed();
             }
 
-            ShellRowDetails? details = null;
+            RowDetailsRead<ShellRowDetails> outcome = new RowDetailsRead<ShellRowDetails>.Failed();
             Task<EngineResult>? nextRequest = null;
             await Post(() =>
             {
@@ -83,13 +85,13 @@ public sealed partial class ShellStore
                         throw new InvalidOperationException("transcript.row_details changed clause state between pages.");
                     if (firstPage is null && page.PreviousCursor is not null)
                         throw new InvalidOperationException("transcript.row_details returned a previous cursor on its first page.");
-                    if (!IsCurrent()) { RemovePending(name); return; }
+                    if (!IsCurrent()) { RemovePending(name); outcome = new RowDetailsRead<ShellRowDetails>.Superseded(); return; }
                     firstPage ??= page;
                     speakers.AddRange(page.Speakers);
                     if (page.NextCursor is null)
                     {
-                        details = new ShellRowDetails(page.SessionID, page.Revision, rowID, page.ClauseState,
-                            page.ClauseStateText, speakers.ToImmutable());
+                        outcome = new RowDetailsRead<ShellRowDetails>.Read(new ShellRowDetails(page.SessionID,
+                            page.Revision, rowID, page.ClauseState, page.ClauseStateText, speakers.ToImmutable()));
                         RemovePending(name);
                         _working = _working with { CommandError = null };
                         return;
@@ -102,7 +104,7 @@ public sealed partial class ShellStore
                 }
                 catch (Exception exception) { FailStore(exception); }
             }).ConfigureAwait(false);
-            if (nextRequest is null) return details;
+            if (nextRequest is null) return outcome;
             request = nextRequest;
         }
     }

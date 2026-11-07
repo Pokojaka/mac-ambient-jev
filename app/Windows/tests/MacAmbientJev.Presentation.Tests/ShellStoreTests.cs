@@ -71,7 +71,7 @@ public sealed partial class ShellStoreTests
         await ChangedTo(store, state => state.Phase == ShellPhase.EngineFailed);
         Assert.False(await store.ReloadSettingsAsync());
         Assert.Equal("エンジンが起動していません。", store.State.CommandError);
-        Assert.Null(await store.ReadRowDetailsAsync("row"));
+        Assert.IsType<RowDetailsRead<ShellRowDetails>.Failed>(await store.ReadRowDetailsAsync("row"));
         Assert.Equal("エンジンが起動していません。", store.State.CommandError);
         Assert.Equal(sent, engine.SentCount);
     }
