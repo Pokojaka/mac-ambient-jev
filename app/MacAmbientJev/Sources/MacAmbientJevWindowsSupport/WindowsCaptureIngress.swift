@@ -183,11 +183,13 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
     // Positive mapped-start lead over the converted QPC, including health-anchor shifts
     // and faster device-clock drift; this bounds overlap allowed for forward reanchors.
     private var timelineLeadFrames: Int64 = 0
-    // Signed host-minus-mapped offset, slewed upward at no more than 200 ppm.
+    // Signed host-minus-mapped offset: drift slews upward at no more than 200 ppm;
+    // SILENT lead repayment adds exact compensation for the anchor move.
     private var clockOffsetFrames: Double = 0
-    // Frames the last reanchor advanced past its target to the sink end.
+    // Signed anchor offset from its target, including SILENT lead repayment.
+    // This may be negative; clockOffsetFrames + anchorShiftFrames stays the drift lag.
     private var anchorShiftFrames: Int64 = 0
-    // Measured QPC excess at the last forward reanchor bounds a later snap-back.
+    // Measured QPC excess at the last forward reanchor bounds one later snap-back.
     private var anchorForwardExcessFrames: Double = 0
     private var currentPacketPosition: UInt64 = 0
     private var currentPacketQPC: UInt64 = 0
@@ -929,6 +931,9 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             return nil
         }
 
+        if timestampJitter && relativeLag < -tolerance {
+            anchorForwardExcessFrames = 0
+        }
         if Double(lag) < clockOffsetFrames {
             clockOffsetFrames = Double(lag)
         } else {
@@ -936,9 +941,20 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             clockOffsetFrames += min(Double(lag) - clockOffsetFrames, maximumIncrease)
         }
         timelineLeadFrames = max(0, mapped - timelineFrame(forHostFrame: hostFrame))
+        var frame = mapped
+        if packet.flags & Self.silentFlag != 0, timelineLeadFrames > 0 {
+            // Repay only with device-declared silence: the sink clips the overlap.
+            // Keep the host-to-timeline drift conversion unchanged by this anchor move.
+            let repayment = min(timelineLeadFrames, Int64(packet.packetFrames))
+            self.anchorFrame = anchorFrame - repayment
+            frame -= repayment
+            clockOffsetFrames += Double(repayment)
+            anchorShiftFrames -= repayment
+            timelineLeadFrames = max(0, frame - timelineFrame(forHostFrame: hostFrame))
+        }
         // Device mapping preserves contiguous PCM; fill only the observed idle suffix.
         return PacketStartMapping(
-            frame: mapped, gap: idleLoopback && mapped > sink.lastEndFrame ? .silence : .none
+            frame: frame, gap: idleLoopback && frame > sink.lastEndFrame ? .silence : .none
         )
     }
 
