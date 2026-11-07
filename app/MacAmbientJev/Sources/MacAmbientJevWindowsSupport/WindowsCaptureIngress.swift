@@ -183,8 +183,8 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
     // Positive mapped-start lead over raw QPC, including health-anchor shifts and
     // faster device-clock drift; forward reanchors consume this current lead.
     private var timelineLeadFrames: Int64 = 0
-    // Nonnegative QPC lag baseline, slewed upward at no more than 200 ppm.
-    private var clockLagFrames: Double = 0
+    // Signed host-minus-mapped offset, slewed upward at no more than 200 ppm.
+    private var clockOffsetFrames: Double = 0
     private var currentPacketPosition: UInt64 = 0
     private var currentPacketQPC: UInt64 = 0
     private var currentPacketReadQPC: UInt64 = 0
@@ -879,7 +879,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         // Use the completed previous packet's period, not its callback fragments.
         let devicePeriod = previousDeviceEnd - previousDevicePosition
         let lag = hostFrame - mapped
-        let relativeLag = Double(lag) - clockLagFrames
+        let relativeLag = Double(lag) - clockOffsetFrames
         let timestampJitter = loopback && packet.flags & Self.discontinuityFlag == 0
             && packet.devicePosition == previousDeviceEnd
             && relativeLag >= -tolerance && relativeLag < Double(devicePeriod)
@@ -889,7 +889,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             let flagged = packet.flags & Self.discontinuityFlag != 0
             if Double(qpcDelta) > Double(deviceDelta), loopback || flagged {
                 let targetFrame = idleLoopback
-                    ? hostFrame : hostFrame - Int64(clockLagFrames.rounded())
+                    ? hostFrame : hostFrame - Int64(max(0, clockOffsetFrames).rounded())
                 guard let frame = forwardReanchorFrame(targetFrame, tolerance: tolerance),
                       resetAnchor(
                           devicePosition: packet.devicePosition, frame: frame, hostFrame: hostFrame
@@ -902,16 +902,25 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
             return nil
         }
 
+        // Resync elapsed-position devices too, before published idle silence can overlap PCM.
+        if idleLoopback, Double(lag) > tolerance {
+            guard let frame = idleReanchorFrame(hostFrame),
+                  resetAnchor(
+                      devicePosition: packet.devicePosition, frame: frame, hostFrame: hostFrame
+                  ) != nil else {
+                return nil
+            }
+            return PacketStartMapping(frame: frame, gap: .silence)
+        }
+
         timelineLeadFrames = max(0, mapped - hostFrame)
-        if Double(lag) < clockLagFrames {
-            clockLagFrames = max(0, Double(lag))
+        if Double(lag) < clockOffsetFrames {
+            clockOffsetFrames = Double(lag)
         } else {
             let maximumIncrease = Double(devicePeriod) * Self.maximumClockDriftRatio
-            clockLagFrames += min(Double(lag) - clockLagFrames, maximumIncrease)
+            clockOffsetFrames += min(Double(lag) - clockOffsetFrames, maximumIncrease)
         }
-        // Device and QPC can both advance across idle, so no clock-mismatch reanchor
-        // is needed. The uncovered suffix is still observed idle, even when it is only
-        // a few milliseconds and the resumed packet is SILENT or DISCONTINUITY flagged.
+        // Preserve the observed idle suffix even when device mapping needs no resync.
         return PacketStartMapping(
             frame: mapped, gap: idleLoopback && mapped > sink.lastEndFrame ? .silence : .none
         )
@@ -952,7 +961,7 @@ public final class WindowsCaptureIngress: @unchecked Sendable {
         anchorDevicePosition = devicePosition
         anchorFrame = frame
         timelineLeadFrames = max(0, frame - hostFrame)
-        clockLagFrames = max(0, Double(hostFrame - frame))
+        clockOffsetFrames = Double(hostFrame - frame)
         return frame
     }
 
