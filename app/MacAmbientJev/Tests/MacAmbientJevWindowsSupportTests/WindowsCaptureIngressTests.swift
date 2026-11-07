@@ -284,7 +284,8 @@ struct WindowsCaptureIngressTests {
             ? [100, 100, 100] : [960, 100, 960, 100, 960, 100]))
         #expect(harness.ring.dropoutCount == UInt64(diagnostics.count))
         #expect(harness.ring.overflowCount == 0)
-        #expect(harness.sink.invalidBufferCount.load(ordering: .acquiring) == 0)
+        // Each start's late-QPC forward reanchor writes one missing extent.
+        #expect(harness.sink.invalidBufferCount.load(ordering: .acquiring) == 3)
     }
 
     @Test(arguments: [480, 960])
