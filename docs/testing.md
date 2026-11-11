@@ -15,7 +15,7 @@ dotnet restore app/Windows/MacAmbientJev.Portable.slnx --locked-mode
 dotnet test app/Windows/MacAmbientJev.Portable.slnx -c Release --no-restore
 ```
 
-Protocol は共有103-record corpus の typed decode / reencode と codec / framing validation を検証します。EngineClient は in-memory fake child を使う process-client tests、Presentation は fake engine による store / view-model / paging / guard tests と portable assembly check を行います（詳細は [Windows の C# portable libraries](windows.md#c-portable-libraries)）。Swift、model、音声 hardware は必要ありません。
+Protocol は共有102-record corpus の typed decode / reencode と codec / framing validation を検証します。EngineClient は in-memory fake child を使う process-client tests、Presentation は fake engine による store / view-model / paging / guard tests と portable assembly check を行います（詳細は [Windows の C# portable libraries](windows.md#c-portable-libraries)）。Swift、model、音声 hardware は必要ありません。
 
 CI の `dotnet-portable` job は `ubuntu-24.04`、`macos-15`、`windows-2025` matrix で実行し、`dotnet --info` を記録します。CI の test / report command は次のとおりです。
 
@@ -65,7 +65,7 @@ device-loss は interactive VM console で次の GUI checklist を手動確認�
 
 ## 現行 EngineProtocol / EngineHost の検証範囲
 
-`MacAmbientJevEngineProtocol` と `MacAmbientJevEngineHost` は portable な library target で、macOS・Linux・Windows の build / test 対象です。[MacAmbientJevEngineProtocolTests](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/) は NDJSON v1 の wire corpus の byte 一致 round trip、corpus coverage gate、table 形式の negative decoding（unknown member、missing key、absent / null、wrong type、unknown enum / tag、数値境界、non-canonical ID）、lexical validation、round trip から読めない semantic invariants を検証します。[MacAmbientJevEngineHostTests](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/) は scripted byte source / sink と fake handlers を使い、framing、queue/backpressure、request admission、dispatcher、settings store / lock を検証します。[EngineApplicationFailureDeliveryTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineApplicationFailureDeliveryTests.swift) は recovery maintenance の shutdown interruption を `cancelled` / `warning` / `restart`、stage `maintenance` とし、実エラーを `filesystem` / `error` / `inspect_session`、同じく stage `maintenance` とすることを検証します。[EngineApplicationTranscriptTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineApplicationTranscriptTests.swift) は重複 identity による `.processingFailure` を同じ未変更状態で一度だけ報告し、別の失敗 row も報告すること、修復・再導入後の再報告、oversized row の複数 identity の失敗と修復、追跡上限（`failureLimit` の16件）を超えた失敗行は前の行の修復後に報告されることを検証します。`mixedProjectionAndEncodingFailuresRetainSkippedMarkers` は projection と encoding の失敗が混在しても source order で追跡し、無関係な行の更新や stage の skip で未検証 marker が消えず、修復・削除後も committed rows / revision が成功 update まで変わらないことを確認します。`skippedDiarizedValidationRetainsEncodingFailureMarker` は話者 context が不確かなため diarized projection を skip した間も oversized encoding failure が保持され、context の修復後に再投影されることを検証します。[EngineTranscriptProjectionTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineTranscriptProjectionTests.swift) は重複 ID の集約と修復後の再投影、および commit 前の dirty row を次の update に保持することを検証します。これらは portable な protocol / host unit tests で、実 engine process を起動しません。
+`MacAmbientJevEngineProtocol` と `MacAmbientJevEngineHost` は portable な library target で、macOS・Linux・Windows の build / test 対象です。[MacAmbientJevEngineProtocolTests](../app/MacAmbientJev/Tests/MacAmbientJevEngineProtocolTests/) は NDJSON v1 の wire corpus の byte 一致 round trip、corpus coverage gate、table 形式の negative decoding（unknown member、missing key、absent / null、wrong type、unknown enum / tag、数値境界、non-canonical ID）、lexical validation、round trip から読めない semantic invariants を検証します。[MacAmbientJevEngineHostTests](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/) は scripted byte source / sink と fake handlers を使い、framing、queue/backpressure、request admission、dispatcher、settings store / lock を検証します。[EngineApplicationFailureDeliveryTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineApplicationFailureDeliveryTests.swift) は recovery maintenance の shutdown interruption を `cancelled` / `warning` / `restart`、stage `maintenance` とし、実エラーを `filesystem` / `error` / `inspect_session`、同じく stage `maintenance` とすることを検証します。[EngineApplicationTranscriptTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineApplicationTranscriptTests.swift) は重複 identity による `.processingFailure` を同じ未変更状態で一度だけ報告し、別の失敗 row も報告すること、修復・再導入後の再報告、oversized row の複数 identity の失敗と修復、追跡上限（`failureLimit` の16件）を超えた失敗行は前の行の修復後に報告されることを検証します。`mixedProjectionAndEncodingFailuresRetainSkippedMarkers` は projection と encoding の失敗が混在しても source order で追跡し、無関係な行の更新や stage の skip で未検証 marker が消えず、修復・削除後も committed rows / revision が成功 update まで変わらないことを確認します。[EngineTranscriptProjectionTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineTranscriptProjectionTests.swift) は重複 ID の集約と修復後の再投影、および commit 前の dirty row を次の update に保持することを検証します。これらは portable な protocol / host unit tests で、実 engine process を起動しません。
 
 ```bash
 swift test --package-path app/MacAmbientJev --filter 'MacAmbientJevEngineProtocolTests|MacAmbientJevEngineHostTests'
@@ -124,7 +124,7 @@ dotnet test app/Windows/tests/MacAmbientJev.Engine.Tests/MacAmbientJev.Engine.Te
   --environment "MAC_AMBIENT_JEV_TEST_HARNESS_PATH=C:\absolute\path\to\MacAmbientJevEngineHarness.exe"
 ```
 
-EngineHarnessTests.cs は実際の ProcessEngineChild と EngineProcessClient を通し、test-only harness に `--root`、`--fixture`、`--sample-rate 16000`、`--channels 1`、`--inference deterministic`、`--threads 1` の6 CLI arguments を明示して起動します。自身で headerless little-endian Float32 mono の33,000 sample fixture を作り、schema version 1、microphone / default device、ASR small、CPU、threads 1、low heat / decisions / automatic export false、export destination null の10 settings をすべて明示します。主シナリオは hello / setup / prepare / start / watch / stop / final publication を経て `transcript.read` limit 1 の一行が「エンジンの受け入れテストです。」・Speaker 1 であること、2回の export が同じ bytes を出すこと、shutdown exit 0 を検証します。EOF 後の durable stop は child exit 0 と client Failed state を確認し、kill 後は non-zero exit と client Failed state を確認して、どちらも test が起動する別 process で recovery します。個々の operation wait は30秒、recovery / publication polling は180秒、poll interval は250msです。production の auto-restart や API 変更を加えるものではありません。
+EngineHarnessTests.cs は実際の ProcessEngineChild と EngineProcessClient を通し、test-only harness に `--root`、`--fixture`、`--sample-rate 16000`、`--channels 1`、`--inference deterministic`、`--threads 1` の6 CLI arguments を明示して起動します。自身で headerless little-endian Float32 mono の33,000 sample fixture を作り、schema version 1、microphone / default device、ASR small、CPU、threads 1、low heat / decisions / automatic export false、export destination null の10 settings をすべて明示します。主シナリオは hello / setup / prepare / start / watch / stop / final publication を経て `transcript.read` limit 1 の一行の text が「エンジンの受け入れテストです。」であること、2回の export が同じ bytes を出し、`transcript.txt` の1行が `[00:00] エンジンの受け入れテストです。` で、末尾に LF があること、shutdown exit 0 を検証します。EOF 後の durable stop は child exit 0 と client Failed state を確認し、kill 後は non-zero exit と client Failed state を確認して、どちらも test が起動する別 process で recovery します。個々の operation wait は30秒、recovery / publication polling は180秒、poll interval は250msです。production の auto-restart や API 変更を加えるものではありません。
 
 EngineHarnessTests の3 tests は実 process transport と storage を deterministic test harness で検証しますが、WASAPI / audio hardware、実モデルや認識品質は検証しません。出荷 Windows engine の startup は、この gate に含まれる別の production smoke test が検証します。既存 Python acceptance checks は変更せず、Linux CI / `verify_portable.sh` にもこの gate は配線していません。
 
@@ -192,7 +192,7 @@ docker run --rm -v "$PWD:/workspace" -w /workspace swift:6.2-noble bash -lc 'apt
 
 [`verify_portable.sh`](../scripts/verify_portable.sh) は pinned assets を fetch し、portable checker の self-test と import check を行い、SwiftPM manifest を dump してから unfiltered `swift build` と `run_swift_tests.py` を実行します。test は Core / Pipeline / EngineProtocol / EngineHost / PortableRuntime / ONNX 等を含みますが、Linux には WindowsSupport と `MacAmbientJevEngine` product はありません。Linux CI fast job は同じ検証内容の一部を fetch/check step 後に直接 package build と wrapper 経由の test で実行し、この shell script 自体は呼びません。`linux-model-e2e` は既存の separate job です。
 
-[`check_portable_core.py`](../scripts/check_portable_core.py) の default roots には Core / Pipeline に加えて EngineProtocol / EngineHost、Diarization / DiarizationMeasurement、ONNX、PortableRuntime が含まれます。portable root から Windows-only `MacAmbientJevEngine` の import を拒否し、WindowsSupport 自体は portable scan roots に含めず、`MacAmbientJevWindowsSupport` import には `#if os(Windows)` を要求します。portable-core workflow の path filter は engine source / test / executable target、native injected test、runner、[`stage-windows-engine.ps1`](../scripts/stage-windows-engine.ps1) と docs の変更を対象にし、Windows matrix job を起動します。macOS CI には path filter がありません。
+[`check_portable_core.py`](../scripts/check_portable_core.py) の default roots には Core / Pipeline に加えて EngineProtocol / EngineHost、ONNX、PortableRuntime が含まれます。portable root から Windows-only `MacAmbientJevEngine` の import を拒否し、WindowsSupport 自体は portable scan roots に含めず、`MacAmbientJevWindowsSupport` import には `#if os(Windows)` を要求します。portable-core workflow の path filter は engine source / test / executable target、native injected test、runner、[`stage-windows-engine.ps1`](../scripts/stage-windows-engine.ps1) と docs の変更を対象にし、Windows matrix job を起動します。macOS CI には path filter がありません。
 
 ## 共通 Core / Pipeline テストの現状
 
@@ -227,7 +227,7 @@ runner は Swift test process の終了を待ち、suite budget を理由に pro
 
 全 suite の完了 envelope に対する回帰検出は hang protection と別の判定です。予算値は reporter の [`SUITE_BUDGET_SECONDS`](../scripts/report_test_events.py) が管理します。headroom の評価には hosted CI での測定が必要です。関連する観測結果は [CI test-time measurement record](records/2026-10-25-ci-test-time.md) と [Windows tagger load measurement record](records/2026-10-25-windows-tagger-load.md) を参照してください。
 
-現在の blocking-I/O 回帰検証では、[RecordingAudioCompactorTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/RecordingAudioCompactorTests.swift) の `fullFLACValidationStopsAtTheStoredEnd` と `aRecordingRoundTripsExactlyCommittedFrames` が既存の test cases と assertions を保ち、録音後の同期 FLAC 処理を bounded `withTaskExecutorPreference` scope で実行します。決定的 executor-identity assertion は処理の配置を検証します。[ONNXCommunity1DiarizationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/ONNXCommunity1DiarizationEngine.swift) の `prepare` / `diarize` は `BlockingIOExecutor.shared` を優先し、actor-isolated synchronous work body 内で `await` しません。[対応 tests](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXCommunity1DiarizationEngineTests.swift) は executor identity、peak kernel concurrency 1、実行中の `diarize` を `unload` が待つことを検証します。これらの placement checks は全 storage I/O が cooperative pool から除かれたことを主張しません。
+現在の blocking-I/O 回帰検証では、[RecordingAudioCompactorTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/RecordingAudioCompactorTests.swift) の `fullFLACValidationStopsAtTheStoredEnd` と `aRecordingRoundTripsExactlyCommittedFrames` が既存の test cases と assertions を保ち、録音後の同期 FLAC 処理を bounded `withTaskExecutorPreference` scope で実行します。決定的 executor-identity assertion は処理の配置を検証します。これらの placement checks は全 storage I/O が cooperative pool から除かれたことを主張しません。
 
 ローカルでは invocation ごとに新しい event filename を使い、repository root の `.build/test-events/` に出力します。runner は終了後に reporter を実行します。standalone reporter は通常 run では `EVENT_PATH`、subset stream では `EVENT_PATH --filtered` を指定します。reporter は stream から filtering を推測しません。
 
@@ -248,7 +248,7 @@ python3 -B scripts/report_test_events.py "$FILTERED_EVENT_PATH" --filtered
 
 CI の Mac・Linux・Windows test runs は `.build/test-events/` の JSONL artifacts を `always()` upload step で、test failure 時も含めて保存します。Windows の x64 / ARM64 matrix entry は `test-events-windows-x64` / `test-events-windows-arm64` の別 artifact 名を使います。runner は出力先が既に存在すると失敗するため、同じ path を stale event stream に再利用しません。
 
-EngineHost / Engine では、同期に使う仕組みを該当 helper ごとに分けています。FakeEngineHandlers は handler call・held call・hello completion の lifecycle 通知に [ChangeSignal.swift](../app/MacAmbientJev/Tests/MacAmbientJevTestSupport/ChangeSignal.swift) を使い、scripted sink と pipe reader の各 chunk も状態変更を signal します。Windows native stdout capture の [WindowsDiagnosticCaptureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineTests/WindowsDiagnosticCaptureTests.swift) は、native stdout producer-completion latch、capture-close / writer-close latch、egress reader completion、および captured-chunk signals を使います。これらの latch / signal wait は ChangeSignal.wait を通じて test cancellation-aware で、条件を再確認してから復帰します。[EngineApplicationTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineApplicationTests.swift) の OfflineFinalizationGate.waitUntilEntered も cancellation-aware gate です。[EngineApplicationFailureDeliveryTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineApplicationFailureDeliveryTests.swift) は onBackgroundEventStateChange lifecycle notification callback と ChangeSignal で状態遷移を待ち、MainActor の Task.yield polling を使いません。これらの wait では suite `timeLimit` が hang guard です。この記述は全 EngineHost / Engine tests が event-driven であるという意味ではありません。EngineTransportOutputTests は reliable sender が queue 満杯で suspend したことを明示的な signal で待ち、注入した logical clock で deadline を検証します。progress のケースでは clock を100msずつ進めて deadline の再設定を確認し、no-progress のケースは400ms で期限切れにします。coalescing / backpressure cases は writer 開始前に queue を埋め、テストの進み具合を write deadline に混ぜません。WindowsPipeByteSinkTests は成功・失敗・test cancellation の各経路で sink を close し、writer と reader を join します。pipe reader 自身が read handle を所有し、終了時に閉じます。[`ONNXCommunity1DiarizationEngineTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXCommunity1DiarizationEngineTests.swift) は `timeLimit` を hang guard にし、ChangeSignal で worker の開始・終了を待ちます。concurrent prepare test は1回だけの load と、同期 loader が `BlockingIOExecutor.shared` 上で実行された executor identity を検証します。これらの executor test は同期 blocking work の配置を確認し、await する test body 全体をその executor に載せるものではありません。
+EngineHost / Engine では、同期に使う仕組みを該当 helper ごとに分けています。FakeEngineHandlers は handler call・held call・hello completion の lifecycle 通知に [ChangeSignal.swift](../app/MacAmbientJev/Tests/MacAmbientJevTestSupport/ChangeSignal.swift) を使い、scripted sink と pipe reader の各 chunk も状態変更を signal します。Windows native stdout capture の [WindowsDiagnosticCaptureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineTests/WindowsDiagnosticCaptureTests.swift) は、native stdout producer-completion latch、capture-close / writer-close latch、egress reader completion、および captured-chunk signals を使います。これらの latch / signal wait は ChangeSignal.wait を通じて test cancellation-aware で、条件を再確認してから復帰します。[EngineApplicationTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineApplicationTests.swift) の OfflineFinalizationGate.waitUntilEntered も cancellation-aware gate です。[EngineApplicationFailureDeliveryTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevEngineHostTests/EngineApplicationFailureDeliveryTests.swift) は onBackgroundEventStateChange lifecycle notification callback と ChangeSignal で状態遷移を待ち、MainActor の Task.yield polling を使いません。これらの wait では suite `timeLimit` が hang guard です。この記述は全 EngineHost / Engine tests が event-driven であるという意味ではありません。EngineTransportOutputTests は reliable sender が queue 満杯で suspend したことを明示的な signal で待ち、注入した logical clock で deadline を検証します。progress のケースでは clock を100msずつ進めて deadline の再設定を確認し、no-progress のケースは400ms で期限切れにします。coalescing / backpressure cases は writer 開始前に queue を埋め、テストの進み具合を write deadline に混ぜません。WindowsPipeByteSinkTests は成功・失敗・test cancellation の各経路で sink を close し、writer と reader を join します。pipe reader 自身が read handle を所有し、終了時に閉じます。
 
 Windows job の x64 / ARM64 matrix runtime entry は同じ [`scripts/test-windows.ps1`](../scripts/test-windows.ps1) を実行します。`run_swift_tests.py` が unfiltered Swift test を1回実行し、Windows で適用される Pipeline を含む全 test target を各 entry で一度ずつ検証します。これらは portable な調整・状態ロジックの検証です。WindowsSupport の capture unit tests と native injected C test は別に実行しますが、実 audio hardware を使う検証ではありません。
 
@@ -268,10 +268,10 @@ bash scripts/verify_v1.sh
 
 1. `scripts/check_doc_references.py` で参照検査を実行する。`scripts/test_japanese_numeral_exclusions.py` で漢数字表示の除外句一覧の生成規則と、コミット済みの生成物が `labels.tsv` と一致することを検査する。イベント・処理 metadata の schema version 3 と、未対応・欠損・型不正の version の拒否も検証する。Python の `regex` package が必要。
 2. SwiftPM の依存を解決し、`swift build --build-tests` で package とテストをまとめて build する。
-3. `scripts/fetch_mac_vad_model.py` が [mac_models.json](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/Resources/mac_models.json) に固定した VAD のファイルを取得し（SHA-256 と byte 数を照合し、取得済みなら再取得しない）、`.build/mac-test-models/<commit>` を表示する。その後、事前に build したテストを再利用し、UUID の event path を `.build/test-events/` に作ってから `env -u RUN_MODEL_TESTS MAC_AMBIENT_JEV_TEST_APP_SUPPORT=<表示された directory> python3 -B scripts/run_swift_tests.py --package-path "$PACKAGE" --skip-build --event-stream-output-path "$EVENT_PATH"` を実行する。runner は test process の完了後に event を報告します。この実行では [VADParityFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/VADParityFixtureTests.swift) の FluidAudio 一致検査（`committedFixtureMatchesFluidAudio`）が、固定した VAD の FluidAudio 出力とコミット済み fixture の一致（確率差 0.05 以下、区間は完全一致）を検査する。`MAC_AMBIENT_JEV_TEST_APP_SUPPORT` を渡した実行ではこの検査はモデルがなければ失敗する（skip しない）。ASR・話者分離は渡さないので、それらを使う実モデルのテストは動かない。
-4. `MacAmbientJevProcessRecording` を build し、`scripts/verify_cli_inputs.py` で不正入力、ローカル3段階の成功0件を公開した named folder の inspect、イベント・処理 metadata の未対応・欠損・型不正 version の拒否、resume 出力先の containment と保存ファイルの不変性を確認する。
+3. `scripts/fetch_mac_vad_model.py` が [mac_models.json](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/Resources/mac_models.json) に固定した VAD のファイルを取得し（SHA-256 と byte 数を照合し、取得済みなら再取得しない）、`.build/mac-test-models/<commit>` を表示する。その後、事前に build したテストを再利用し、UUID の event path を `.build/test-events/` に作ってから `env -u RUN_MODEL_TESTS MAC_AMBIENT_JEV_TEST_APP_SUPPORT=<表示された directory> python3 -B scripts/run_swift_tests.py --package-path "$PACKAGE" --skip-build --event-stream-output-path "$EVENT_PATH"` を実行する。runner は test process の完了後に event を報告します。この実行では [VADParityFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/VADParityFixtureTests.swift) の FluidAudio 一致検査（`committedFixtureMatchesFluidAudio`）が、固定した VAD の FluidAudio 出力とコミット済み fixture の一致（確率差 0.05 以下、区間は完全一致）を検査する。`MAC_AMBIENT_JEV_TEST_APP_SUPPORT` を渡した実行ではこの検査はモデルがなければ失敗する（skip しない）。ASR model は渡さないため、通常の検証では実 ASR 推論の test は動かない。
+4. `MacAmbientJevProcessRecording` を build し、`scripts/verify_cli_inputs.py` で不正入力、ローカル2段階（segmentation / asr）の成功0件を公開した named folder の inspect、イベント・処理 metadata の未対応・欠損・型不正 version の拒否、resume 出力先の containment と保存ファイルの不変性を確認する。
 5. `MacAmbientJevEvaluateSession` を build する。
-6. モデル検証を指定した場合は Swift test 一覧に ASRIntegrationTests があることと Runtime test bundle の存在を確認し、その bundle を `xcrun xctest` で実行する。実モデルを使うテストは、アプリのモデル directory にピン留めした3つのモデルが取得済みで検証に通ることが前提で、ダウンロードはしない（取得して読み込むまでの確認は後述の RealModelFetchIntegrationTests）。
+6. モデル検証を指定した場合は Swift test 一覧に ASRIntegrationTests があることと Runtime test bundle の存在を確認し、その bundle を `xcrun xctest` で実行する。実モデルを使うテストは、アプリのモデル directory にピン留めしたASR・VADの2モデルが取得済みで検証に通ることが前提で、ダウンロードはしない（取得して読み込むまでの確認は後述の RealModelFetchIntegrationTests）。
 7. `scripts/build_app.sh` は `python3 -B scripts/fetch_clause_tagger.py --format coreml` で固定された Hugging Face の公開 repository から Core ML model files を取得し、manifest が指定する各ファイルの byte 数と SHA-256 を検証して app bundle に同梱する。同梱物は ClauseTagger.mlpackage、tokenizer.json、LICENSE.md です。MLX の Metal shader library は Swift Build backend で生成するため、その backend で build し、Apple Silicon 専用の arm64 のみを対象にする。続けてアプリアイコンの CFBundleIconFile 指定と `.icns` の読み込み、最小・最大解像度の収録、MLX Metal shader library、同梱した発話文判定モデルの package・tokenizer・license、Runtime の resource bundle（SwiftPM の accessor は app の resource directory から探す）にあるピン留めモデルの manifest がソースと同一であること、codesign の検証、利用者が選んだファイルへの read/write と app-scope bookmark の2つの entitlement を確認する。
 
 アプリの build は行うが GUI を起動しない。通常の検証は実 ASR モデルを実行せず、認識精度やライブ録音の合格根拠にはならない。`.github/workflows/ci.yml` は draft PR を除き、`macos-26` 上で `verify-v1-tests` と `verify-v1-app` を並列に実行する。両 job は Python 3.13 を用意する。前者は `regex` package を install し、`scripts/test_fetch_clause_tagger.py`、`scripts/test_export_clause_tagger_onnx.py`、`scripts/test_build_app.py`、`scripts/test_fetch_mac_vad_model.py` を実行してから、固定した VAD モデルの `.build/mac-test-models`（key は `mac_models.json` の hash。main への push だけが保存する）を restore して `bash scripts/verify_v1_tests.sh` を実行する。後者は `bash scripts/verify_v1_app.sh` を実行する。両 job は `app/MacAmbientJev` package の `.build/checkouts`、`.build/repositories`、`.build/artifacts`、`.build/workspace-state.json` のみを同じ `swiftpm-sources` key で restore / save する。key inputs は runner OS / architecture、Swift と Xcode の version output の SHA-256 fingerprint、`Package.resolved` と `Package.swift` の hash で、restore prefix はありません。cache paths に build products は含まれないため、debug test bundle、debug product、release product は cache しません。test job は debug test bundle と debug `MacAmbientJev` product を build し、app job は `swiftbuild` backend の arm64 release `MacAmbientJev` product を build します。
@@ -284,15 +284,13 @@ Windows runner は `RUNNER_TEMP` が空でない絶対 path であり、既存 d
 
 Windows job の x64 matrix entry（`windows-2022`）では `RUNNER_TEMP` は通常 D: 上、user temp は通常 C: 上ですが、drive letter は固定せず workflow が検証した `RUNNER_TEMP` だけを使います。temp file I/O が D: に移ることで fsync / flush に利点がある可能性は仮説であり、GitHub Actions 上で測定するまでは性能改善と断定しません。両 Windows matrix entry は SwiftPM の `app/MacAmbientJev/.build` を workspace drive に残し、モデル directory の `.build` 配下の配置も変更しません。Windows CI は workspace 上の SwiftPM package / executable builds と test run をそのまま実行します。
 
-Windows job の x64 / ARM64 matrix entries と Linux `linux-model-e2e` は同じ5つの model directory（`.build/qwen3-asr-models`、`.build/qwen3-asr-tokenizer`、`.build/silero-vad`、`.build/community1-diarization`、`.build/clause-tagger-onnx`）と同じ cache key inputs を使います。model cache key には runner OS / architecture と次の `hashFiles` inputs が含まれます。
+Windows job の x64 / ARM64 matrix entries と Linux `linux-model-e2e` は同じ4つの model directory（`.build/qwen3-asr-models`、`.build/qwen3-asr-tokenizer`、`.build/silero-vad`、`.build/clause-tagger-onnx`）と同じ cache key inputs を使います。model cache key には runner OS / architecture と次の `hashFiles` inputs が含まれます。
 
 - `app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/qwen3_asr_models.json`
 - `app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/clause_tagger_model.json`
-- `app/MacAmbientJev/Sources/MacAmbientJevDiarization/Resources/community1_diarization_models.json`
 - `scripts/fetch_qwen3_asr_model.py`
 - `scripts/fetch_qwen3_asr_tokenizer.py`
 - `scripts/fetch_silero_vad.py`
-- `scripts/fetch_community1_diarization.py`
 - `scripts/fetch_clause_tagger.py`
 - `scripts/pinned_download.py`
 
@@ -300,7 +298,7 @@ Windows job の x64 / ARM64 matrix entries と Linux `linux-model-e2e` は同じ
 
 Windows job の各 matrix entry は SwiftPM package の `.build` 全体を cache します。key は runner OS / architecture、Swift toolchain version fingerprint、`Package.resolved` と `Package.swift` の hash を含み、restore prefix は同じ OS / architecture / toolchain に限定されます。この full build cache は Windows matrix entries のみで使い、Mac CI は前述の SwiftPM dependency state だけを cache します。cache hit でも dependency resolution、build、test を省略しません。
 
-`.github/workflows/ci.yml` と [portable-core.yml](../.github/workflows/portable-core.yml) は、PR と `workflow_dispatch` を含む各対象 run で cache を restore します。明示的な v4 cache save step の定義は合計5つ（`ci.yml` に2つ、portable workflow に3つ）で、Windows の2定義は一つの matrix job の各 entry で実行されます。したがって実行時の save invocation は合計7回です（Mac 2、Linux model E2E 1、Windows model cache 2、Windows SwiftPM `.build` cache 2）。各明示 save は既存の検証・build・test command 完了後に限り、`main` への push かつ restore miss の場合だけ保存します。対象は Mac の SwiftPM source 4 path（2 job で共有）、Linux E2E と Windows matrix entries の5 model directory cache、Windows matrix entries の SwiftPM `.build` cache です。cache hit でも dependency resolution、build、test、app build を省略せず、model fetcher は hit したファイルも SHA-256 検証します。main のみで保存することで PR ごとの同内容の cache copy を増やさず、main の entry を quota 内に保ちます。PR ref の entry はその PR からのみ読めますが、main の entry は PR からも利用できます（[actions/cache v4 scope](https://raw.githubusercontent.com/actions/cache/v4/README.md#cache-scopes)、[restore / save action](https://raw.githubusercontent.com/actions/cache/v4/README.md)、[actions/cache v4 release notes (4.3.0)](https://raw.githubusercontent.com/actions/cache/v4/RELEASES.md)）。
+`.github/workflows/ci.yml` と [portable-core.yml](../.github/workflows/portable-core.yml) は、PR と `workflow_dispatch` を含む各対象 run で cache を restore します。明示的な v4 cache save step の定義は合計5つ（`ci.yml` に2つ、portable workflow に3つ）で、Windows の2定義は一つの matrix job の各 entry で実行されます。したがって実行時の save invocation は合計7回です（Mac 2、Linux model E2E 1、Windows model cache 2、Windows SwiftPM `.build` cache 2）。各明示 save は既存の検証・build・test command 完了後に限り、`main` への push かつ restore miss の場合だけ保存します。対象は Mac の SwiftPM source 4 path（2 job で共有）、Linux E2E と Windows matrix entries の4 model directory cache、Windows matrix entries の SwiftPM `.build` cache です。cache hit でも dependency resolution、build、test、app build を省略せず、model fetcher は hit したファイルも SHA-256 検証します。main のみで保存することで PR ごとの同内容の cache copy を増やさず、main の entry を quota 内に保ちます。PR ref の entry はその PR からのみ読めますが、main の entry は PR からも利用できます（[actions/cache v4 scope](https://raw.githubusercontent.com/actions/cache/v4/README.md#cache-scopes)、[restore / save action](https://raw.githubusercontent.com/actions/cache/v4/README.md)、[actions/cache v4 release notes (4.3.0)](https://raw.githubusercontent.com/actions/cache/v4/RELEASES.md)）。
 
 例外として、Windows matrix の各 entry は Swift toolchain installer として pinned [compnerd/gha-setup-swift](https://raw.githubusercontent.com/compnerd/gha-setup-swift/775d3f4111c5be58a0f62f2efdd353bb8fac15c7/action.yml) を使い、その action 内部の v6 cache restore / save も行います。公開 input は restore と save を一括で制御する `cache` boolean のみで save だけを main 限定にできないため、`cache: true` を維持し、PR ref 上でも cache miss 時に保存される場合があります。この installer 内部 cache は5つの明示的定義・7つの実行とは別です。従って main-only は5定義（7 invocation）の明示 save に適用され、全 cache に対する例外のない規則ではありません。
 
@@ -466,11 +464,11 @@ correctness test は読み取れないイベントログ、検証済み VAD の�
 
 Linux 音声正規化は入力と出力が同一ファイル（シンボリックリンク解決後を含む）なら、出力先を変更する前に拒否し、原音声を保持する。`tools/linux-audio/tests/test_audio.py` は実 ffmpeg を使う同一パス・symlink の境界と、正常変換・変換失敗時の出力処理を検証する。
 
-`validatedEmptyVADCompletesWithoutSpeechInference` は 1 秒の合成無音を 2 回確定し、検証済み VAD の空結果が話者分離の準備失敗・推論失敗に依存しないことを確認する。ASR 準備も呼ばれず、原音声の bytes、読み取れる空 transcript、3 段階の provenance と成功 0 件完了、`complete` metadata、終端の無発話表示、復旧対象外の分類を検証する。VAD 自体の失敗と発話ありの推論失敗は `failed` のまま公開済み run を保持する。これは orchestration の検証であり、実 FluidAudio モデルの無音成功・クラッシュを測った結果ではない。
+`validatedEmptyVADCompletesWithoutSpeechInference` は1秒の合成無音を2回確定し、検証済み VAD の空結果で完了して ASR 準備を呼ばないことを確認する。読み取れる空 transcript、segmentation / asr の2段階 provenance と各 stage の成功0件、`complete` metadata、終端の無発話表示、復旧対象外の分類を検証する。VAD 自体の失敗と発話ありの ASR 失敗は別の tests で `failed` となり、公開済み run を保持する。これは orchestration の検証であり、実 FluidAudio モデルの無音成功・クラッシュを測った結果ではない。
 
 [CanonicalAudioIngressTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/CanonicalAudioIngressTests.swift) は device-rate の合成 tone を irregular / 512-frame block に分けて実 drain とディスクへ通す。48 kHz・44.1 kHz の累積 duration、block 境界の single-stream reference との sample 差、997 / 3101 Hz の波形誤差、16 kHz identity、4-channel import 平均、fractional-ratio の gap・overlap・overflow・stop tail、部分 append failure 後の retry と並行 finish / snapshot を検証する。fixture を保存前に preconvert しない。EOS 後の全体長は正確な長さの floor か ceil で、gap は公開範囲へ切り詰める。
 
-`captureStartReservesStoredPCMNotDeviceRate` は injected tap の実 capture start を 48 kHz・44.1 kHz・16 kHz で実行し、601,600,000 bytes の受理と 601,599,999 bytes の拒否を確認する。hardware・permission prompt は使わない。[CanonicalEngineInputTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/CanonicalEngineInputTests.swift) は既存 CAF の実 samples を複数の bounded random range で読み、音声コピーを作らない source path と Qwen の非 canonical 入力拒否を検証する。同じファイルの `finalizationEnginesReceiveCanonicalAudioForRecordedAndImportedSessions` は、48 kHz の録音を irregular block で実 drain に通した session と 44.1 kHz stereo の import を実 `NativeSessionProcessor` で確定し、injected VAD・話者分離・ASR が受け取る形式（16 kHz・mono・float32、CAF 長、ASR sample 数）と original の bytes 不変を検証する。
+`captureStartReservesStoredPCMNotDeviceRate` は injected tap の実 capture start を 48 kHz・44.1 kHz・16 kHz で実行し、601,600,000 bytes の受理と 601,599,999 bytes の拒否を確認する。hardware・permission prompt は使わない。[CanonicalEngineInputTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/CanonicalEngineInputTests.swift) は `NativeQwen3ASREngine` が model load 前に非 canonical sample rate を拒否することを検証する。`finalizationEnginesReceiveCanonicalAudioForRecordedAndImportedSessions` は48 kHz の録音を irregular block で実 drain に通した session と44.1 kHz stereo の import を実 `NativeSessionProcessor` で確定し、injected VAD が16 kHz・mono・float32LEを、injected ASR が sample rate 16 kHz・16,000 samples を受け取ること、および import original の bytes が不変であることを検証する。
 
 ### 保存音声のテスト
 
@@ -480,13 +478,7 @@ Linux 音声正規化は入力と出力が同一ファイル（シンボリッ�
 
 `flac` CLI は codec tests の参照 oracle です。ローカル環境（VM を含む）では任意で、テストは `PATH` 上の実行可能ファイルだけを検索します。実行可能ファイルが見つからない場合は Swift Testing の `.enabled(if:)` gate により該当する interop tests を無効にします（[無効化可能なテスト](https://docs.swift.org/latest/documentation/testing/enablinganddisabling/)）。portable CI では `flac` を必須にします。Linux fast job は Ubuntu noble の distro package を install し、Windows job の x64 / ARM64 matrix entry は同じ公式 [FLAC 1.5.0 Win64 archive](https://github.com/xiph/flac/releases/download/1.5.0/flac-1.5.0-win.zip) を SHA-256 `53f1500f0d6e7c61379d7fee50d4a9f7f504c650009506d9ba015530d76c0dde` で検証して展開します。ARM64 entry は Windows 11 の x64 emulation をこの test oracle のためだけに使います（[Microsoft: x64 emulation on Windows on Arm](https://learn.microsoft.com/en-us/windows/arm/apps-on-arm-x86-emulation)）。Linux fast と両 Windows matrix entry は `flac --version` を確認し、実行可能ファイルがない場合または version check が失敗した場合は job が失敗します。FLAC CLI はテスト専用で release payload には含まれません。参照エンコーダーを使う reader テストは、`-0` による FIXED、`-8` による LPC、全 sample が 8 の倍数となる wasted-bits 入力、`--lax -b 65535 -l 32` で符号化した入力の 65,535 sample 境界をまたぐ範囲読み取りの4ケースを検証します。参照 CLI の仕様は [flac 1.5.0 manual](https://raw.githubusercontent.com/xiph/flac/1.5.0/man/flac.md) を参照してください。[RecordingAudioCompactorTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/RecordingAudioCompactorTests.swift) は portable な PipelineTests で、全 OS で compactor を検証します。一方、session reader・symlink 境界の integration tests（[SessionAudioReadersTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/SessionAudioReadersTests.swift)、[SessionAudioSymlinkTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/SessionAudioSymlinkTests.swift)）は macOS 専用の AppleSupportTests で、Core codec を通して検証します。
 
-[CanonicalCAFReaderTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/CanonicalCAFReaderTests.swift) は全 OS で `CanonicalCAFReader` を検証します。Mac AVFoundation の期待 sample を固定した不変のコミット済み [Mac CAF fixture](../app/MacAmbientJev/Tests/MacAmbientJevCAFFixtures/Resources/canonical-mac-16k.caf) は 4,800 frame・23,296 bytes で、`desc` と `data` の間に `free` chunk による 4,016 bytes の padding を持ちます。この fixture を全体・先頭・末尾・空・block 境界をまたぐ範囲で期待 sample と bit 単位で比較します。手組みの CAF bytes では、`free` / `info` / 未知 chunk の読み飛ばしと data 後の chunk の無視、非有限値をそのまま返すこと（reader は sample を検証せず、有限性の検査は読み出し側の責務）、空の data、範囲外の読み取り、正規 file の全 byte 長での切り詰め、CAF でない file・未対応 version・非0 flags、desc が先頭でない・欠落・data が欠落・desc の重複・desc のサイズ違い、不正な chunk size・int64 を超える chunk size・data size -1（未確定）・宣言より短い data・編集カウントや4 bytes 単位に満たない data、サンプルレート・format・flags・channel 数・bit 数・packet 構成が正規と異なる desc、セッション外の file を拒否することを確認します。期待値は f32le sample bytes です。Core の Foundation-only writer は canonical 16 kHz mono float32LE を、`desc` と `data` だけの最小 68-byte header（`free` なし）で出力し、同じ sample では 19,268 bytes になります。`CanonicalCAFReader` は両方の chunk 配置を受け付け、Mac AVFoundation も両方を読み取って期待 sample と sample-bit 単位で一致します。
-
-[ProcessingTimelineAudioExporterTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/ProcessingTimelineAudioExporterTests.swift) は 13 test functions・合計17 cases（通常 test 11件＋3-case の parameterized test 2関数）で Core writer を検証します。bounded な連続 block 読み出し、正確な header・payload・sample bits（有限値の極値、signed zero、subnormal を含む）、空 CAF、offset 付き short/long read error、nonfinite 値、reader failure、mutation 前の tooManyFrames 判定、malformed/truncated PCM、atomic replacement、既存 destination の保持、一時 file cleanup、session 境界を扱います。コミット済み fixture との比較は framesPerBuffer 1・1,000・48,000 の3ケースで行い、fixture と Core 出力の sample bits を照合します。
-
-Mac 専用の [CanonicalCAFFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/CanonicalCAFFixtureTests.swift) は不変 fixture と Core writer の異なる CAF layout の両方を `CanonicalCAFReader` と AVFoundation で読み、期待 sample との sample-bit parity を検証します。fixture の bytes と Core writer 出力の byte equality は要求しません。Mac 専用の [CanonicalCAFReaderParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/CanonicalCAFReaderParityTests.swift) は `CanonicalCAFReader` と Mac の `CanonicalCAFAudioSource` が、fixture と 128,000 frame の file の任意範囲・8,192 frame の読み出し block 境界・最終の部分範囲で同じ sample を返すことを確認します。
-
-[SessionFileAccessTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/SessionFileAccessTests.swift) と [SessionAudioSymlinkTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/SessionAudioSymlinkTests.swift) は一時ディレクトリだけを使い、イベント writer の初回 open と初期化後の置換、manifest・metadata の読込みと書込み、audio 親ディレクトリ、chunk・original・FLAC・partial・derived CAF の symlink を拒否することを検証します。セッション外の sentinel の bytes・ディレクトリ内容を比較し、descriptor を開いた後の URL 置換が元のファイルの読み書きを保つことと、通常セッションの成功経路も検証します。catalog・復旧はリンクされたセッションをエラーとして返します。選択 root の symlink 拒否は [AppPathsTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/AppPathsTests.swift) が対象です。
+[SessionFileAccessTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/SessionFileAccessTests.swift) と [SessionAudioSymlinkTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/SessionAudioSymlinkTests.swift) は一時ディレクトリだけを使い、イベント writer の初回 open と初期化後の置換、manifest・metadata の読込みと書込み、audio 親ディレクトリ、chunk・original・FLAC・partial の symlink を拒否することを検証します。セッション外の sentinel の bytes・ディレクトリ内容を比較し、descriptor を開いた後の URL 置換が元のファイルの読み書きを保つことと、通常セッションの成功経路も検証します。catalog・復旧はリンクされたセッションをエラーとして返します。選択 root の symlink 拒否は [AppPathsTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/AppPathsTests.swift) が対象です。
 
 AppState の合成テストに注入する `temporaryDefaults()` はインスタンス内の辞書だけを使う UserDefaults test double です。実 UserDefaults の標準 domain・suite domain を読み書きせず、音声デバイス・実ネットワークも使いません。
 
@@ -498,9 +490,9 @@ python3 scripts/measure_session_storage.py --sessions-root /private/tmp/mac-ambi
 
 `--sessions-root` と `--seconds`（正の整数。既定値なし）は必須。明示した scratch root に実行ごとの新規ディレクトリを作り、録音・import の保存、共通確定処理、書き出しを順次実行する。root は GUI の sandbox 内と CLI の非 sandbox の実データ・cache 領域、およびその祖先・子孫を指定できない。マイク、システム音声、GUI、実モデル、権限要求を使わない。Swift test はこの計測一つだけを実行し、通常の suite では無効にする。
 
-fixture は seed 固定の `--seconds` 秒・48 kHz stereo float32 CAF の再現可能な低域 noise。録音は device-rate channel 平均を 512-frame block で ring / 実 capture drain の converter に渡し、16 kHz mono PCM を保存する。import は byte-for-byte original のコピーから同じ canonical timeline を毎回構築する。VAD・話者分離・ASR の injected engine は 16 kHz mono を検証し、最初の 1 秒を一発話として返す。音声全体の保存・CAF 生成・export は実装を実行する。これは保存容量の計測であり、音声認識精度・実 hardware capture・人声の圧縮率の根拠ではない。
+fixture は seed 固定の `--seconds` 秒・48 kHz stereo float32 CAF の再現可能な低域 noise。録音は device-rate channel 平均を 512-frame block で ring / 実 capture drain の converter に渡し、16 kHz mono PCM を保存する。import は byte-for-byte original のコピーから同じ canonical timeline を毎回構築する。注入 VAD は16 kHz mono を検証して最初の1秒を一発話として返し、注入 ASR はその16 kHz・1秒の入力を検証する。音声全体の保存・import timeline 構築・export は実装を実行する。これは保存容量の計測であり、音声認識精度・実 hardware capture・人声の圧縮率の根拠ではない。
 
-`disk-usage.json` は録音終了時の session 全体、確定後の session 全体、import の処理タイムライン構築直後、各 export フォルダーの bytes を報告する。bytes は metadata を含む通常ファイルの論理長の合計で、filesystem の割当容量ではない。import の構築直後は original とタイムラインだけを含む snapshot で、確定中の CAF 生成時の peak ではない。600 秒を一時間へ換算するときは 6 倍する。fixture・session・export・レポートは調査用に保持し、削除は利用者が行う。
+`disk-usage.json` は録音終了時の session 全体、確定後の session 全体、import の処理タイムライン構築直後、各 export フォルダーの bytes を報告する。bytes は metadata を含む通常ファイルの論理長の合計で、filesystem の割当容量ではない。import の計測時点は original と処理タイムラインを含む。600 秒を一時間へ換算するときは 6 倍する。fixture・session・export・レポートは調査用に保持し、削除は利用者が行う。
 
 ### 実 ASR モデルの smoke
 
@@ -511,9 +503,9 @@ RUN_MODEL_TESTS=1 ASR_SMOKE_AUDIO="$AUDIO_WAV_ABSOLUTE" \
   bash scripts/verify_v1.sh
 ```
 
-`ASR_SMOKE_AUDIO` は絶対パスの読み取り可能なファイルが必須。Runtime の ASRIntegrationTests はさらに 16 kHz、mono、0 秒超〜60 秒以下を要求する。日本語音声を使う。モデルをロードして認識し、trim 後の本文が非空で日本語文字を含むことを確認するが、参照文との一致率は測らない。実モデルを使う Runtime のテスト（ASRIntegrationTests、MacModelLoadingIntegrationTests、VADParityFixtureTests の FluidAudio 一致検査）は `RUN_MODEL_TESTS=1` のときだけ動き、アプリが使うモデル directory（`~/Library/Application Support/mac-ambient-jev/models`）にピン留めした ASR・話者分離・VAD のモデルが取得済みで検証に通ることが前提です。エンジンはダウンロードしないため、未取得なら型付きエラーで失敗します。別の場所のモデルを使うときは、絶対パスの Application Support 相当 directory を `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` に指定します（その下の mac-ambient-jev の models フォルダーを読みます）。テスト用 directory には manifest のファイルだけを hard link かコピーで置けば足ります。[VADParityFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/VADParityFixtureTests.swift) の FluidAudio 一致検査だけは `RUN_MODEL_TESTS=1` がなくても `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` があれば動き、CI はこれで固定した VAD モデルを渡します。
+`ASR_SMOKE_AUDIO` は絶対パスの読み取り可能なファイルが必須。Runtime の ASRIntegrationTests はさらに 16 kHz、mono、0 秒超〜60 秒以下を要求する。日本語音声を使う。モデルをロードして認識し、trim 後の本文が非空で日本語文字を含むことを確認するが、参照文との一致率は測らない。ASRIntegrationTests と MacModelLoadingIntegrationTests は `RUN_MODEL_TESTS=1` のときだけ動き、アプリが使うモデル directory（`~/Library/Application Support/mac-ambient-jev/models`）にピン留めした ASR・VAD の2モデルが取得済みで検証に通ることが前提です。VADParityFixtureTests の FluidAudio 一致検査は `RUN_MODEL_TESTS=1` または `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` があるときに動きます。エンジンはダウンロードしないため、未取得なら型付きエラーで失敗します。別の場所のモデルを使うときは、絶対パスの Application Support 相当 directory を `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` に指定します（その下の mac-ambient-jev の models フォルダーを読みます）。テスト用 directory には manifest のファイルだけを hard link かコピーで置けば足ります。[VADParityFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/VADParityFixtureTests.swift) の FluidAudio 一致検査だけは `RUN_MODEL_TESTS=1` がなくても `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` があれば動き、CI はこれで固定した VAD モデルを渡します。
 
-実際のダウンロードは [RealModelFetchIntegrationTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/RealModelFetchIntegrationTests.swift) が確かめます。`URLSessionModelTransport` で3つのモデルを約2.5 GB ダウンロードし、`ModelPreparer` で照合と読み込みを行い、短いクリップで ASR・話者分離・VAD を動かして、経過時間とスループットを表示します。`RUN_MODEL_TESTS=1` と、絶対パスの `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` があるときだけ動きます（`verify_v1_tests.sh` は `RUN_MODEL_TESTS` を外すので動きません）。アプリ自身の directory には取得しません。実行途中で止めて同じ directory で再実行すると、取得済みのファイルと `.partial` を使って Range で再開します。表示するスループットは、その実行でダウンロードした byte 数だけで計算します。
+実際のダウンロードは [RealModelFetchIntegrationTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/RealModelFetchIntegrationTests.swift) が確かめます。`URLSessionModelTransport` でASR・VADの2モデルを約2.5 GBダウンロードし、`ModelPreparer` で照合と読み込みを行い、短いクリップで ASR と VAD を実行して経過時間とスループットを表示します。`RUN_MODEL_TESTS=1` と、絶対パスの `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` があるときだけ動きます（`verify_v1_tests.sh` は `RUN_MODEL_TESTS` を外すので動きません）。アプリ自身の directory には取得しません。実行途中で止めて同じ directory で再実行すると、取得済みのファイルと `.partial` を使って Range で再開します。表示するスループットは、その実行でダウンロードした byte 数だけで計算します。
 
 ```bash
 RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_TEST_APP_SUPPORT=/absolute/folder \
@@ -524,170 +516,9 @@ RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_TEST_APP_SUPPORT=/absolute/folder \
 
 ## 共通 Swift の検証
 
-### 話者分離の parity fixtures
+[FileSHA256Tests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/FileSHA256Tests.swift) は既知 digest と padding 境界、chunk size を変えた file / Data の一致、1 MiB 超の file を検証します。timing assertion はありません。
 
-[test-only の fixture reader](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/DiarizationParityFixture.swift) を使う各 portable algorithm の parity tests は、全 OS で実装の出力を参照データと照合します。7つの parity fixtures は [parameters.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/parameters.json)、[reconstruction.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/reconstruction.json)、[ahc.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/ahc.json)、[assignment.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/assignment.json)、[vbx.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/vbx.json)、[plda-rho.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/plda-rho.json)、[frontend.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/frontend.json) です。[plda-parameters.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/plda-parameters.json) と [xvector-transform.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/xvector-transform.json) は別個の、PLDA parity が使うライセンス付き JSON tensor assets で、parity fixtures には数えません。fixture reader の allowlist はこの9 resource と下記の6つの fbank fixtures の計15 resource で、読み込み時に各 resource を 1 MiB 以下に制限します。portable tests は [Community1ProfileTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1ProfileTests.swift) による profile parameter parity と各 portable algorithm の parity を検証します。Linux・Windows の通常 test に FluidAudio や diarization model は不要です。
-
-portable な実装は [Community1ReconstructionTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1ReconstructionTests.swift) の reconstruction、[Community1Centroids.swift](../app/MacAmbientJev/Sources/MacAmbientJevDiarization/Community1Centroids.swift) の centroid 計算、[Community1Assignment.swift](../app/MacAmbientJev/Sources/MacAmbientJevDiarization/Community1Assignment.swift) の constrained assignment、[Community1VBx.swift](../app/MacAmbientJev/Sources/MacAmbientJevDiarization/Community1VBx.swift) の VBx、および [Community1AHC.swift](../app/MacAmbientJev/Sources/MacAmbientJevDiarization/Community1AHC.swift) の AHC です。AHC は Foundation-only の portable port で、参照元は pinned FluidAudio 0.15.8 の [FastClusterWrapper.cpp](https://github.com/FluidInference/FluidAudio/blob/87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc/Sources/FastClusterWrapper/FastClusterWrapper.cpp) と [fastcluster_internal.hpp](https://github.com/FluidInference/FluidAudio/blob/87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc/Sources/FastClusterWrapper/fastcluster_internal.hpp) です。benchmark もこの Swift port を計測し、FluidAudio のコードを直接 benchmark するものではありません。
-
-AHC は有限な Double 入力を行ごとに L2 正規化し、zero vector は zero のまま保持します。AHC 内では embedding L2 floor を適用しません。merge centroid は source の重み付き式 `(pi*mi + pj*mj)/(mi+mj)` で計算します。indexed heap と昇順の active-node scan を使い、`N×N` 距離行列や全 pair の sort は作りません。作業領域は `O(ND)+O(N)` です。heap と scan の tie behavior は pinned `generic_linkage_vector_alternative` に対応しますが、正規化の scalar Double 演算は vDSP reduction と一般に bitwise 一致するとは主張しません。
-
-返す linkage は既存 node ID を含む全 merge tree です。height を並べ替えたり threshold で merge を早期終了したりせず、root-first cut で訪れた subtree のみ `height <= 0.6` を判定します。そのため centroid inversion では descendant の merge height が threshold を超えていても root subtree を受理します。cut traversal は left、right の順に stack へ push し、LIFO で処理した後、入力中の最初の出現順に cluster label を振り直します。cancellation は entry、入力・初期化 row、merge 境界で確認し、malformed shape、非有限値、overflow は明示的な error にします。資源 meter、budget、fallback はありません。
-
-[Community1AHCTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1AHCTests.swift) は全36 fixture の labels を完全一致で照合し、linkage structure、analytic tie sequence、invalid input / shape / overflow、cancellation を検証します。これらは内部 cluster labels であり、公開 speaker labels（Speaker 1–7、OTHER、UNKNOWN）は変更しません。これは fixture 上の AHC labels parity であり、end-to-end 話者分離 parity を主張しません。ほかの portable algorithm の単体テストは centroid と assignment が [Community1CentroidsTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1CentroidsTests.swift) と [Community1AssignmentTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1AssignmentTests.swift)、VBx が [Community1VBxTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1VBxTests.swift)、fixture parity が [Community1AssignmentParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1AssignmentParityTests.swift) と [Community1VBxParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1VBxParityTests.swift) で検証します。assignment API は constrained-stage の primitive であり、end-to-end manager port ではありません。
-
-7つの parity fixture の metadata は FluidAudio version・revision、入力構成、比較規則を記録します。fixture 内の Float32 / Float64 tensor は dtype と shape を明示し、IEEE 754 の little-endian bit pattern を base64 に格納します。portable tests は fixture ごとの比較規則を使い、assignment の source index と centroid Double bit pattern の厳密比較は維持し、VBx の gamma・pi・ELBO は最大絶対誤差で比較します。PLDA の `expectedRho` は各値の絶対誤差 `1e-4` 以内で比較し、それ以外の fixture fields は generator ごとの規則で検証します。設定値などの numeric metadata は JSON number のままです。一般の有限 float tensor reader は非有限値を受け付けません。`assignment.json` の非有限 score は、有限値 0 の tensor 座標に対する一意な sparse patch（index と `nan` / `positiveInfinity` / `negativeInfinity` の kind）で表し、reader は復元前に patch を検証します。不正な dtype・shape・base64、サイズ超過も拒否します。
-
-Mac の最初の5つの model-free golden generator は通常の debug `MacAmbientJevRuntimeTests` に置き、FluidAudio を `@testable import` して直接呼びます: [DiarizationParityFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/DiarizationParityFixtureTests.swift)、[DiarizationReconstructionParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/DiarizationReconstructionParityTests.swift)、[DiarizationAHCParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/DiarizationAHCParityTests.swift)、[DiarizationAssignmentParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/DiarizationAssignmentParityTests.swift)、[DiarizationVBxParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/DiarizationVBxParityTests.swift)。Model-backed generator は [DiarizationPLDAParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/DiarizationPLDAParityTests.swift) と [DiarizationFrontendParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/DiarizationFrontendParityTests.swift) です。Mac の package は FluidAudio `0.15.8` / revision `87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc` に直接依存し、generator は `Package.resolved` の pin も検証します。assignment oracle は pinned [HungarianAssignment.swift](https://raw.githubusercontent.com/FluidInference/FluidAudio/87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc/Sources/FluidAudio/Diarizer/HungarianAssignment.swift) を含む FluidAudio 実装を呼び、VBx oracle は pinned [VBxClustering.swift](https://raw.githubusercontent.com/FluidInference/FluidAudio/87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc/Sources/FluidAudio/Diarizer/Offline/Clustering/VBxClustering.swift) を呼びます。最初の5 generator は実モデル asset を読み込まず推論せず、fixture check と generation にモデルを必要としません。これらは FluidAudio の実装を呼ぶ Mac 専用の test oracle であり、portable algorithm の実装ではありません。
-
-- `parameters.json` は FluidAudio の OfflineDiarizerConfig.default を出発点に、embedding.minSegmentDurationSeconds だけを `0.3` に変更してから validate した有効設定を記録します。portable profile test は numeric / fixed fields を各 field で完全一致比較します。Boolean・rounding・fixed-choice・dither selectors は profile constants として公開する調整値ではなく、algorithm choices は固定です。
-- `reconstruction.json` は 13 ケースで overlap、`-2` の unassigned local speaker、複数 local speaker の同一 global cluster、nearest-even rounding の 0.5 / 1.5 / 2.5、0.1 秒 gap の Float32 境界変換の下側・上側、0.3 秒 minimum、exclusive trim による quality と drop、final padded window の EOF overrun を照合します。2.5 のケースは triple-local binary internal input を使い、segmentation graph の出力ではありません。oracle の `buildSegments` は `sampleCount` を受け取らず EOF clamp もしないため、overrun は raw output に残り、`sampleCount` は fixture metadata のみです。golden 生成前の guard は、異なる speaker の開始時刻が同じ Float32 値になる入力を拒否します。FluidAudio 内の Dictionary / Set 順序に依存して hash-dependent になるケースは fixture に含めず、FluidAudio の hash order を変更・修正する約束ではありません。
-- `ahc.json` は36ケースで、4つの基本ケース（separated groups、angular chain、threshold pairs、centroid inversion）に、singleton、two-merge、two-no-merge、all-merge、no-merge、tied-neighbors、tied-duplicates、realistic-256d（48×256、8 groups × 6 rows）と、24個の angular / elevation 3D stress case を加えます。24 case は SplitMix64 seed `0xC011000000000010` を共有し、angle 係数 `0.4`、elevation 係数 `0.12` を使います。stress cases には少なくとも2 clusterを持つ異なる label array が4種類あります。fixture は 168,989 bytes です。expected labels は pinned FluidAudio 0.15.8 revision `87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc` の実装から得た値であり、portable AHC の出力を oracle として作ったものではありません。centroid-inversion witness は leaf distances `0.62` / `0.63` / `0.64`、最初の merge `0.62 > 0.6`、root distance `0.5542111510967639 < 0.6` で、FluidAudio の root-first labels `[0,0,0]` と monotone-cut の比較 labels `[0,1,2]` を記録します。fixture は linkage 値を export しません。
-- `assignment.json` は score assignment の257ケース（1〜3行、K=1〜40、seed 固定の擬似乱数による連続値・tie、完全一致する行・列、sub-micro 量子化、exact half と nextDown / nextUp、非有限値）と、rows=1〜3・K=1〜4 の12 shape にわたる binary matrix 全5,050個の exhaustive case を含みます。後者の oracle は FluidAudio の assignment です。score は直接丸めず、`max-score` に定数 scale `1e6` を掛けた cost を nearest-away-from-zero で丸めます。さらに centroid の9ケースは gamma 加重 original vector、`pi > 1e-7` の active speaker を source index 昇順で選ぶ規則、centroid を正規化しないこと、順序を保った fused daxpy accumulation、cutoff の隣接値・cancellation・zero vector と次元1・2・3・8・256を照合します。21 embedding/slot ケースは実際の manager cosine / constrained path を通り、finite / nonfinite の active candidate は manager cosine でスコアリングされ、nonfinite は finite より下位に順位付けされます。inactive slot と padded dummy column にマッチした row は `-2` になり、nonfinite の active row は割り当てられたままの場合があります。`K > 1` のときだけ default manager が constrained branch を有効にするため、embedding oracle は `K >= 2` を使い、`K=1` rectangular case は pinned [ConstrainedClusterAssignment](https://raw.githubusercontent.com/FluidInference/FluidAudio/87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc/Sources/FluidAudio/Diarizer/Offline/Clustering/ConstrainedClusterAssignment.swift) / Hungarian stage を直接検証します。portable tests は全 assignment・source index と centroid の Double bit pattern を完全一致比較します。
-- `vbx.json` は12ケースです。`synthetic-k2`〜`synthetic-k8` は `N=3K`、`D_rho=128`、`D_embedding=256` で、決定的な synthetic PLDA-like rho / embedding と正の減衰 `phi[d]=0.05+4*exp(-d/24)` を使います。`scalar-x3` / `x4` / `x4.5` / `x5` は収束 stress、`collapsed-pi` は最小 pi が約 `2.48e-24` になるケースです。入力と保存スペクトルはすべて合成値で、実際の PLDA transform はこの parity の対象外です。早期収束と20 iteration完了の両方を含みます。
-
-VBx portable contract は、pinned [FluidAudio 0.15.8 VBxClustering.swift](https://raw.githubusercontent.com/FluidInference/FluidAudio/87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc/Sources/FluidAudio/Diarizer/Offline/Clustering/VBxClustering.swift) に対応します。各 iteration は `N×K` gamma を保持せず sufficient statistics を streaming し、scratch は `O(N+K*D_rho)` です。返す posterior は最後の E-step parameters とその入力 prior を保持し、返す `pi` は最後の M-step 後の prior です。centroid pass は各 row の responsibility を replay し、gamma-weighted original embedding の和と融合して累積します。追加 scratch は `O(K*D_embedding+K+D_rho)`、出力 source cluster は `pi > 1e-7` を満たす index の昇順です。profile は one-hot gamma の softmax smoothing `7`、`Fa=0.07`、`Fb=0.8`、最大20 iteration、`abs(ΔELBO) < 1e-4`、phi floor `1e-12`、inverse-precision denominator floor `1e-12`、log-prior floor `1e-8` です。各 iteration で cancellation を確認し、不正入力・非有限値・overflow は明示的なエラーになります。壊れた状態からの recovery はしません。
-
-portable VBx parity は全 fixture の gamma / pi / ELBO を最大絶対誤差 `1e-6` 以内、iteration count を完全一致で照合します。streamed centroid は fixture gamma を既存の `Community1Centroids.compute(trainingEmbeddings:gamma:pi:)` に渡した結果と `1e-9` 以内で比較します。assignment parity は Double bit pattern を厳密比較します。
-
-[Community1PLDA.swift](../app/MacAmbientJev/Sources/MacAmbientJevDiarization/Community1PLDA.swift) は JSON tensor assets を caller から受け取ったバイト列として読み込む portable path です。private decoder は Foundation の [JSONDecoder](https://developer.apple.com/documentation/Foundation/JSONDecoder) を使い、asset を取得せず hash manifest も読みません。malformed / missing JSON、tensor 名・shape・dtype・layout の不一致、不正または非 canonical base64、bytes 数の不一致、非有限値、特異な行列、psi が0以下の場合は明示的なエラーになります。
-
-PLDA setup は Double の Cholesky factorization / solves で W=(trᵀtr)⁻¹ と B=(trᵀdiag(1/psi)tr)⁻¹ を作り、一般化固有値問題を解きます。決定的 cyclic Jacobi は最大64 sweeps、relative off-diagonal residual 1e-12 以下を収束条件とし、未収束はエラーです。固有値は降順に並べ、固有ベクトル行は最大絶対値座標（同率なら最小 index）で符号を正規化し、manifest [community1_diarization_models.json](../app/MacAmbientJev/Sources/MacAmbientJevDiarization/Resources/community1_diarization_models.json) の128個の座標符号を適用します。この符号は実 Core ML graph から導いた値で、manifest が唯一の保持者です。rho は Float32 graph boundary を保ち、両 L2 normalization の squared-norm floor は 1e-12（norm floor 1e-6）、scale は sqrt(256) / sqrt(128)、最後に projection と sqrt(setupEigenvalues) を乗じて、Float32 出力を Double に widen します。VBx の phi は JSON の psi を Double に widen した値で、setup eigenvalues ではありません。
-
-[Community1PLDATests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1PLDATests.swift) は committed signed-rho fixture と synthetic identity assets を検証し、座標符号は manifest から読みます。[plda-rho.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/plda-rho.json) は27入力を3群で保持します: 6 normalized deterministic sin/cos vectors、8 first-floor inputs（実 graph の `mean1` と小さな perturbations）、13 edge inputs（zero と、軸 [0, 1, 63, 127, 128, 255] 上の signed unit vectors）。first-floor 群の期待値は実 Core ML graph から生成しています。second normalization floor の入力は実モデル golden ではなく、synthetic identity-asset tests が両方の floor を検証します。比較は manifest の符号向きを使う各座標の signed absolute error `<= 1e-4` で、sign-invariant 比較ではありません。fixture 自体は符号を保持しません。
-
-[Runtime の PLDA oracle](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/DiarizationPLDAParityTests.swift) は `@Test(.enabled(if: ProcessInfo.processInfo.environment["RUN_MODEL_TESTS"] == "1"))` のときに実行します（[Swift Testing の有効化と無効化](https://developer.apple.com/documentation/Testing/EnablingAndDisabling)）。有効時は `MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY` に絶対パスの既存ディレクトリを指定し、その直下に PldaRho.mlmodelc、`plda-parameters.json`、`xvector-transform.json` を置きます。欠落、相対パス、存在しないパス、ディレクトリでないパスは環境変数名を含む明確な error になります。既定値・自動 download・fallback はありません。oracle は実際の PldaRho.mlmodelc を [Core ML MLModel API](https://developer.apple.com/documentation/coreml/mlmodel) の `.cpuOnly` でロードし、pinned FluidAudio 0.15.8 の PLDATransform.transform を呼びます。dummy graph は使いません。両 JSON の SHA-256 は manifest の pin と照合し、graph の射影行から導いた128個の座標符号が manifest の `coordinateSigns` と完全に一致することを検査します（不一致なら失敗し、manifest を更新するのは符号を再導出して確認した人です）。
-
-[Community1AssetsTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1AssetsTests.swift) は全 OS で、テスト資源の2つの JSON が同梱 manifest の pin と一致することを検査します。model directory の検証は、小さな stand-in の ONNX と本物の JSON で作った一時 directory と注入した manifest で行い、欠落・サイズ違い・同サイズで内容が違う hash 違い・通常ファイルの代わりの directory・存在しない directory・空白と非 ASCII を含む path・不正な manifest（role の欠落と重複、符号の長さと値、未知の source、path を含む名前、大文字の hash、サイズ0）を確認します。実モデルは不要です。[FileSHA256Tests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/FileSHA256Tests.swift) は空 bytes・`abc` と既存の 55・56・64・1,000 bytes の標準ベクトルに加え、`a` の padding 境界ベクトル 63・65・119・120・127・128・129 bytes を検査します。1,000,000 個の `a` の独立した既知 digest は Data と file の両方で照合し、file は chunk size 63・65・4,093 bytes と既定の1 MiBで検証します。1 MiB を超える file と Data の digest も一致を確認します。全 platform の production `FileSHA256` とその tests は Data・file・incremental の各経路で同じ `CSHA256` batched compression を使い、timing assertion はありません。取得 script の自己 test は `python3 -B scripts/test_fetch_community1_diarization.py` で、取得元と pin は [windows.md](windows.md#community-1-話者分離モデルの取得) にあります。
-
-`plda-parameters.json` と `xvector-transform.json` は、[FluidInference の pinned source revision](https://huggingface.co/FluidInference/speaker-diarization-coreml/tree/df2625ac79a7ac6b65ad868fee6d80f320da4232) から変更せずコピーした JSON tensor assets です。JSON の source fields は、それぞれ upstream の *plda/plda.npz* と *plda/xvec_transform.npz* を示します。Community-1 の [upstream model](https://huggingface.co/pyannote/speaker-diarization-community-1) の attribution は pyannote、WeSpeaker、BUT Speech@FIT、Fluid Inference です。これらの asset は [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) で提供されます。
-
-[Community1Frontend.swift](../app/MacAmbientJev/Sources/MacAmbientJevDiarization/Community1Frontend.swift) は Foundation-only の frontend です。[Community1FrontendTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1FrontendTests.swift) は固定の入力検査を行い、4つの test を持つ [Community1FrontendParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1FrontendParityTests.swift) は [frontend.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/frontend.json) と照合します。parity は離散出力、mask の Float32 bit pattern、window scheduling / padding、pooling geometry を検証します。`PowersetScores` は有限 Float32 の 589×7 値を要求し、各 frame の strict `>` argmax は同率時に最初の class を選びます。powerset class と speaker bitmask の対応（bit 0〜2 は local speaker slot 0〜2）は次のとおりです。
-
-| powerset class | speaker bitmask |
-| --- | --- |
-| 0 | `0b000` (`0`) |
-| 1 | `0b001` (`1`) |
-| 2 | `0b010` (`2`) |
-| 3 | `0b100` (`4`) |
-| 4 | `0b011` (`3`) |
-| 5 | `0b101` (`5`) |
-| 6 | `0b110` (`6`) |
-
-`Community1WindowPlan` は constant-space で音声全体を保持せず、160,000 sample window を32,000 sample stepで、開始位置が EOF より前にある分だけ計画します。reader から取得した有効 prefix を検証し、不足する末尾だけを zero padding します。plan と Mac adapter の clamp は [DiarizationFinalWindowPadding.swift](../app/MacAmbientJev/Sources/MacAmbientJevDiarization/DiarizationFinalWindowPadding.swift) の共有 final-window start 計算を使います。空音声の plan は0 windowsで、no-speech の判定は plan ではなく engine の責務です。window 境界で cancellation を確認し、形状・有限値・reader の返却 count の不正は明示的なエラーになります。
-
-Mask selection は speaker ごとに base weight sum が正であることを確認し、各 frame で `> 1e-3` の speaker が複数なら overlap として全 speaker のその frame を除外します。clean mask の受理条件は Float32 sum が `Float(589) * 0.2` 以上であることです。0.3秒 minimum からの frame gate は `max(1, ceil(0.3 / (10 / 589))) = 18` frames ですが、118 clean binary frames を要する20% gateの方が支配的です。original mask の別経路はなく、出力 bounds は mask の最初と最後の active frame を inclusive に示します。[Community1ProfileTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1ProfileTests.swift) は fractional mask にも適用される Float32 clean-weight threshold relation を検証します。fractional mask を実際に入力した選択結果は [Community1FrontendTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1FrontendTests.swift) と [Community1FrontendParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1FrontendParityTests.swift) で検証します。
-
-`ActivityMask` と `PoolingMask` は別型で、raw activity mask から pooling mask を直接初期化できません。pooling は `j=0..<125` について `Double(j) * 588 / 124` の align-corners 座標を線形 Float32 係数で補間し、結果を整数 index `j * 589 / 125` に scatter します。125 index は互いに異なり、最後は584で、それ以外の位置は0です。これは FluidAudio の WeightInterpolation による589→589 identity や125-point half-pixel 補間とは別の幾何です。parity fixture は zero、ones、ramp、alternating、scattered、endpoints の6入力で式どおりの Float32 幾何を厳密比較しますが、Core ML FP16 graph の数値出力との bitwise 一致は主張しません。frontend.json は Kaldi fbank を含まず、fbank は下記の専用 fixtures が検証します。[frontend.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/frontend.json) は341,785 bytesです。decode は1ケースで7 powerset classes、21 pairwise ties、all-equal tie を含み、window は8 sample counts（1、31,999、32,000、32,001、159,999、160,000、160,001、192,000）、mask は16ケースです。mask cases は0〜3 active slots、overlap threshold の nextDown / exact / nextUp、17・18-frame rejection、117・118 clean frames、20% ratio の below / exact / above を含みます。parity は6 pooling / interpolation inputs も検証します。
-
-[Runtime frontend oracle](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/DiarizationFrontendParityTests.swift) は PLDA oracle と同じ `RUN_MODEL_TESTS=1` gate で実行します。`MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY` に絶対パスの既存ディレクトリを指定し、直下に Segmentation.mlmodelc、Embedding.mlmodelc、FBank.mlmodelc、PldaRho.mlmodelc の4 bundle と `plda-parameters.json` を置きます。各 bundle の `model.mil` と weights/weight.bin、および JSON asset の hash を fixture に記録します。oracle は毎回 UUID 所有の temporary `speaker-diarization` cache layout、symlink、revision marker を構成し、public OfflineDiarizerModels.load の間 ModelHub.offlineMode を有効にして download・purge・recovery 経路を止め、自身の検証済み staging root だけを除去します。source model directory は変更しません。
-
-oracle は test-only model subclass から決定的 segmentation logits を返し、実際の OfflineSegmentationProcessor に class 選択・postprocessing・window scheduling を実行させます。mask ケースでは public SegmentationOutput を渡して実際の OfflineEmbeddingExtractor を通し、real FBank・Embedding・PLDA models をロードして、戻った TimedEmbedding の slot、mask、inclusive bounds を fixture に採ります。mask selector の再実装は使いません。model の embedding・rho・log-probability の数値出力は保存せず、保存する fields は決定的な入力、source mask metadata / bounds / math、および source asset hashes です。そのため frontend generator は fixture 全体の canonical JSON bytes を厳密一致で確認できます。全16 mask cases は最後の scheduled window（offset 2.0 s）に32001-sample音声（実音声1 sample＋159999 zeros padding）を与え、EOFでselector maskが切り詰められないことを確認し、実際のframe weightsはTimedEmbedding経由で観測します。この oracle は Core ML の segmentation / embedding 数値 parity や end-to-end diarization parity を主張しません。
-
-[Community1Fbank.swift](../app/MacAmbientJev/Sources/MacAmbientJevDiarization/Community1Fbank.swift) は FluidAudio が使う FBank.mlmodelc の op 順（×32768、400 sample frame、frame ごとの DC 除去、先頭 sample を複製した preemphasis 0.97、symmetric Hamming、512点へ zero padding、power spectrum、80 bin mel bank、`log(max(energy + 1e-6, 1e-6))`、998 frame の bin ごとの mean 正規化）を Foundation だけで再現します。framing と windowing は Float32、radix-2 FFT は Double、power と正規化は Float32 で、twiddle・window・mel bank は初回利用時に一度だけ作る不変テーブルです。入力は `WindowAudio`（160,000 sample）で、出力は 998×80 の frame-major 値を持つ `Community1FbankFeatures` だけです。定数は `Community1Profile` に出典付きで置きます。
-
-fbank の fixtures は [fbank-graph.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/fbank-graph.json)（graph の `_fbank_window` と `_fbank_mel_weight`）と、ケースごとの [fbank-speech.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/fbank-speech.json)、[fbank-clipping.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/fbank-clipping.json)、[fbank-silence.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/fbank-silence.json)、[fbank-short.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/fbank-short.json)、[fbank-dc-offset.json](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Resources/fbank-dc-offset.json) の6ファイルで、各ファイルは1 MiB 未満です。入力は固定 seed の LCG と回転 oscillator だけで生成する 10 秒の合成 window（multi-tone と noise の speech 風信号、±1 に張り付く clipping、digital silence で log floor を通すもの、3 秒の実音声風信号を zero padding した short、DC offset）で、fixture には seed ではなく生成式を `construction` に、期待値として Core ML FBank.mlmodelc を CPU only で実行した 998×80 の Float32 grid をそのまま保存します。生成式は [Runtime の generator](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/DiarizationFbankParityTests.swift) と [portable test](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1FbankTests.swift) に同じ内容で置き、`construction` 文字列の一致と誤差判定が両者のずれを検出します。
-
-[Community1FbankTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1FbankTests.swift) は全 OS で、5ケースそれぞれについて 998×80 の全 grid の最大絶対誤差が 3e-3 以下であることを確認します（測定値は silence 1.2e-4、short 3.2e-4、dc-offset 5.6e-4、speech 5.9e-4、clipping 8.0e-4）。加えて、bin ごとの平均が0になることを検査します。debug build で5ケース並列の fbank 全体が約2秒です。
-
-Mac の fbank generator（`fbankMatchesCoreML`）は他の model-backed generator と同じ `RUN_MODEL_TESTS=1` gate と `MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY` を使い、直下の FBank.mlmodelc だけを読みます。環境変数が無い場合は明確なエラーで失敗し、既定 path はありません。check モードは新しく実行した Core ML 出力を committed grid と最大絶対誤差 1e-3 以下で照合し、byte 一致は要求しません。Core ML の float 出力は環境間で変わるためです。
-
-VBx の保存形状はソース上で `O(N+K*D_rho)` で、`N×K` gamma を作りません。単体 probe のプロセス全体の peak RSS は [P3.3 VBx メモリ確認記録](records/p33-vbx-memory.md) にあります。
-
-assignment の Hungarian primitive は最大3 real rows で使い、memory は `O(rows*K + K)`、time は `O(rows²*max(rows,K))` で、`K×K` scratch を作りません。5,000-column test と exhaustive objective tests で長い rectangular input と最適性を検証します。source が後から追加する dummy zero rows は、unmatched `v=0`、feasible reduced cost `>= 0`、strict predecessor update により既存 real match を変えません。invalid shape、nonfinite training data、active speaker なし、zero posterior mass、unsafe arithmetic は明確に失敗し、recovery は行いません。nonfinite candidate embedding は scoring のため保持して finite candidate より下に順位付けしますが、finite training vector としては使いません。
-
-以下はリポジトリルートから実行します。`MAC_AMBIENT_JEV_WRITE_DIARIZATION_PARITY=1` の場合だけ test harness が canonical JSON を source fixture へ書き込みます。それ以外の値では generator output を committed fixture と照合します。この WRITE gate は test harness 専用で runtime は参照しません。最初の5 generator は model-free で常時 fixture を照合し、PLDA と frontend の model-backed generator は `RUN_MODEL_TESTS=1` のときに実行します。PLDA check は `cases[*].expectedRho` 以外の全フィールドを完全一致させ、rho は dtype と値数を一致させて各値を設計契約の絶対誤差 `1e-4` 以内で比較します。frontend check は model asset hashes を含む canonical JSON 全体を完全一致させます。zsh では各環境変数 assignment に実値を直接書き、`MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY` は実在する絶対パスに置き換えます。model-backed command 後に `frontendMatchesFluidAudio` または PLDA test が skip ではなく実行されたことを test output で確認します。
-
-```bash
-# Ordinary portable fixtures; do not enable model-backed generators
-env -u RUN_MODEL_TESTS swift test --package-path app/MacAmbientJev --jobs 4 --filter Diarization
-# Focused portable frontend tests in both suites
-swift test --package-path app/MacAmbientJev --jobs 4 --filter 'Community1FrontendTests|Community1FrontendParityTests'
-# Mac: generate and check the first five model-free parity fixtures
-env -u RUN_MODEL_TESTS MAC_AMBIENT_JEV_WRITE_DIARIZATION_PARITY=1 swift test --package-path app/MacAmbientJev --jobs 4 --filter 'MacAmbientJevRuntimeTests.DiarizationParityFixtureTests'
-env -u RUN_MODEL_TESTS swift test --package-path app/MacAmbientJev --jobs 4 --filter 'MacAmbientJevRuntimeTests.DiarizationParityFixtureTests|MacAmbientJevDiarizationTests'
-# Check host load before each model-backed run; execute one at a time
-uptime
-# Generate PLDA rho fixture with the real Core ML graph
-RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY=/absolute/path/to/coreml MAC_AMBIENT_JEV_WRITE_DIARIZATION_PARITY=1 swift test --package-path app/MacAmbientJev --jobs 4 --filter pldaRhoMatchesCoreML
-uptime
-# Check canonical PLDA fixture without writing
-RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY=/absolute/path/to/coreml swift test --package-path app/MacAmbientJev --jobs 4 --filter pldaRhoMatchesCoreML
-uptime
-# Generate frontend fixture through the real diarization frontend path
-RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY=/absolute/path/to/coreml MAC_AMBIENT_JEV_WRITE_DIARIZATION_PARITY=1 swift test --package-path app/MacAmbientJev --jobs 4 --filter frontendMatchesFluidAudio
-uptime
-# Check canonical frontend fixture without writing
-RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY=/absolute/path/to/coreml swift test --package-path app/MacAmbientJev --jobs 4 --filter frontendMatchesFluidAudio
-# Generate fbank fixtures with the real Core ML FBank graph
-RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY=/absolute/path/to/coreml MAC_AMBIENT_JEV_WRITE_DIARIZATION_PARITY=1 swift test --package-path app/MacAmbientJev --jobs 4 --filter fbankMatchesCoreML
-uptime
-# Check fbank fixtures against a fresh Core ML run without writing
-RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY=/absolute/path/to/coreml swift test --package-path app/MacAmbientJev --jobs 4 --filter fbankMatchesCoreML
-# Focused assignment oracle generation and canonical-byte check
-MAC_AMBIENT_JEV_WRITE_DIARIZATION_PARITY=1 swift test --package-path app/MacAmbientJev --jobs 4 --filter assignmentMatchesFluidAudio
-swift test --package-path app/MacAmbientJev --jobs 4 --filter assignmentMatchesFluidAudio
-# Focused VBx oracle generation and canonical-byte check
-MAC_AMBIENT_JEV_WRITE_DIARIZATION_PARITY=1 swift test --package-path app/MacAmbientJev --jobs 4 --filter vbxMatchesFluidAudio
-swift test --package-path app/MacAmbientJev --jobs 4 --filter vbxMatchesFluidAudio
-# Portable reconstruction, centroid, assignment, PLDA, and VBx tests
-swift test --package-path app/MacAmbientJev --jobs 4 --filter 'Community1ReconstructionTests|Community1CentroidsTests|Community1AssignmentTests|Community1AssignmentParityTests|Community1PLDATests|Community1VBxTests|Community1VBxParityTests'
-```
-
-fixture 内の reconstruction ID（例: `S1`）は oracle の speaker ID であり、公開表示ラベルは別契約です。[SpeakerDisplayMapper.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SpeakerDisplayMapper.swift) は変更しておらず、公開ラベルは Speaker 1–7、OTHER、UNKNOWN のままです。
-
-#### Community-1 kernel の全体動作
-
-[Community1Diarizer.swift](../app/MacAmbientJev/Sources/MacAmbientJevDiarization/Community1Diarizer.swift) の `diarize(sampleCount:readFrames:inference:)` は、window ごとに segmentation、powerset decode、mask 選択、fbank、embedding を実行し、結果を run 単位の観測表 [Community1Observations.swift](../app/MacAmbientJev/Sources/MacAmbientJevDiarization/Community1Observations.swift) に1回ずつ追加します。観測表は各 window の589個の speaker bitmask と3 slot の結果（未抽出、非有限、有限 embedding）を時系列順に持ち、有限 embedding と rho は row-major の flat table に `(window, slot)` と1対1で置きます。学習集合は有限 row の全体で、第2のコピーを持ちません。
-
-embedding の2操作は `Community1Inference` が持ちます。実装が返す256次元 vector は未正規化でよく、kernel が profile の floor 1e-4 で L2 正規化してから PLDA rho を計算します。`SpeakerMask` は cleaned activity（segmentation 解像度）と pooling 位置に sample 済みの `PoolingMask` を両方持ち、内部で補間する graph（Core ML の Embedding.mlmodelc）は前者、補間しない graph（ONNX tail）は後者を使います。非有限 vector の slot は学習に使わず、assignment では最下位に順位付けして残します。window 内の slot 位置は assignment まで保持します。
-
-終了条件は次のとおりです。サンプル数0、またはどの window のどの slot も embedding を抽出しなかった場合は `noSpeechDetected`、抽出はあるが有限 embedding が1つもない場合は `noFiniteTrainingEmbeddings` で失敗します。embedding の個数や次元が要求と合わない場合は `invalidModelOutput`、reader が要求と異なるサンプル数を返す場合は `FrontendError` で失敗し、いずれも代替経路を持ちません。有限 embedding が2個以上のとき AHC を実行し、1個のときは全 row を cluster 0 とします。centroid が1個のときは FluidAudio と同じく制約付き assignment を使わず、抽出済みの全 slot を cluster 0 に割り当てます。cluster 数は pi が active の centroid 数で、cluster ID は centroid の並び順です。
-
-キャンセルは window 境界、AHC の merge、VBx の iteration、centroid の row、reconstruction の flush 境界で確認し、途中の spans は返しません。`diarize` は呼び出しごとに観測表を作り、呼び出し間で状態を共有しないため、同じ入力と同じ inference の2回の実行は同一の spans を返します。spans は FluidAudio の Float 秒を `SpeakerSpanMapper` で frame に丸め、最終 window の padding 内に収まる終端だけを音声長へ切り詰め、開始・終端が音声外の span は `invalidSpeakerSpan` で失敗します。
-
-[Community1DiarizerTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationTests/Community1DiarizerTests.swift) は全 OS で、決定的な fake inference（サンプル振幅で2つの声を区別し、声ごとの local slot を window の偶奇で入れ替える）を使い、slot の入れ替えを越えた話者の同一性、2回の実行と別入力を挟んだ実行の同一性、短い入力の padding と終端 clamp、無音・非有限・構造不一致の失敗、window 境界と最終 window 後のキャンセル、観測表の対応関係を検証します。
-
-Mac では [Community1DiarizerCoreMLParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/Community1DiarizerCoreMLParityTests.swift) が portable kernel と FluidAudio の OfflineDiarizerManager を、同じ Core ML model（公開 loader を offline mode で使い、同じ MLModel を共有）と同じサンプルで比較します。test 専用の Core ML inference は portable fbank の出力を Embedding.mlmodelc へ mask ごとに1回ずつ渡します。入力は MacAmbientJevPortableRuntimeTests の Resources にある `qwen3_asr_voicevox_long.wav`（16 kHz mono PCM16 を /32768 で Float にする。test は `#filePath` から辿り、無ければ失敗する）と、test 実行時に `/usr/bin/say`（Kyoko と Rocko の日本語 voice）で作る2話者の clip です。後者は一時 directory に交互の4発話を合成し、`/usr/bin/afconvert` で 16 kHz mono PCM16 にして連結し、終了後に削除します。voice が無ければ `say` が失敗してそのまま test が失敗し、代わりの voice は使いません。Apple の合成音声は再配布の可否を確認していないため repository には置きません。VOICEVOX の clip は1話者だったため、2話者の clip を足しています。比較は、話者数の一致、最適なラベル対応の後の時間分割の一致（不一致の長さ）、span 数と各境界の差が1 frame（10/589 秒、272 sample）以内であることを確認します。
-
-```bash
-swift test --package-path app/MacAmbientJev --jobs 4 --filter 'Community1DiarizerTests|Community1ObservationTableTests'
-RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY=/absolute/path/to/coreml swift test --package-path app/MacAmbientJev --jobs 4 --filter portableKernelMatchesFluidAudio
-```
-
-#### ONNX 話者分離の stage テスト
-
-Linux / Windows の `ONNXCommunity1DiarizationEngine`（[ONNXCommunity1DiarizationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/ONNXCommunity1DiarizationEngine.swift)）と ONNX 推論の [Community1ONNXInference.swift](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Community1ONNXInference.swift) は、Core ML の stage 出力と FluidAudio の spans を保存した fixture [diarization_onnx_stages.json](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/diarization_onnx_stages.json)（1 MiB 以下、Float32 は little-endian の base64）と比較します。
-
-Mac の generator は `onnxStageFixtureMatchesCoreML`（[Community1ONNXStageFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/Community1ONNXStageFixtureTests.swift)）です。他の model-backed generator と同じ `RUN_MODEL_TESTS=1` と必須の `MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY` で動き、既定値はありません。`MAC_AMBIENT_JEV_WRITE_DIARIZATION_PARITY=1` のときだけ fixture を書き、それ以外は Core ML と FluidAudio を再実行して committed fixture と許容誤差で照合します（バイト一致では比べません）。fixture に入れるのは、VOICEVOX の長い clip（`qwen3_asr_voicevox_long.wav`、295,424 sample）の window 0・2・4・6 の Segmentation 出力（589×7 の log-probability）、全 0 の無音 window の Segmentation 出力、kernel が選んだ各 mask の cleaned activity とその Core ML Embedding 出力、散在 mask（`(7 * frame + 3) % 10 < 3` の frame が 1、window 0 の fbank）の Embedding 出力、clip 全体に対する FluidAudio の spans です。mask の選択は FluidAudio と完全一致を検証済みの kernel の `selectMasks` で行います。照合の許容は Segmentation が最大絶対誤差 `1e-3` かつ argmax 一致、Embedding が cosine `0.999` 以上、spans が数・話者 ID の一致と各境界 272 sample 以内です。
-
-```bash
-RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_WRITE_DIARIZATION_PARITY=1 MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY=/absolute/path/to/coreml swift test --package-path app/MacAmbientJev --jobs 4 --filter onnxStageFixtureMatchesCoreML
-RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_DIARIZATION_MODEL_DIRECTORY=/absolute/path/to/coreml swift test --package-path app/MacAmbientJev --jobs 4 --filter onnxStageFixtureMatchesCoreML
-```
-
-Linux / Windows の model テスト（[Community1ONNXStageTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Community1ONNXStageTests.swift)）は `RUN_MODEL_TESTS=1` と、`scripts/fetch_community1_diarization.py` が出力した directory を指す必須の `MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY` で動きます。環境変数に既定値はなく、未設定・相対 path・存在しない directory は skip ではなく失敗です。比較と許容誤差は次のとおりです。
-
-| 対象 | 許容 | 測定値（ONNX Runtime 1.31.0、Linux aarch64 / Windows 11 ARM64） |
-| --- | --- | --- |
-| 音声 window の Segmentation（log-probability） | 最大絶対誤差 `5e-4`、argmax 一致 100 % | 最大 `1.2e-4` / `3.3e-4`、argmax 100 % |
-| 無音 window の Segmentation | argmax 一致 100 %、log-probability の最大絶対誤差 `8.0`、確率の最大絶対誤差 `5e-3` | log-probability `2.45` / `5.49`、確率 `3.1e-4` / `3.0e-3`、argmax 100 % |
-| 選ばれた各 mask の Embedding | Core ML との cosine `0.995` 以上 | `0.99991` 以上 |
-| 散在 mask の Embedding | cosine `0.995` 以上 | `0.99993` |
-| end-to-end の spans | 話者数・span 数・話者 ID の一致、各境界 272 sample（1 frame）以内 | FluidAudio の spans と完全一致 |
-
-無音 window は全クラスにほぼ質量がなく、log-probability では2つの runtime が大きく食い違うため、確率での許容を併記します。散在 mask の回帰では、mask を `SpeakerMask.pooling` で pooling 位置に sample して渡すことが前提です（生の 589 frame mask を渡すと、probe では cosine が 0.89 前後まで下がった）。multimask の行の対応は、散在 mask と window mask を2個・3個で並べた呼び出しの各行が、単独呼び出しの参照と一致し、順序を入れ替えても行が追従することで検査します。mask 数が0または4以上のとき `embed` は `invalidModelOutput` で失敗します。
-
-end-to-end のテストは VOICEVOX の clip から正規 CAF を作り、engine を `prepare`（2回）、`diarize`（2回）、`unload`（2回）の順に使い、2回の `diarize` が同じ spans を返すこと、`unload` 後の `diarize` が `notPrepared` で失敗することも確認します。
-
-model を使わない単体テスト（[ONNXCommunity1DiarizationEngineTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXCommunity1DiarizationEngineTests.swift)）は環境変数なしで実行できます。prepare の2回呼び出しで load が1回だけであること、unload の2回呼び出しと再 prepare、prepare 前・unload 後の `diarize` の失敗、canonical CAF の bounded read、非 canonical sample rate と CAF でないファイルの拒否、5本の同時 `diarize` が重ならず直列に実行されること、`unload` が実行中の `diarize` を待つこと、存在しない・破損した model directory での `prepare` の失敗（fetch command を含む）、provenance が pin の revision と4ファイルの SHA-256 を持つことを検証します。
-
-```bash
-swift test --package-path app/MacAmbientJev --jobs 4 --filter ONNXCommunity1DiarizationEngine
-RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY="$MODELS" swift test --package-path app/MacAmbientJev --jobs 4 --filter Community1ONNX
-```
-
-#### F・B除去範囲と表示 projection
+### F・B除去範囲と表示 projection
 
 [ClauseTaggerSpanProjectionTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/ClauseTaggerSpanProjectionTests.swift) は `span_probs` の4列を O=0、F=1、D=2、B=3 と解釈し、各 token の argmax と同率時に最小 index を選ぶことを検証する。O/F、F/D、O/B、D/B の tie と4 label 全ての tie を含み、token 範囲と生成される F・B除去範囲は原文の end-exclusive UTF-16 offset で表す。UTF-8 byte fallback の複数 token が一つの Unicode scalar を表す場合、それぞれがその scalar 全体の UTF-16 範囲を指し、UTF-8 byte offset にはしない（BOM は `[0,1)`、emoji の byte token は各々 `[1,3)`）。token 範囲を順に適用し、重なる位置は後の token の label で上書きする。純粋な B と隣接する F+B は除去し、連続する除去文字は一つの範囲にまとめる。kana・decomposed character・emoji を構成する scalar が F/B 混在でも Character 全体を除去し、O/D が含まれる Character はどちらの scalar 順でも全体を残す。テストは surrogate pair、decomposed scalar、token overlap、無効な shape・確率範囲・range も扱う。
 
@@ -707,89 +538,31 @@ ASR gap の smoke は実ファイルに非空本文・ASR 欠落・成功した�
 
 ### 録音しない受入と実画面での確認
 
-授業など録音できない環境では、マイク・システム音声を開始せず、システム音量や出力装置にも触れない。既存ファイルのCLI処理とディスクだけの注入 smoke を行う。CLI の隔離 root で `--keep-session` の実処理を完了した後、JSON の `text` と参照先 ASR event の raw、`display_text`、`source`、`clause_state`、空 slice を照合する。CLI は発話文判定が無効なので、3つの local active run があっても判定 request は0件。認識済み source ごとに boundary pending があり、priority pending は空で、`text` と `display_text` は raw と一致する。終端行を含め F・B除去範囲の評価・除去は行わない。これは判定無効による0件であり、実モデルの終端境界は候補なしでも request を送信する。inspect → resume の再書き出しで event bytes と metadata が変わらないことも確認する。CLI の出力を F・B除去の証拠にはしない。
+授業など録音できない環境では、マイク・システム音声を開始せず、システム音量や出力装置にも触れない。既存ファイルのCLI処理とディスクだけの注入 smoke を行う。CLI の隔離 root で `--keep-session` の実処理を完了した後、JSON の `text` と参照先 ASR event の raw、`display_text`、`source`、`clause_state`、空 slice を照合する。判定を指定しない CLI run には segmentation / asr の2 active run があり、判定 request と decision run はなく、`text` と `display_text` は raw と一致する。終端行を含め F・B除去範囲の評価・除去は行わない。inspect → resume の再書き出しで event bytes と metadata が変わらないことも確認する。CLI の出力を F・B除去の証拠にはしない。
 
 bundleは `scripts/run_app.sh` でbuildして起動する。プロセスの生存だけでは画面の合格にしない。GUI操作の権限がない場合は、設定・表示・exportボタンの確認を未観察として報告する。録音可能な時の手動受入では次を確認する。
 
 - 「モデルを確認」で同梱モデルの ID と revision が表示されること、録音元・書き出し先、マイク／システム音声の実権限。
 - 14秒超の実ASR原文をイベントで確認し、第一行の「発話文の続き待ち」、後続行の可視性、跨ぎpartsと確率を照合。
-- PRIMARY＋LOWでLOW本文が消えること、全LOW行が消えること、LOW＋待機／保留の本文表示、選択copy/paste・accessibilityがLOWを除いた表示本文と一致すること、行単位の時刻popover・話者見出し。
+- PRIMARY＋LOWでLOW本文が消えること、全LOW行が消えること、LOW＋待機／保留の本文表示、選択copy/paste・accessibilityがLOWを除いた表示本文と一致すること、時刻ボタンのpopoverには clause-state の詳細だけが表示されること。
 - 録音停止後のASR drain・finishInputとfinal takeover、late結果不採用、実live/final本文が完全一致する場合だけのcarryと判定削減。
 - priority障害で保存済みboundaryを維持し、ローカル公開が続くこと。
 - 設定の保留再試行ボタン、二種targetの判定、atomic metadata切替、診断のrequest・token・pending内訳。
-- 保存済み録音の再選択とGUI「書き出す」の実txt再読込、時刻・話者・改行処理、F・B除去後に本文が残る全行とLOWの保持、イベントraw不変。GUI exportにJSONは含まれない。
+- 保存済み録音の再選択とGUI「書き出す」の実txt再読込、`[mm:ss] text` 形式の行と改行処理、F・B除去後に本文が残る全行とLOWの保持、イベントraw不変。GUI exportにJSONは含まれない。
 
-`MacAmbientJevEvaluateSession`, `MacAmbientJevEvaluateASR`, and `MacAmbientJevEvaluateDiarization` consume explicit artifact files only; none locate or create saved sessions, so these artifact-only modes do not require `--sessions-root`. Every mode of the capture, file-processing, and live-latency CLIs requires an explicit root that rejects protected app data/cache roots, their ancestors/descendants, and symlink aliases.
+`MacAmbientJevEvaluateSession` と `MacAmbientJevEvaluateASR` は明示された artifact file を評価し、保存済み session を検索・作成しません。capture、file-processing、live-latency の CLI は明示的な root を要求し、保護された app data/cache root とその祖先・子孫、symlink alias を拒否します。
 
 ```bash
 swift build --package-path app/MacAmbientJev --product MacAmbientJevEvaluateSession
 swift build --package-path app/MacAmbientJev --product MacAmbientJevEvaluateASR
-swift build --package-path app/MacAmbientJev --product MacAmbientJevEvaluateDiarization
 bash scripts/verify_portable.sh
 ```
 
 `verify_portable.sh` は `scripts/check_portable_core.py` の default portable roots と test import check を使い、SwiftPM manifest を評価してから unfiltered build / test を実行します。検査対象 roots と禁止 import / platform guard の正本は [checker](../scripts/check_portable_core.py) です。これは import 境界の検査であり、Linux 上で macOS runtime が実行できることを意味しません。
 
-## 話者分離 DER の計測
-
-Mac の FluidAudio と Linux / Windows の `ONNXCommunity1DiarizationEngine` を、同一の canonical CAF バイト列に対して比較します。比較には標準 DER（`MacAmbientJevEvaluateDiarization` の `standard`）と raw 話者数だけを使います。表示用に畳んだ `collapsed` は、公開ラベルの仮説を持たないため採点しません。
-
-| 道具 | 対象 OS | 役割 |
-| --- | --- | --- |
-| [`prepare_canonical_caf.py`](../scripts/prepare_canonical_caf.py) | 全 OS | 16 kHz mono 16-bit PCM の WAV を、`CanonicalCAFReader` と Mac の `CanonicalCAFAudioSource` が読む 16 kHz mono Float32 CAF（値は `sample / 32768`）に変換し、出力先が存在すれば失敗する。パス、サンプル数、CAF の SHA-256 を JSON で表示する |
-| `MacAmbientJevDiarizeFileOracle` | macOS | 本番と同じ `FluidOfflineDiarizationEngine`（FluidAudio の既定 config、最小 0.3 秒、アプリの span 変換）で実行する |
-| `MacAmbientJevDiarizeFile` | Linux / Windows | `ONNXCommunity1DiarizationEngine` で実行する |
-| [`compare_diarization_runs.py`](../scripts/compare_diarization_runs.py) | 全 OS | 2 つの run を採点する。`--runs` を使うと同じ engine の複数回実行の全組み合わせを採点し、self-disagreement を出す |
-
-両 CLI は canonical CAF だけを受け取り、VAD や ASR は使いません。Mac の oracle は `--coreml-directory` のファイルを本番と同じ manifest の byte 数と SHA-256 に照合し、1つでも違えば失敗します。オプションはそれぞれ 1 回ずつ必須で、`--help` だけが単独で使えます。
-
-```text
-MacAmbientJevDiarizeFile --audio <canonical.caf> --model-directory <dir> --threads <n> --output <run.json>
-MacAmbientJevDiarizeFileOracle --audio <canonical.caf> --coreml-directory <dir> --output <run.json>
-```
-
-Linux / Windows 側のモデル directory は fetcher が表示する directory を渡します。Mac 側は FluidAudio の Core ML diarizer モデル（Segmentation、Embedding、FBank、PldaRho の各 mlmodelc と `plda-parameters.json`、`xvector-transform.json`）を直接含む directory を渡します。`--output` は存在しないファイルでなければならず、一時ファイルに書いてから移動するため既存ファイルを置き換えません。不正な引数、存在しない入力、非 canonical な CAF、モデルの欠落・破損は 0 以外の終了コードとメッセージで失敗します。
-
-### 手順
-
-```bash
-# 1. シナリオ WAV（generate_scenario が <output_root>/<scenario_id>/audio.wav を作る）を canonical CAF にする
-python3 scripts/prepare_canonical_caf.py --wav "$SCENARIO/audio.wav" --output "$WORK/speakers-4.caf"
-
-# 2. Mac: 同じ CAF で oracle を 3 回実行する
-swift run --package-path app/MacAmbientJev -c release MacAmbientJevDiarizeFileOracle \
-  --audio "$WORK/speakers-4.caf" --coreml-directory "$COREML" --output "$WORK/mac-1.json"
-
-# 3. Linux / Windows: 同じ CAF を使う
-swift run --package-path app/MacAmbientJev -c release MacAmbientJevDiarizeFile \
-  --audio "$WORK/speakers-4.caf" --model-directory "$MODELS" --threads 2 --output "$WORK/portable.json"
-
-# 4. 採点する
-python3 scripts/compare_diarization_runs.py --reference-run "$WORK/mac-1.json" \
-  --hypothesis-run "$WORK/portable.json" --min-clean-speech-ms 500 --output "$WORK/parity.json"
-python3 scripts/compare_diarization_runs.py --runs "$WORK/mac-1.json" "$WORK/mac-2.json" "$WORK/mac-3.json" \
-  --min-clean-speech-ms 500 --output "$WORK/mac-self.json"
-```
-
-`--min-clean-speech-ms` は計測者が指定する値で、既定値はありません。比較 script は評価器を `swift run` で呼ぶため、Swift toolchain が必要です。2 つの run の音声 SHA-256 またはサンプル数が違う場合は失敗します。出力ファイルも既存ファイルを置き換えません。
-
-### VOICEVOX シナリオの生成と実測
-
-[`generate_voicevox_diarization_scenarios.py`](../tools/linux-audio/generate_voicevox_diarization_scenarios.py) は、起動済みの VOICEVOX engine から `voicevox-ja-core-v1.json` の `diarization_scenarios` を生成する。`--base-url`、`--manifest`、`--output-root`、`--scenario`（複数指定可）はすべて必須で、既定値はない。出力は `<output-root>/<scenario_id>/audio.wav` と `scenario.json` で、`audio.wav` を `prepare_canonical_caf.py` に渡す。
-
-2026-10-22 の実測（2 / 4 / 7 / 8 / 10 話者、Mac 3 回の self-disagreement、Mac 対 Linux / Windows の DER と raw 話者数、実行時間とピーク RSS、1 時間 run）は [p33-diarization-der-2026-10-22.md](records/p33-diarization-der-2026-10-22.md) にある。
-
-### run ファイルの形式
-
-`schema_version: 1`。`audio`（`sha256`、`sample_count`、`sample_rate`）、`provenance`（engine 自身が報告する `engine`、`model`、`version`、`configuration`）、`raw_spans`（`speaker_id`、`start_frame`、`end_frame`、`confidence`。表示用の畳み込み前の raw cluster ID とサンプル位置）、`raw_speaker_count`、`prepare_seconds`（モデル読み込み）、`wall_time_seconds`（diarize 1 回）、`peak_rss_bytes`（プロセス全体のピーク。macOS は `getrusage`、Linux は `getrusage` の KiB 換算、Windows は process memory counters のピーク working set）を持ちます。`wall_time_seconds` はモデルの読み込みを含みません。
-
-比較では frame を 16 で割った整数 ms（半分は偶数側へ丸める）に変換して評価器へ渡します。話者数は変換前の raw span から数えます。出力は `audio`、両 provenance、`reference_speaker_count`、`hypothesis_speaker_count`、`standard`（DER と内訳）です。ミリ秒に変換して長さ 0 になる span はエラーです。
-
-CLI の単体テストは [DiarizationMeasurementTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevDiarizationMeasurementTests/DiarizationMeasurementTests.swift) にあり、引数の検査、run の形式、音声 identity、不正 span の拒否、既存出力を置き換えないことを、モデルなしで全 OS で検査します。Python 側は `python3 -B scripts/test_compare_diarization_runs.py` と `python3 -B scripts/test_prepare_canonical_caf.py` です。`MacAmbientJevDiarizeFile` は ONNX Runtime を使うため macOS では build されず、`MacAmbientJevDiarizeFileOracle` は FluidAudio を使うため Linux / Windows では build されません。
-
 ## ファイル入力 CLI
 
-`MacAmbientJevProcessRecording` は全 OS で使えるファイル処理 CLI です。マイクや GUI を使わず、音声を import して VAD・話者分離・ASR を含む full-session finalization を実行し、session の inspect / resume にも対応します。発話文判定は既定で無効です。`--with-decisions` を指定した場合だけ、Mac の Core ML または Linux / Windows の ONNX provider で境界・優先度を判定します。
+`MacAmbientJevProcessRecording` は全 OS のファイル入力 CLI です。マイクや GUI を使わず、音声を import して VAD segmentation と ASR を行い、`--with-decisions` を指定した場合だけ clause-boundary / content-priority 判定も実行します。session の inspect / resume にも対応し、判定は既定で無効です。判定 provider は macOS で Core ML、Linux / Windows で ONNX を使います。
 
 以下は **Mac の実行例**です。macOS は `--threads` を受け付けないため指定しません。Portable の正確な Linux / Windows コマンドと model 設定は [Linux の ProcessRecording 使用方法](linux.md#セッション全体のファイル処理-cli) と [Windows の ProcessRecording 使用方法](windows.md#セッション全体のファイル処理-cli) を参照してください。
 
@@ -807,9 +580,9 @@ swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
   --sessions-root "$SESSIONS_ROOT" --keep-session --low-heat "$AUDIO_FILE" "$SEGMENTS_OUTPUT"
 ```
 
-Portable の import / resume は `--threads N` が必須です（export-only resume を含む）。`N` は `1...min(4, logicalCPUCount)` で、ASR・diarizer・tagger の ONNX session は N、VAD は常に1 thread です。Mac は `--threads` を拒否します。`--low-heat` は Portable では ASR 区間間の pacing のみを行い、thermal monitor / start gate / pause はありません。Mac では推論が必要な import / resume の開始時に nominal / fair を要求し、critical 時は処理を pause します。resource を作る Mac run の `--low-heat` は pacing に加えて MLX cache 上限を抑えます。measurement option と thermal / memory sampling は Mac 専用です。これらは短い fixture の成功から長時間のメモリ条件やライブ遅延を推定するものではありません。
+Portable の import / resume は `--threads N` が必須です（export-only resume を含む）。`N` は `1...min(4, logicalCPUCount)` で、ASR と tagger の ONNX session は N、VAD は常に1 thread です。Mac は `--threads` を拒否します。`--low-heat` は Portable では ASR 区間間の pacing のみを行い、thermal monitor / start gate / pause はありません。Mac では推論が必要な import / resume の開始時に nominal / fair を要求し、critical 時は処理を pause します。resource を作る Mac run の `--low-heat` は pacing に加えて MLX cache 上限を抑えます。measurement option と thermal / memory sampling は Mac 専用です。これらは短い fixture の成功から長時間のメモリ条件やライブ遅延を推定するものではありません。
 
-`--with-decisions` の実行時に Mac は `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` に実在する絶対 directory を要求し、その直下の ClauseTagger.mlpackage と tokenizer.json を Core ML provider が使います。Portable は `MAC_AMBIENT_JEV_SILERO_MODEL`（既存 absolute model file）、`QWEN3_ASR_ONNX_MODEL_DIRECTORY`（既存 absolute directory）、`QWEN3_ASR_ONNX_MODEL_SIZE`（`0.6b` または `1.7b`）、`MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY`（既存 absolute directory）を必要とし、decisions を有効にすると `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY`（既存 absolute directory）も必要です。default、暗黙 download、fallback はありません。設定は推論に必要な import / resume の前処理段階で検証され、inspect と推論不要の export-only resume は model environment を読みません。Portable の decision-only retry は ASR / diarizer 推論を再実行しませんが、base engine bundle を構成するため基本4項目の environment が必要です。
+`--with-decisions` の実行時に Mac は `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` に実在する絶対 directory を要求し、その直下の ClauseTagger.mlpackage と tokenizer.json を Core ML provider が使います。Portable の処理資源解決には `MAC_AMBIENT_JEV_SILERO_MODEL`（既存 absolute file）、`QWEN3_ASR_ONNX_MODEL_DIRECTORY`（既存 absolute directory）、`QWEN3_ASR_ONNX_MODEL_SIZE`（`0.6b` または `1.7b`）が必要です。`--with-decisions` を指定する場合だけ、4つ目の `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY`（既存 absolute directory）も必要です。設定に既定値や暗黙 download はありません。inspect と推論不要の export-only resume は model environment を読みません。decision-only retry は ASR / VAD 推論を再実行しませんが、Portable の処理資源解決時には基本3項目も必要です。
 
 ### inspect と resume
 
@@ -836,11 +609,11 @@ resume は最初に output containment / session lookup の safety 検査と rea
 
 [SessionFileProcessingServiceTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/SessionFileProcessingServiceTests.swift) の9つの fake-service test functions は、注入 engine / provider と一時 session を使い、実モデルや実 CLI end-to-end を実行せず service の処理・export・cleanup を検証します。
 
-- `importKeepsCanonicalSessionAndPublishesTranscriptWithoutStdoutDependency` は import original、必須3段階の公開、materialized transcript と export の一致を確認します。
+- `importKeepsCanonicalSessionAndPublishesTranscriptWithoutStdoutDependency` は import original、segmentation / asr の2 run、materialized transcript と export の一致を確認します。
 - `inspectReportsDecisionRetryWithExactJSONAndDoesNotTouchEventsOrCreateResources` は read-only inspection、exact JSON、event 不変、resource factory 未呼出しを確認します。
 - `resumeOfDisabledOrSatisfiedTranscriptExportsWithoutResources` は判定無効または要求済み判定が完了済みの場合に resources を作らず、event を追加せず同じ配列を export することを確認します。
 - `interruptedImportedFinalizationResumesFromRunningMetadata` は中断した finalization を再走査後に全量再実行し、complete metadata と export を確認します。
-- `decisionOnlyResumeRetriesPublishedTargetsAndRecoversUnpublishedRuns` は公開済み retry target と未公開 decision run の双方を復旧し、ASR / VAD / diarizer を再実行しないことを確認します。
+- `decisionOnlyResumeRetriesPublishedTargetsAndRecoversUnpublishedRuns` は公開済み retry target と未公開 decision run の双方を復旧し、ASR / VAD を再実行しないことを確認します。
 - `failedDecisionRequestRejectsDecisionExportButKeepsPublishedLocalTranscript` は strict decision export failure、保持された local transcript / pending target、出力なしを確認します。
 - `failedImportCleansTemporarySessionOnlyWhenNotRetained` は失敗時に `keepSession` がない一時 session を削除し、指定時は保持することを確認します。
 - `invalidAliasesAndMissingAudioAreRejectedBeforeResourceCreation` は同一 path、missing audio、session 内 resume output を resources 作成前に拒否します。
@@ -872,20 +645,19 @@ driver は release の CLI と `MacAmbientJevEvaluateASR` の絶対 path、fixtu
 2. 全モデル環境変数を除いた環境で `--inspect-session` を実行する。
 3. 完了済みセッションを `--resume-session --with-decisions --threads 2` で再開し、出力を import と比較する。
 
-必須の環境変数は `MAC_AMBIENT_JEV_SILERO_MODEL`（ファイル）、`QWEN3_ASR_ONNX_MODEL_DIRECTORY`、`QWEN3_ASR_ONNX_MODEL_SIZE`（`0.6b` か `1.7b`）、`MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY`、`MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` です。いずれも未設定・空・相対 path・存在しない path は失敗で、skip しません。各コマンドには timeout があり、import と resume は 300 秒です。
+必須の環境変数は `MAC_AMBIENT_JEV_SILERO_MODEL`（ファイル）、`QWEN3_ASR_ONNX_MODEL_DIRECTORY`、`QWEN3_ASR_ONNX_MODEL_SIZE`（`0.6b` か `1.7b`）、`MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY`（decision model directory）です。未設定・空・相対 path・不正な path は失敗し、skip しません。各コマンドには timeout があり、import と resume は 300 秒です。
 
 検査内容は次のとおりです。
 
 - 全コマンドの終了コードが 0 で、import の stdout に `session_id:` 行がちょうど 1 つある。
 - 出力 JSON は 2 件以上の segment を時系列・重なりなし・音声長以内で持ち、各 `text` は日本語を含む。`clause_state` は `classified` で、clause slice は priority を持ち再試行待ちがない。
 - `text` を時刻順に連結した raw 文を `MacAmbientJevEvaluateASR`（製品の正規化と CER 評価）で参照文と比較し、正規化後 CER が 0.15 以下。
-- 話者の raw id が空でなく span が音声長に収まる。`SpeakerDisplayMapper` と同じ規則（先頭 start 順に Speaker 1–7、8 人目以降は OTHER、重なりがなければ UNKNOWN、80% 以上を占める話者の単独表示）で得た表示ラベルが Speaker 1–7、OTHER、UNKNOWN のどれかである。話者数は固定しない。
-- セッション folder に `session.json`、末尾まで完結した `events.jsonl`、`processing_metadata.json`、`storage.json`（imported original と import 時のフレーム数）があり、`audio/original.*` が入力と byte 単位で同一である。`audio` 以下に CAF が残らず、`recording.flac` がない。
-- `active_runs` の segmentation・asr・diarization・clause_boundary・content_priority が全てあり、それぞれ `processing.run.started` / `processing.run.completed`（成功、失敗数 0）が 1 つずつある。provenance の engine は Silero・Qwen3-ASR・Community-1 の ONNX engine で、ASR の model は [qwen3_asr_models.json](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/qwen3_asr_models.json) の `repository@commit`、`intra_op_threads` は 2 である。判定 run の engine は ONNX で、Core ML を名乗らない。境界・優先度の判定 event が active run にあり、保留中の判定対象がない。
+- セッション folder に `session.json`、末尾まで完結した `events.jsonl`、`processing_metadata.json`、`storage.json`（imported original と import 時のフレーム数）があり、`audio/original.*` が入力と byte 単位で同一である。audio directory 以下に `.caf` がなく、`recording.flac` と `.recording.flac.partial` もない。
+- `active_runs` の segmentation・asr・clause_boundary・content_priority があり、それぞれ `processing.run.started` / `processing.run.completed`（成功、失敗数 0）が1組ずつある。segmentation provenance の engine は `onnxruntime-silero-vad`、ASR provenance の engine は `onnxruntime-qwen3-asr` で、ASR model は [qwen3_asr_models.json](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/qwen3_asr_models.json) の `repository@commit`、`intra_op_threads` は2です。decision run の engine は ONNX で、Core ML を名乗りません。境界・優先度の判定 event が active run にあり、保留中の判定対象がありません。
 - 出力 segment と active ASR run の認識済み `asr.completed` event が segment ID と本文で一致する。
 - inspect は `action` が `none`、`maintenance` が `null` で、resume は `events.jsonl` を変えず、出力が import と同一である。
 
-driver 自身のテストは実モデルを使わず、偽の CLI と evaluator が作る session で、誤った transcript、欠けた stage、不正な話者、欠けたファイル、残った CAF、Core ML を名乗る判定 engine、import と異なる resume 出力が各々失敗することを確認します。POSIX のみで実行します。
+driver 自身のテストは実モデルを使わず、偽の CLI と evaluator が作る session で、誤った transcript、欠けた stage / file、残った CAF、Core ML を名乗る decision engine、import と異なる resume 出力が失敗することを確認します。POSIX のみで実行します。
 
 ```bash
 cd tools/linux-audio
@@ -896,18 +668,18 @@ uv run --python 3.12 --with pytest python -m pytest -q tests/test_process_record
 
 `bash scripts/verify_portable.sh --full-model` は Linux の opt-in 実行です。指定しない通常の Linux 検証は portable package build / test と self-tests で終わり、Python の ProcessRecording acceptance driver や engine process acceptance は実行しません。full-model は次を順に行います。
 
-1. ONNX Runtime、Silero、Qwen3-ASR tokenizer、clause tagger、Qwen3-ASR 0.6B（int4、`.build/qwen3-asr-models`）と Community-1 diarization を fetch し、PortableRuntime の実モデル検証に必要な環境変数を設定する。
-2. `RUN_MODEL_TESTS=1` で 4 engine の数値 suite（[SileroVADParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/SileroVADParityTests.swift)、[ONNXQwen3ASRModelTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXQwen3ASRModelTests.swift)、[Community1ONNXStageTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Community1ONNXStageTests.swift)、[ONNXClauseTaggerTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXClauseTaggerTests.swift)）を 1 つずつ実行する。実行された test 名と skip された test 名を出力し、1 件も実行されなかった suite は失敗とする。
+1. ONNX Runtime、Silero、Qwen3-ASR tokenizer、clause tagger、Qwen3-ASR 0.6B（int4、`.build/qwen3-asr-models`）を fetch し、PortableRuntime の実モデル検証に必要な環境変数を設定する。
+2. `RUN_MODEL_TESTS=1` で3つの数値 suite（[SileroVADParityTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/SileroVADParityTests.swift)、Qwen3-ASR model / token-reference tests、[ONNXClauseTaggerTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/ONNXClauseTaggerTests.swift)）を1つずつ実行する。実行・skip した test 名を出力し、suite で test が1件も実行されなければ失敗とする。
 3. `MacAmbientJevProcessRecording`、`MacAmbientJevEvaluateASR`、`MacAmbientJevEngineHarness` を release で build し、既存の `tools/linux-audio/process_recording_acceptance.py` を実行する。
 4. 続けて `scripts/engine_acceptance.py full-model` を `--threads 2` で実行し、実モデルを使う canonical 16 kHz mono の fake-capture host scenario と ProcessRecording baseline / resume の一致を検証する。full-model acceptance の契約は [偽キャプチャ engine テストハーネス](windows.md#偽キャプチャ-engine-テストハーネス) を参照する。
 
 fixture 入力の Qwen3-ASR は 0.6B で、full-model acceptance はこの固定 profile による処理経路を比較します。1.7B の CER は別の記録で扱います。
 
-Windows の `./scripts/test-windows.ps1 -FullModel` は通常の build / test、driver self-tests、deterministic fake-capture acceptance の後に pinned model fetch と同じ4つの数値 suite を実行します。release の ProcessRecording / EvaluateASR / EngineHarness を build して ONNX Runtime DLL を配置し、既存 ProcessRecording acceptance driver の後に新しい `full-model` engine acceptance を実行します。Linux と異なり、Windows は canonical 16 kHz mono に加えて、fixture の各 PCM16 sample を3回繰り返して両 channel に置いた 48 kHz stereo scenario を実行します。Windows full-model run は手動 opt-in であり、通常の Windows CI は deterministic acceptance のみで、実モデル acceptance を主張しません。
+Windows の `./scripts/test-windows.ps1 -FullModel` は通常の build / test、driver self-tests、deterministic fake-capture acceptance の後に pinned model fetch と同じ3つの数値 suite を実行します。release の ProcessRecording / EvaluateASR / EngineHarness を build して ONNX Runtime DLL を配置し、既存 ProcessRecording acceptance driver の後に新しい `full-model` engine acceptance を実行します。Linux と異なり、Windows は canonical 16 kHz mono に加えて、fixture の各 PCM16 sample を3回繰り返して両 channel に置いた 48 kHz stereo scenario を実行します。Windows full-model run は手動 opt-in であり、通常の Windows CI は deterministic acceptance のみで、実モデル acceptance を主張しません。
 
 ### CI の `linux-model-e2e`
 
-[portable-core.yml](../.github/workflows/portable-core.yml) の `linux-model-e2e` は `linux` と同じ trigger と draft の扱いで動く必須 job です（`swift:6.2-noble`、timeout 45 分）。まず ProcessRecording acceptance driver の self-test を実行し、続けて `verify_portable.sh --full-model` を実行します。この job は数値 suite と ProcessRecording acceptance に加え、EngineHost の fake-capture から実 PortableRuntime inference / decisions を通る canonical 16 kHz scenario を行います。モデル directory（`.build/` 以下の Qwen3-ASR 0.6B、tokenizer、Silero、Community-1、clause tagger）は OS・arch と、各 manifest と fetcher・`pinned_download.py` の hash を key に GitHub Actions の cache action へ保存します。broad な restore key はありません。cache が hit しても fetcher が全ファイルの SHA-256 を再検証し、破損した cache は別モデルで代替せず失敗します。ONNX Runtime は毎回取得します。
+[portable-core.yml](../.github/workflows/portable-core.yml) の `linux-model-e2e` は `linux` と同じ trigger と draft の扱いで動く必須 job です（`swift:6.2-noble`、timeout 45 分）。まず ProcessRecording acceptance driver の self-test を実行し、続けて `verify_portable.sh --full-model` を実行します。この job は数値 suite と ProcessRecording acceptance に加え、EngineHost の fake-capture から実 PortableRuntime inference / decisions を通る canonical 16 kHz scenario を行います。モデル directory（`.build/qwen3-asr-models`、`.build/qwen3-asr-tokenizer`、`.build/silero-vad`、`.build/clause-tagger-onnx`）は OS・arch と各 manifest、fetcher、`pinned_download.py` の hash を key に GitHub Actions の cache action へ保存します。broad な restore key はありません。cache が hit しても fetcher が全ファイルの SHA-256 を再検証し、破損した cache は別モデルで代替せず失敗します。ONNX Runtime は毎回取得します。
 
 ## セッションの CER
 
@@ -932,7 +704,7 @@ swift run --package-path app/MacAmbientJev MacAmbientJevEvaluateSession \
 
 入力する `segments.json` の各要素から `start_ms` と `text` を読む。保存順に本文を改行で連結して CER を求める。レポートは `id` と `asr_evaluation`（raw/normalized CER と normalizer version）を持つ。
 
-Linux runner の全音声一つの ASR artifact には `MacAmbientJevEvaluateASR`、話者分離 artifact には `MacAmbientJevEvaluateDiarization` を使う。どちらも参照・artifact の二位置引数と任意の末尾 `--output` を受け取る。詳細は [linux.md](linux.md) を参照する。
+Linux runner の ASR artifact は `MacAmbientJevEvaluateASR` で評価します。参照・artifact の二位置引数と任意の末尾 `--output` を受け取ります。詳細は [linux.md](linux.md) を参照してください。
 
 ## macOS のファイル処理長時間計測
 
@@ -996,7 +768,7 @@ Qwen と VAD のキャッシュ済みモデルが必要。閉じた VAD 区間�
 
 ### 保存整理のテスト
 
-Runtime の保存整理テストは、確定処理の全結果（成功・発話なし・VAD／話者分離／ASR の失敗・話者分離中のキャンセル・一時停止）と録音・import の組で、話者分離入力 CAF と import の処理タイムラインが残らないこと、開始失敗でも古い一時ファイルが消えること、削除失敗・変換失敗のメッセージ、変換後の再処理が PCM 由来と同じ文字起こしを返し FLAC を変えないこと、失敗した再処理が公開結果と FLAC を保つことを、音声から結果を導く fake engine で確認する。AppleSupport の起動時整理テストは、全セッションの整理が収束し、整理に失敗したセッションをフォルダー名付きで返し、録音中のセッションに触れないことを確認する。App テストは、起動時の保存整理中に、音声がまだ `recordingPCM` の録音の書き出しが、書き出し先へ触れる前に整理中のメッセージで止まることを確認する。
+Runtime の [SessionStorageFinalizationTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/SessionStorageFinalizationTests.swift) は録音・import の finalization で success / no-speech / VAD failure / ASR failure / pause を検証します。成功した録音は FLAC 化して processing timeline を除去し、失敗・pause の録音は PCM と timeline を保持します。import は処理 timeline を除去します。開始失敗を含む一時 partial の cleanup、削除・compaction failure、再処理時の transcript / FLAC 保持も確認します。[FinalTranscriptPipelineTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/FinalTranscriptPipelineTests.swift) は VAD / ASR / pacing / compaction 中の cancellation が finalization を durable な pause にし、再開で完了することを検証します。AppleSupport の起動時整理テストは、全 session の整理が収束し、失敗した session を folder 名付きで返し、録音中の session に触れないことを確認します。App test は起動時整理中に `recordingPCM` の export を書き出し先に触れる前に止めます。
 
 ## ポータブル ONNX の書き出しと受入
 
@@ -1035,4 +807,4 @@ suite はリポジトリルートで実行する。
 bash scripts/verify_linux_audio.sh --smoke
 ```
 
-Python unit test は artifact、baseline、CSJ parser、VOICEVOX、overflow resolver、runner 等のロジックを検証する。suite はさらに portable Swift と依存の有無を確認する。full の必須 fixture、device、参照種別、Nemotron の明示指定と CI のモデル別実推論は [linux.md](linux.md) のとおり。依存欠落や未実行を PASS と解釈しない。
+Python unit test は artifact、baseline、CSJ parser、VOICEVOX CLI、ProcessRecording acceptance driver、suite runner を検証します。suite は portable Swift と依存の有無も確認します。full mode の入力と実モデル実行は [linux.md](linux.md) を参照してください。依存欠落や未実行を PASS と解釈しません。

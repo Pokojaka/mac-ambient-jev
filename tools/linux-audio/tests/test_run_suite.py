@@ -141,48 +141,6 @@ def test_asr_checks_require_a_verbatim_reference(tmp_path):
         )
 
 
-def test_diarization_checks_pass_calibration_and_remove_stale_outputs(
-    monkeypatch,
-    tmp_path,
-):
-    work = tmp_path / "work"
-    work.mkdir()
-    (work / "nemotron3.json").write_text('{"stale":true}')
-    (work / "diarization-evaluation.json").write_text('{"stale":true}')
-    seen = record_optional_commands(monkeypatch, work)
-    reference = tmp_path / "speaker-reference.json"
-
-    checks = run_suite.diarization_model_checks(
-        here=tmp_path / "tools" / "linux-audio",
-        audio_path=tmp_path / "fixture.wav",
-        speaker_reference=reference,
-        work_root=work,
-        device="cuda:1",
-        profile="low-1.04s",
-        match_threshold=0.82,
-        ambiguity_margin=0.04,
-        min_clean_speech_ms=750,
-    )
-
-    assert [check.name for check in checks] == [
-        "nemotron3-runner",
-        "diarization-evaluator",
-        "diarization-baseline-record",
-    ]
-    assert not (work / "nemotron3.json").exists()
-    runner = seen[0][1]
-    for flag, value in (
-        ("--device", "cuda:1"),
-        ("--profile", "low-1.04s"),
-        ("--match-threshold", "0.82"),
-        ("--ambiguity-margin", "0.04"),
-        ("--min-clean-speech-ms", "750"),
-    ):
-        assert runner[runner.index(flag) + 1] == value
-    assert str(reference) in seen[1][1]
-    assert checks[2].status is Status.SKIPPED_MISSING_DEPENDENCY
-
-
 def write_asr_inputs(tmp_path):
     audio = tmp_path / "audio.wav"
     audio.write_bytes(b"audio")
@@ -275,12 +233,12 @@ def stub_model_suite(monkeypatch):
             name,
             lambda name, *args: CheckResult(name, Status.PASS),
         )
-    for name in ("asr_model_checks", "diarization_model_checks"):
-        def spy(name=name, **kwargs):
-            captured[name] = kwargs
-            return [CheckResult(name, Status.PASS)]
 
-        monkeypatch.setattr(run_suite, name, spy)
+    def spy(name="asr_model_checks", **kwargs):
+        captured[name] = kwargs
+        return [CheckResult(name, Status.PASS)]
+
+    monkeypatch.setattr(run_suite, "asr_model_checks", spy)
     return captured
 
 
@@ -291,17 +249,9 @@ FULL = [
     "--work-root", "work",
     "--device", "cpu",
 ]
-DIARIZATION = [
-    "--with-diarization",
-    "--full-speaker-reference", "speaker-reference.json",
-    "--diarization-profile", "offline-30.4s",
-    "--speaker-match-threshold", "0.82",
-    "--speaker-ambiguity-margin", "0.04",
-    "--min-clean-speech-ms", "750",
-]
 
 
-def test_main_full_passes_references_and_omits_diarization(
+def test_main_full_passes_references(
     monkeypatch,
     capsys,
 ):
@@ -312,7 +262,6 @@ def test_main_full_passes_references_and_omits_diarization(
     )
 
     assert result == 0
-    assert "diarization_model_checks" not in captured
     references = captured["asr_model_checks"]["asr_references"]
     assert {kind: path.name for kind, path in references.items()} == {
         "verbatim": "reference-verbatim.txt",
@@ -321,28 +270,12 @@ def test_main_full_passes_references_and_omits_diarization(
     json.loads(capsys.readouterr().out)
 
 
-def test_main_full_with_diarization_passes_calibration(monkeypatch):
-    captured = stub_model_suite(monkeypatch)
-
-    assert run_suite.main(FULL + DIARIZATION) == 0
-
-    diarization = captured["diarization_model_checks"]
-    assert diarization["speaker_reference"].name == "speaker-reference.json"
-    assert diarization["profile"] == "offline-30.4s"
-    assert diarization["match_threshold"] == 0.82
-    assert diarization["ambiguity_margin"] == 0.04
-    assert diarization["min_clean_speech_ms"] == 750
-
-
 @pytest.mark.parametrize(
     "argv",
     [
-        ["--smoke", "--with-diarization"],
         ["--smoke", "--device", "cpu"],
         ["--full"],
         FULL[:-2],
-        FULL + DIARIZATION[:-2],
-        FULL + ["--speaker-match-threshold", "0.82"],
     ],
 )
 def test_main_rejects_incomplete_or_misplaced_options(monkeypatch, argv):
@@ -377,9 +310,9 @@ def test_missing_dependency_is_not_reported_as_pass():
     summary = run_suite.summarize([
         CheckResult("core", Status.PASS),
         CheckResult(
-            "nemotron",
+            "qwen3-asr",
             Status.SKIPPED_MISSING_DEPENDENCY,
-            "nemo missing",
+            "qwen_asr missing",
         ),
     ])
     assert summary.overall == Status.SKIPPED_MISSING_DEPENDENCY

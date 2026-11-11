@@ -18,8 +18,6 @@ on:
       - 'app/MacAmbientJev/Sources/CWindowsSession/**'
       - 'app/MacAmbientJev/Sources/MacAmbientJevEvaluate*/**'
       - 'app/MacAmbientJev/Sources/MacAmbientJevTranscribeFile/**'
-      - 'app/MacAmbientJev/Sources/MacAmbientJevDiarizationMeasurement/**'
-      - 'app/MacAmbientJev/Sources/MacAmbientJevDiarizeFile/**'
       - 'app/MacAmbientJev/Tests/**'
       - 'app/Windows/**'
       - 'global.json'
@@ -29,15 +27,8 @@ on:
       - 'scripts/generate_onnx_fixture.py'
       - 'scripts/fetch_silero_vad.py'
       - 'scripts/test_fetch_silero_vad.py'
-      - 'scripts/fetch_community1_diarization.py'
-      - 'scripts/test_fetch_community1_diarization.py'
       - 'scripts/fetch_clause_tagger.py'
       - 'scripts/test_fetch_clause_tagger.py'
-      - 'scripts/compare_diarization_runs.py'
-      - 'scripts/test_compare_diarization_runs.py'
-      - 'scripts/prepare_canonical_caf.py'
-      - 'scripts/test_prepare_canonical_caf.py'
-      - 'app/MacAmbientJev/Sources/MacAmbientJevDiarization/Resources/**'
       - 'scripts/fetch_qwen3_asr_tokenizer.py'
       - 'scripts/test_fetch_qwen3_asr_tokenizer.py'
       - 'scripts/generate_qwen3_tokenizer_fixture.py'
@@ -86,8 +77,6 @@ on:
       - 'app/MacAmbientJev/Sources/CWindowsSession/**'
       - 'app/MacAmbientJev/Sources/MacAmbientJevEvaluate*/**'
       - 'app/MacAmbientJev/Sources/MacAmbientJevTranscribeFile/**'
-      - 'app/MacAmbientJev/Sources/MacAmbientJevDiarizationMeasurement/**'
-      - 'app/MacAmbientJev/Sources/MacAmbientJevDiarizeFile/**'
       - 'app/MacAmbientJev/Tests/**'
       - 'app/Windows/**'
       - 'global.json'
@@ -97,15 +86,8 @@ on:
       - 'scripts/generate_onnx_fixture.py'
       - 'scripts/fetch_silero_vad.py'
       - 'scripts/test_fetch_silero_vad.py'
-      - 'scripts/fetch_community1_diarization.py'
-      - 'scripts/test_fetch_community1_diarization.py'
       - 'scripts/fetch_clause_tagger.py'
       - 'scripts/test_fetch_clause_tagger.py'
-      - 'scripts/compare_diarization_runs.py'
-      - 'scripts/test_compare_diarization_runs.py'
-      - 'scripts/prepare_canonical_caf.py'
-      - 'scripts/test_prepare_canonical_caf.py'
-      - 'app/MacAmbientJev/Sources/MacAmbientJevDiarization/Resources/**'
       - 'scripts/fetch_qwen3_asr_tokenizer.py'
       - 'scripts/test_fetch_qwen3_asr_tokenizer.py'
       - 'scripts/generate_qwen3_tokenizer_fixture.py'
@@ -286,10 +268,7 @@ jobs:
           python3 -B scripts/check_test_time_limits.py
           python3 -B scripts/test_fetch_onnxruntime.py
           python3 -B scripts/test_fetch_silero_vad.py
-          python3 -B scripts/test_fetch_community1_diarization.py
           python3 -B scripts/test_fetch_clause_tagger.py
-          python3 -B scripts/test_compare_diarization_runs.py
-          python3 -B scripts/test_prepare_canonical_caf.py
           python3 -B scripts/test_fetch_qwen3_asr_tokenizer.py
           python3 -B scripts/test_pinned_download.py
           python3 -B scripts/test_generate_silero_reference.py
@@ -329,9 +308,8 @@ jobs:
             .build/qwen3-asr-models
             .build/qwen3-asr-tokenizer
             .build/silero-vad
-            .build/community1-diarization
             .build/clause-tagger-onnx
-          key: models-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/qwen3_asr_models.json', 'app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/clause_tagger_model.json', 'app/MacAmbientJev/Sources/MacAmbientJevDiarization/Resources/community1_diarization_models.json', 'scripts/fetch_qwen3_asr_model.py', 'scripts/fetch_qwen3_asr_tokenizer.py', 'scripts/fetch_silero_vad.py', 'scripts/fetch_community1_diarization.py', 'scripts/fetch_clause_tagger.py', 'scripts/pinned_download.py') }}
+          key: models-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/qwen3_asr_models.json', 'app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/clause_tagger_model.json', 'scripts/fetch_qwen3_asr_model.py', 'scripts/fetch_qwen3_asr_tokenizer.py', 'scripts/fetch_silero_vad.py', 'scripts/fetch_clause_tagger.py', 'scripts/pinned_download.py') }}
       - name: Fetch models (hashes are verified on cache hits), run numerical suites and acceptance driver
         run: bash scripts/verify_portable.sh --full-model
       - name: Save model directories
@@ -342,7 +320,6 @@ jobs:
             .build/qwen3-asr-models
             .build/qwen3-asr-tokenizer
             .build/silero-vad
-            .build/community1-diarization
             .build/clause-tagger-onnx
           key: ${{ steps.model-directories.outputs.cache-primary-key }}
       - name: Upload Linux model E2E test events
@@ -510,9 +487,8 @@ jobs:
             .build/qwen3-asr-models
             .build/qwen3-asr-tokenizer
             .build/silero-vad
-            .build/community1-diarization
             .build/clause-tagger-onnx
-          key: models-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/qwen3_asr_models.json', 'app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/clause_tagger_model.json', 'app/MacAmbientJev/Sources/MacAmbientJevDiarization/Resources/community1_diarization_models.json', 'scripts/fetch_qwen3_asr_model.py', 'scripts/fetch_qwen3_asr_tokenizer.py', 'scripts/fetch_silero_vad.py', 'scripts/fetch_community1_diarization.py', 'scripts/fetch_clause_tagger.py', 'scripts/pinned_download.py') }}
+          key: models-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/qwen3_asr_models.json', 'app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/clause_tagger_model.json', 'scripts/fetch_qwen3_asr_model.py', 'scripts/fetch_qwen3_asr_tokenizer.py', 'scripts/fetch_silero_vad.py', 'scripts/fetch_clause_tagger.py', 'scripts/pinned_download.py') }}
       # Full-build artifacts rely on GitHub's stable workspace layout; never restore across OS/arch/toolchain.
       - name: Cache SwiftPM build
         id: swiftpm-build
@@ -579,7 +555,6 @@ jobs:
             .build/qwen3-asr-models
             .build/qwen3-asr-tokenizer
             .build/silero-vad
-            .build/community1-diarization
             .build/clause-tagger-onnx
           key: ${{ steps.model-directories.outputs.cache-primary-key }}
       - name: Save SwiftPM build

@@ -51,7 +51,7 @@ RUNTIME_BASENAMES = frozenset({
     "audio-chunks.jsonl", "audio-gaps.jsonl", "transcript.txt", "segments.json",
     "audio.wav", "audio.m4a", "audio.flac", "storage.json", "recording.flac", "run.json", "engine-metrics.json",
     "memory.jsonl", "thermal.jsonl", "reference-verbatim.txt", "reference-content.txt",
-    "fixture.json", "scenario.json", "qwen3-asr.json",
+    "fixture.json", "qwen3-asr.json",
     "asr-evaluation-verbatim.json", "asr-evaluation-content.json",
     "qwen3-asr-verbatim-current.json", "qwen3-asr-content-current.json",
     "stdout.log", "stderr.log", "source-snapshot.tar.gz", "disk-usage.json",
