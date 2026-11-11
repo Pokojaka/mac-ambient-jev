@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import MacAmbientJevPipeline
 import Testing
@@ -75,4 +76,33 @@ private struct SecureAudioFixture {
     }
     #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.outside.path) == [fixture.sentinel.lastPathComponent])
     #expect(try Data(contentsOf: fixture.sentinel) == fixture.original)
+}
+
+@Test func descriptorDecoderKeepsOpenedWAVWhenPathIsReplaced() async throws {
+    let fixture = try SecureAudioFixture()
+    defer { fixture.cleanup() }
+    try FileManager.default.createDirectory(at: fixture.layout.audioDirectory, withIntermediateDirectories: true)
+    let url = fixture.layout.audioDirectory.appending(path: "import.wav")
+    try {
+        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 3))
+        buffer.frameLength = 3
+        let samples = try #require(buffer.floatChannelData?[0])
+        samples[0] = 0.25
+        samples[1] = -0.5
+        samples[2] = 0.75
+        let writer = try AVAudioFile(forWriting: url, settings: format.settings)
+        try writer.write(from: buffer)
+    }()
+    let reader = try DescriptorAudioReader(url: url, sessionURL: fixture.layout.sessionURL)
+    let retained = fixture.layout.audioDirectory.appending(path: "retained.wav")
+    try FileManager.default.moveItem(at: url, to: retained)
+    try fixture.link(url)
+    let readBuffer = try #require(AVAudioPCMBuffer(pcmFormat: reader.processingFormat, frameCapacity: 3))
+    try reader.read(into: readBuffer, frameCount: 3)
+    #expect(readBuffer.frameLength == 3)
+    let readSamples = try #require(readBuffer.floatChannelData?[0])
+    #expect(Array(UnsafeBufferPointer(start: readSamples, count: 3)) == [0.25, -0.5, 0.75])
+    #expect(try Data(contentsOf: fixture.sentinel) == fixture.original)
+    #expect(throws: CocoaError.self) { _ = try DescriptorAudioReader(url: url, sessionURL: fixture.layout.sessionURL) }
 }

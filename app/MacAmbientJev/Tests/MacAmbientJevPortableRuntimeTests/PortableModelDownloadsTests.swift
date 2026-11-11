@@ -26,6 +26,13 @@ private final class FakeTransport: ModelDownloadTransport, @unchecked Sendable {
     }
 }
 
+private final class ProgressLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [ModelDownloadProgress] = []
+    func add(_ value: ModelDownloadProgress) { lock.lock(); values.append(value); lock.unlock() }
+    var all: [ModelDownloadProgress] { lock.lock(); defer { lock.unlock() }; return values }
+}
+
 struct PortableModelDownloadsTests {
     private func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appending(path: "PortableModelDownloadsTests-\(UUID().uuidString)", directoryHint: .isDirectory)
@@ -50,6 +57,30 @@ struct PortableModelDownloadsTests {
             )
         }
         #expect(transport.opened == [url])
+    }
+
+    @Test func nothingMissingOpensNoTransportAndReportsNoProgress() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let layout = PortableInstalledModelLayout(bundledRoot: root, downloadedRoot: root)
+        let configuration = try PortableProcessingConfiguration.installed(
+            layout: layout, qwen3Size: .small, threads: 1, logicalCPUCount: 4, withDecisions: false
+        )
+        try FileManager.default.createDirectory(at: configuration.qwen3ModelDirectory, withIntermediateDirectories: true)
+        for file in configuration.qwen3Size.manifestEntry.files {
+            let url = configuration.qwen3ModelDirectory.appending(path: file.name)
+            try Data().write(to: url)
+            let handle = try FileHandle(forWritingTo: url)
+            defer { try? handle.close() }
+            try handle.truncate(atOffset: UInt64(file.byteCount))
+        }
+        let transport = FakeTransport([:])
+        let log = ProgressLog()
+        try await PortableModelDownloads.fetchMissing(
+            configuration: configuration, transport: transport, onProgress: { log.add($0) }
+        )
+        #expect(transport.opened.isEmpty)
+        #expect(log.all.isEmpty)
     }
 
     @Test func aDownloadedFileWithWrongBytesIsDeletedAndReportedInvalid() throws {

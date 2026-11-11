@@ -2,7 +2,7 @@ import Foundation
 import MacAmbientJevCore
 
 /// Writes the rows the screen shows, one line per utterance:
-/// `[mm:ss] <text>`.
+/// `[mm:ss] <text with line breaks replaced by spaces>`.
 public enum TranscriptTextRenderer {
     public static func render(_ segments: [MaterializedTranscriptSegment]) throws -> String {
         try LiveTranscriptProjection().rows(for: segments).map { row in

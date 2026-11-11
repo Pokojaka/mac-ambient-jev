@@ -252,6 +252,47 @@ func finishingALiveRecordingCompactsItToFLAC() async throws {
 }
 
 @Test
+func aCleanupFailureAfterACompletedRunKeepsTheTranscriptAndSaysSo() async throws {
+    let fixture = try await makeFixture(.recording, samples: silentSamples)
+    defer { fixture.cleanUp() }
+    try SessionStorageMaintainer.run(.compactRecording, layout: fixture.layout, manifest: fixture.manifest())
+    try fixture.seedStaleTransients()
+    let partial = fixture.layout.recordingFLACPartialURL
+    try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: partial.path)
+    defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: partial.path) }
+
+    let (result, recorder) = try await fixture.process(
+        fixture.processor(engines(for: .noSpeech))
+    )
+
+    #expect(result.disposition == .failed)
+    #expect(result.retainedTranscript == .finalized)
+    #expect(result.message?.hasPrefix("文字起こしは保存しましたが、音声の一時ファイルを削除できませんでした: ") == true)
+    #expect(await recorder.statuses.last == result.message)
+    #expect(try ProcessingMetadataStore(sessionURL: fixture.layout.sessionURL).load()?.activeRuns != nil)
+    #expect(try SessionStorageMaintenance.required(layout: fixture.layout, manifest: fixture.manifest()) != nil)
+}
+
+@Test
+func aCleanupFailureAfterAFailedRunFollowsTheRunError() async throws {
+    let fixture = try await makeFixture(.recording, samples: speechSamples)
+    defer { fixture.cleanUp() }
+    try fixture.seedStaleTransients()
+    let partial = fixture.layout.recordingFLACPartialURL
+    try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: partial.path)
+    defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: partial.path) }
+
+    let (result, _) = try await fixture.process(
+        fixture.processor(engines(for: .vadFails))
+    )
+
+    #expect(result.disposition == .failed)
+    let message = try #require(result.message)
+    let separator = try #require(message.range(of: "。音声の一時ファイルを削除できませんでした: "))
+    #expect(!message[..<separator.lowerBound].isEmpty)
+}
+
+@Test
 func aCompactionFailureKeepsTheTranscriptAndPCMAndLaunchMaintenanceFinishesIt() async throws {
     let fixture = try await makeFixture(.recording, samples: silentSamples)
     defer { fixture.cleanUp() }
