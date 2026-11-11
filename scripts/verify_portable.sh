@@ -43,20 +43,15 @@ run_model_suite() {
 }
 
 run_full_model() {
-  local models_directory qwen_model diarization bin_path
+  local models_directory qwen_model bin_path
   models_directory="$ROOT/.build/qwen3-asr-models"
   mkdir -p "$models_directory"
   qwen_model="$(python3 "$ROOT/scripts/fetch_qwen3_asr_model.py" 0.6b "$models_directory")"
   export QWEN3_ASR_ONNX_MODEL_DIRECTORY="$qwen_model"
   export QWEN3_ASR_ONNX_MODEL_SIZE=0.6b
   printf 'Qwen3-ASR 0.6B model: %s\n' "$QWEN3_ASR_ONNX_MODEL_DIRECTORY"
-  diarization="$(python3 "$ROOT/scripts/fetch_community1_diarization.py")"
-  export MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY="$diarization"
-  printf 'Community-1 diarization model: %s\n' "$MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY"
-
   run_model_suite "Silero VAD" 'SileroVADParityTests'
   run_model_suite "Qwen3-ASR" 'ONNXQwen3ASRModelTests|Qwen3ASRTokenReferenceTests'
-  run_model_suite "Community-1 diarization" 'Community1ONNXStageTests|Community1ONNXEndToEndTests'
   run_model_suite "clause tagger" 'ONNXClauseTaggerTests'
 
   swift build --package-path "$PACKAGE" -c release --product MacAmbientJevProcessRecording
@@ -92,7 +87,6 @@ if [ "$FULL_MODEL" = 1 ]; then
   exit 0
 fi
 python3 -B scripts/test_fetch_silero_vad.py
-python3 -B scripts/test_fetch_community1_diarization.py
 python3 -B scripts/test_fetch_clause_tagger.py
 python3 -B scripts/test_fetch_qwen3_asr_tokenizer.py
 python3 -B scripts/test_fetch_qwen3_asr_model.py

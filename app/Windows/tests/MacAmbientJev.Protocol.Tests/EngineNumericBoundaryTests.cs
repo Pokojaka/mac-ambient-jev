@@ -10,9 +10,8 @@ namespace MacAmbientJev.Protocol.Tests;
 
 public sealed class EngineNumericBoundaryTests
 {
-    private const string Row = """{"row_id":"row","start_ms":0,"end_ms":1,"text":"text","headings":[],"clause_state":null}""";
+    private const string Row = """{"row_id":"row","start_ms":0,"end_ms":1,"text":"text","clause_state":null}""";
     private const string Queued = """{"session_id":"queued","stage":"asr"}""";
-    private const string Speaker = """{"speaker_id":"speaker","display_label":"Speaker 1","start_ms":0,"end_ms":1}""";
     private const string Session = """{"folder_id":"folder","session_id":"s","status":"finalized","error":null,"display_name":"Session","status_text":"Finalized","folder_path":"/sessions/folder","export_path":null,"can_reprocess":true,"can_retry_decisions":true,"can_export":true,"metadata":{"kind":"readable","created_at":0,"source":{"kind":"microphone"},"audio":{"kind":"available"},"has_transcript":false}}""";
     private const string State = """{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[],"presentation":{"recording_status_text":"Idle","recording_tone":"neutral","preparation_phase":"ready","preparation_status_text":null,"recovery_status_text":null,"processing_status_text":null,"live_failure_notices":[],"silence_warning_active":false,"silence_warning_text":null,"audio_gap_count":0,"audio_gap_text":null,"processing_indicator":"idle"}}""";
 
@@ -45,7 +44,6 @@ public sealed class EngineNumericBoundaryTests
         {
             EngineCommand.SessionList item when command == "session.list" => item.Payload.Limit,
             EngineCommand.TranscriptRead item when command == "transcript.read" => item.Payload.Limit,
-            EngineCommand.TranscriptRowDetails item when command == "transcript.row_details" => item.Payload.Limit,
             _ => throw new InvalidOperationException("Decoded request did not match its command."),
         };
         object? RequestThreads(object value) => Assert.IsType<EngineCommand.SettingsReplace>(Assert.IsType<EngineRequest>(value).Command).Payload.Settings.Threads;
@@ -74,14 +72,12 @@ public sealed class EngineNumericBoundaryTests
         {
             "session.list" => Request(command, "{\"cursor\":null,\"limit\":" + limit.ToString(CultureInfo.InvariantCulture) + "}"),
             "transcript.read" => Request(command, "{\"session_id\":\"s\",\"revision\":null,\"cursor\":null,\"limit\":" + limit.ToString(CultureInfo.InvariantCulture) + "}"),
-            "transcript.row_details" => Request(command, "{\"session_id\":\"s\",\"revision\":\"1\",\"row_id\":\"r\",\"cursor\":null,\"limit\":" + limit.ToString(CultureInfo.InvariantCulture) + "}"),
             _ => throw new ArgumentOutOfRangeException(nameof(command)),
         };
         foreach (var (command, values, maximum) in new[]
                  {
                      ("session.list", new[] { 0, 1, 100, 101 }, 100),
                      ("transcript.read", new[] { 0, 1, 200, 201 }, 200),
-                     ("transcript.row_details", new[] { 0, 1, 200, 201 }, 200),
                  })
         {
             foreach (var limit in values)
@@ -112,8 +108,6 @@ public sealed class EngineNumericBoundaryTests
         Add(typeof(EngineSessionListResult), SessionList(101), WireError.Constraint, "$.sessions");
         Add(typeof(EngineTranscriptPage), TranscriptPage(200), null, "$.rows");
         Add(typeof(EngineTranscriptPage), TranscriptPage(201), WireError.Constraint, "$.rows");
-        Add(typeof(EngineTranscriptRowDetailsPage), RowDetailsPage(200), null, "$.speakers");
-        Add(typeof(EngineTranscriptRowDetailsPage), RowDetailsPage(201), WireError.Constraint, "$.speakers");
         Add(typeof(EngineRowsPayload), RowsChanges(100, 100), null, "$.rows");
         Add(typeof(EngineRowsPayload), RowsChanges(101, 100), WireError.Constraint, "$.rows");
 
@@ -190,18 +184,6 @@ public sealed class EngineNumericBoundaryTests
         return new JsonObject { ["session_id"] = "s", ["revision"] = "1", ["rows"] = rows, ["next_cursor"] = null, ["previous_cursor"] = null }.ToJsonString();
     }
 
-    private static string RowDetailsPage(int count)
-    {
-        var speakers = new JsonArray();
-        var sample = JsonNode.Parse(Speaker)!;
-        for (var index = 0; index < count; index++) speakers.Add(sample.DeepClone());
-        return new JsonObject
-        {
-            ["session_id"] = "s", ["revision"] = "1", ["row_id"] = "r", ["clause_state"] = "classified",
-            ["clause_state_text"] = "Classified", ["speakers"] = speakers, ["next_cursor"] = null, ["previous_cursor"] = null,
-        }.ToJsonString();
-    }
-
     private static string RowsChanges(int rowCount, int removedCount)
     {
         var rows = new JsonArray();
@@ -223,7 +205,7 @@ public sealed class EngineNumericBoundaryTests
     }
 
     private static string RowWithTimes(long start, long end) =>
-        new JsonObject { ["row_id"] = "row", ["start_ms"] = start, ["end_ms"] = end, ["text"] = "text", ["headings"] = new JsonArray(), ["clause_state"] = null }.ToJsonString();
+        new JsonObject { ["row_id"] = "row", ["start_ms"] = start, ["end_ms"] = end, ["text"] = "text", ["clause_state"] = null }.ToJsonString();
 
     private sealed record NumericCase(Type Type, string Json, WireError? Error, string Path, object? Expected, Func<object, object?>? Read);
 }

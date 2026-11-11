@@ -82,23 +82,23 @@ public sealed class EngineTypedCodecTests
             AssertOversized(() => EngineCodec.DecodeOutput(raw), placement.Path);
         });
 
-        var unicode = new EngineTranscriptRow("unicode", 0, 1, new string('界', 87_400), [], null);
+        var unicode = new EngineTranscriptRow("unicode", 0, 1, new string('界', 87_400), null);
         Assert.True(unicode.Text.Length < EngineCodec.MaxRowBytes);
         Assert.True(StrictWireCodec.Encode(unicode).Length > EngineCodec.MaxRowBytes);
         AssertOversized(() => EngineCodec.EncodeOutput(RowsOutput([unicode])), "$.payload.rows[0]");
-        var escaped = new EngineTranscriptRow("escaped", 0, 1, new string('\n', 131_099) + "x", [], null);
+        var escaped = new EngineTranscriptRow("escaped", 0, 1, new string('\n', 131_099) + "x", null);
         Assert.True(escaped.Text.Length < EngineCodec.MaxRowBytes);
         Assert.True(StrictWireCodec.Encode(escaped).Length > EngineCodec.MaxRowBytes);
         AssertOversized(() => EngineCodec.EncodeOutput(RowsOutput([escaped])), "$.payload.rows[0]");
 
         var aggregate = Enumerable.Range(0, 4)
-            .Select(index => new EngineTranscriptRow("row-" + index, 0, 1, new string('x', 200_000), [], null)).ToArray();
+            .Select(index => new EngineTranscriptRow("row-" + index, 0, 1, new string('x', 200_000), null)).ToArray();
         var aggregateRecord = EngineCodec.EncodeOutput(RowsOutput(aggregate));
         Assert.InRange(aggregateRecord.Length - 1, 700_000, StrictJsonValidator.MaxLineBytes - 1);
         _ = EngineCodec.DecodeOutput(Body(aggregateRecord));
 
         var overAggregate = Enumerable.Range(0, 5)
-            .Select(index => new EngineTranscriptRow("row-" + index, 0, 1, new string('x', 220_000), [], null)).ToArray();
+            .Select(index => new EngineTranscriptRow("row-" + index, 0, 1, new string('x', 220_000), null)).ToArray();
         Assert.All(overAggregate, row => Assert.True(StrictWireCodec.Encode(row).Length <= EngineCodec.MaxRowBytes));
         var lineError = Assert.Throws<ProtocolException>(() => EngineCodec.EncodeOutput(RowsOutput(overAggregate)));
         Assert.Equal(ProtocolError.LineTooLong, lineError.Error);
@@ -107,13 +107,6 @@ public sealed class EngineTypedCodecTests
         var detailRecord = EngineCodec.EncodeOutput(ErrorOutput([detail]));
         Assert.True(detailRecord.Length < StrictJsonValidator.MaxLineBytes);
         _ = EngineCodec.DecodeOutput(Body(detailRecord));
-        var speaker = new EngineTranscriptSpeakerSpan("speaker", new string('s', EngineCodec.MaxRowBytes + 32), 0, 1);
-        var page = new EngineTranscriptRowDetailsPage("s", ID(1), "row", EngineClauseState.Classified,
-            "classified", [speaker], null, null);
-        var speakerRecord = EngineCodec.EncodeOutput(new EngineOutput(1, ID(1), ID(2),
-            new EngineEvent.Completed(new EngineResult.TranscriptRowDetails(page))));
-        Assert.True(speakerRecord.Length < StrictJsonValidator.MaxLineBytes);
-        _ = EngineCodec.DecodeOutput(Body(speakerRecord));
     }
 
     [Fact]
@@ -237,8 +230,8 @@ public sealed class EngineTypedCodecTests
 
     private static EngineTranscriptRow RowWithEncodedLength(int byteCount)
     {
-        var overhead = StrictWireCodec.Encode(new EngineTranscriptRow("limit", 0, 1, "x", [], null)).Length - 1;
-        return new EngineTranscriptRow("limit", 0, 1, new string('x', byteCount - overhead), [], null);
+        var overhead = StrictWireCodec.Encode(new EngineTranscriptRow("limit", 0, 1, "x", null)).Length - 1;
+        return new EngineTranscriptRow("limit", 0, 1, new string('x', byteCount - overhead), null);
     }
 
     private static (EngineOutput Output, string Path)[] Placements(EngineTranscriptRow row)

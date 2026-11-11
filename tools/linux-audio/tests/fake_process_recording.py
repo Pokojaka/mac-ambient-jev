@@ -51,7 +51,6 @@ def build_session(session: Path, audio: Path, session_id: str, mode: str, segmen
     runs = {
         "segmentation": ("segmentation", provenance("onnxruntime-silero-vad", "silero_vad.onnx")),
         "asr": ("asr", provenance("onnxruntime-qwen3-asr", MODEL, {"intra_op_threads": "2"})),
-        "diarization": ("diarization", provenance("onnxruntime-community1-diarizer", "community-1")),
         "clause_boundary": ("clauseBoundary", provenance(
             "coreml-clause-tagger" if mode == "coreml_decision" else "onnxruntime-clause-tagger", "tagger")),
         "content_priority": ("contentPriority", provenance("onnxruntime-clause-tagger", "tagger")),
@@ -82,7 +81,7 @@ def build_session(session: Path, audio: Path, session_id: str, mode: str, segmen
 
     active = {key: f"{key}_run" for key in runs}
     if mode == "missing_stage":
-        del active["diarization"]
+        del active["asr"]
     (session / "processing_metadata.json").write_text(json.dumps({
         "schema_version": 3, "finalization_attempt": {"attempt_id": "a", "state": "complete"},
         "active_runs": active, "pending_clause_boundary_segments": [],
@@ -95,15 +94,13 @@ def build_session(session: Path, audio: Path, session_id: str, mode: str, segmen
         (session / "audio" / "processing" / "chunk.caf").write_bytes(b"caf")
 
 
-def exported(segments: list[dict], mode: str) -> list[dict]:
+def exported(segments: list[dict]) -> list[dict]:
     result = []
     for segment in segments:
-        speaker_id = "" if mode == "bad_speaker" else "speaker_0"
         result.append({
             "segment_id": segment["id"], "source": {"asr_run_id": "asr_run"},
             "start_ms": segment["start_ms"], "end_ms": segment["end_ms"],
             "text": segment["text"], "display_text": segment["text"],
-            "speakers": [{"id": speaker_id, "start_ms": segment["start_ms"], "end_ms": segment["end_ms"]}],
             "clause_state": "classified",
             "clause_slices": [{"priority": "primary", "needs_retry": False}],
         })
@@ -129,13 +126,13 @@ def cli(arguments: list[str]) -> int:
     if "--resume-session" in arguments:
         if mode == "resume_differs":
             segments = good_segments(WRONG_TEXT)
-        write_output(Path(arguments[-1]), exported(segments, mode))
+        write_output(Path(arguments[-1]), exported(segments))
         return 0
     audio, output = Path(arguments[-2]), Path(arguments[-1])
     session_id = str(uuid.uuid4()).upper()
     build_session(root / f"session-{session_id[:8]}", audio, session_id, mode, segments)
     print(f"session_id: {session_id}")
-    write_output(output, exported(segments, mode))
+    write_output(output, exported(segments))
     return 0
 
 

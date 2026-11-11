@@ -33,7 +33,7 @@ FULL_MODEL_SCENARIO_TIMEOUT_SECONDS = 1_200.0
 FULL_MODEL_STDIO_TIMEOUT_SECONDS = 300.0
 FULL_MODEL_FINALIZATION_TIMEOUT_SECONDS = 600.0
 TRANSCRIPT_TEXT = "エンジンの受け入れテストです。"
-TRANSCRIPT_FILE = "[00:00] Speaker 1: エンジンの受け入れテストです。\n"
+TRANSCRIPT_FILE = "[00:00] エンジンの受け入れテストです。\n"
 EXPECTED_SETTINGS: dict[str, Any] = {
     "schema_version": 1,
     "source": "microphone",
@@ -49,7 +49,6 @@ EXPECTED_SETTINGS: dict[str, Any] = {
 EXPECTED_PROVENANCE = {
     "segmentation": "engine-e2e-vad",
     "asr": "engine-e2e-asr",
-    "diarization": "engine-e2e-diarization",
 }
 _EOF = object()
 
@@ -1079,8 +1078,8 @@ def _validate_export_and_audio(
     if not isinstance(rows, list) or len(rows) != 1:
         raise AcceptanceError(f"expected exactly one final transcript row, got {rows!r}")
     row = rows[0]
-    if not isinstance(row, dict) or row.get("text") != TRANSCRIPT_TEXT or row.get("headings") != ["Speaker 1"]:
-        raise AcceptanceError(f"final transcript content or speaker heading mismatch: {row!r}")
+    if not isinstance(row, dict) or row.get("text") != TRANSCRIPT_TEXT:
+        raise AcceptanceError(f"final transcript text mismatch: {row!r}")
     if transcript_result.get("next_cursor") is not None:
         raise AcceptanceError("one-row transcript unexpectedly has another page")
 
@@ -1485,7 +1484,7 @@ def _check_owned_path(owner: Path, path: Path) -> None:
 
 PUBLISHED_SEGMENT_KEYS = {
     "segment_id", "source", "start_ms", "end_ms", "text", "display_text",
-    "speakers", "clause_state", "clause_slices",
+    "clause_state", "clause_slices",
 }
 EXCLUDED_LINEAGE_FIELDS = (
     "source.segmentation_run_id", "source.asr_run_id", "source.asr_event_seq",
@@ -1809,21 +1808,17 @@ def _format_transcript_rows(rows: list[dict[str, Any]]) -> bytes:
     lines: list[str] = []
     for row in rows:
         start = row.get("start_ms")
-        headings = row.get("headings")
         text = row.get("text")
-        if type(start) is not int or start < 0 or not isinstance(headings, list) or not headings:
-            raise AcceptanceError(f"transcript row lacks a valid start time or speaker headings: {row!r}")
-        if any(not isinstance(label, str) or not label for label in headings) or not isinstance(text, str):
-            raise AcceptanceError(f"transcript row has invalid headings or text: {row!r}")
+        if type(start) is not int or start < 0 or not isinstance(text, str):
+            raise AcceptanceError(f"transcript row lacks a valid start time or text: {row!r}")
         total_seconds = start // 1000
         timestamp = f"{total_seconds // 60:02d}:{total_seconds % 60:02d}"
         single_line = re.sub(r"\r\n|[\r\n\u2028\u2029]", " ", text)
-        lines.append(f"[{timestamp}] {' / '.join(headings)}: {single_line}\n")
+        lines.append(f"[{timestamp}] {single_line}\n")
     return "".join(lines).encode("utf-8")
 
 
-def _project_baseline_rows(helper: Any, segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    labels = helper.make_speaker_labels(segments)
+def _project_baseline_rows(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     projected: list[dict[str, Any]] = []
     for segment in segments:
         text = segment["display_text"]
@@ -1833,7 +1828,6 @@ def _project_baseline_rows(helper: Any, segments: list[dict[str, Any]]) -> list[
             "start_ms": segment["start_ms"],
             "end_ms": segment["end_ms"],
             "text": text,
-            "headings": helper.turn_labels(segment, labels),
         })
     return projected
 
@@ -1842,7 +1836,7 @@ def _compare_projected_rows(
     projected: list[dict[str, Any]], actual_rows: list[dict[str, Any]], context: str
 ) -> None:
     actual = [
-        {key: row.get(key) for key in ("start_ms", "end_ms", "text", "headings")}
+        {key: row.get(key) for key in ("start_ms", "end_ms", "text")}
         for row in actual_rows
     ]
     differences = _semantic_differences(projected, actual, "transcript_rows")
@@ -2033,7 +2027,6 @@ def run_full_model_scenario(
     baseline_session_dir = helper.find_session_directory(baseline_sessions, baseline_id)
     baseline_segments = helper.read_segments(baseline_output)
     helper.check_segments(baseline_segments, duration_ms)
-    helper.check_speakers(baseline_segments, duration_ms)
     _check_process_recording_provenance(helper, baseline_session_dir, baseline_segments, expected_model, threads)
 
     host_output = owner / f"{label}-host-resume-segments.json"
@@ -2049,11 +2042,10 @@ def run_full_model_scenario(
         raise AcceptanceError(f"{label}: host resume changed processing_metadata.json")
     host_segments = helper.read_segments(host_output)
     helper.check_segments(host_segments, duration_ms)
-    helper.check_speakers(host_segments, duration_ms)
     _check_process_recording_provenance(helper, engine_session_dir, host_segments, expected_model, threads)
     comparison = compare_published_segments(baseline_segments, host_segments)
     _compare_projected_rows(
-        _project_baseline_rows(helper, baseline_segments), transcript_rows,
+        _project_baseline_rows(baseline_segments), transcript_rows,
         f"{label} baseline projection versus host transcript.read",
     )
 

@@ -74,7 +74,6 @@
                         <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12" Margin="4">
                             <TextBlock Text="{Binding TimeText}" VerticalAlignment="Top" />
                             <StackPanel Grid.Column="1" Spacing="2">
-                                <TextBlock Text="{Binding HeadingText}" Visibility="{Binding HeadingText, Converter={StaticResource VisibilityConverter}}" />
                                 <TextBlock Text="{Binding Text}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
                                 <TextBlock Text="{Binding WaitingText}" Visibility="{Binding WaitingText, Converter={StaticResource VisibilityConverter}}" />
                             </StackPanel>

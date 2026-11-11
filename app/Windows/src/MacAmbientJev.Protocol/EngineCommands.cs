@@ -110,16 +110,12 @@ public sealed record EngineTranscriptReadPayload(
 public sealed record EngineTranscriptRowDetailsPayload(
     [property: WireMember("session_id")] string SessionID,
     [property: WireMember("revision")] EngineID Revision,
-    [property: WireMember("row_id")] string RowID,
-    [property: WireMember("cursor", IsNullable = true)] string? Cursor,
-    [property: WireMember("limit")] long Limit) : IWireValidatable
+    [property: WireMember("row_id")] string RowID) : IWireValidatable
 {
     public void Validate(string path)
     {
         WireCheck.Nonempty(SessionID, path + ".session_id");
         WireCheck.Nonempty(RowID, path + ".row_id");
-        WireCheck.OptionalNonempty(Cursor, path + ".cursor");
-        WireCheck.Range(Limit, 1, 200, path + ".limit");
     }
 }
 

@@ -8,7 +8,6 @@ public sealed record EngineTranscriptRow(
     [property: WireMember("start_ms")] long StartMS,
     [property: WireMember("end_ms")] long EndMS,
     [property: WireMember("text")] string Text,
-    [property: WireMember("headings")] EngineSpeakerLabel[] Headings,
     [property: WireMember("clause_state", IsNullable = true)] EngineClauseState? ClauseState) : IWireValidatable
 {
     public void Validate(string path)
@@ -88,44 +87,17 @@ public sealed record EngineRowsPayload(
 }
 
 [WireObject]
-public sealed record EngineTranscriptSpeakerSpan(
-    [property: WireMember("speaker_id")] string SpeakerID,
-    [property: WireMember("display_label")] string DisplayLabel,
-    [property: WireMember("start_ms")] long StartMS,
-    [property: WireMember("end_ms")] long EndMS) : IWireValidatable
-{
-    public void Validate(string path)
-    {
-        WireCheck.Nonempty(SpeakerID, path + ".speaker_id");
-        WireCheck.Nonempty(DisplayLabel, path + ".display_label");
-        WireCheck.Require(StartMS >= 0, path + ".start_ms", "start_ms must not be negative.");
-        WireCheck.Require(EndMS >= 0, path + ".end_ms", "end_ms must not be negative.");
-        WireCheck.Require(EndMS >= StartMS, path + ".end_ms", "end_ms must not precede start_ms.");
-    }
-}
-
-[WireObject]
 public sealed record EngineTranscriptRowDetailsPage(
     [property: WireMember("session_id")] string SessionID,
     [property: WireMember("revision")] EngineID Revision,
     [property: WireMember("row_id")] string RowID,
     [property: WireMember("clause_state")] EngineClauseState ClauseState,
-    [property: WireMember("clause_state_text")] string ClauseStateText,
-    [property: WireMember("speakers")] EngineTranscriptSpeakerSpan[] Speakers,
-    [property: WireMember("next_cursor", IsNullable = true)] string? NextCursor,
-    [property: WireMember("previous_cursor", IsNullable = true)] string? PreviousCursor) : IWireValidatable
+    [property: WireMember("clause_state_text")] string ClauseStateText) : IWireValidatable
 {
     public void Validate(string path)
     {
         WireCheck.Nonempty(SessionID, path + ".session_id");
         WireCheck.Nonempty(RowID, path + ".row_id");
         WireCheck.Nonempty(ClauseStateText, path + ".clause_state_text");
-        if (Speakers is not null)
-        {
-            WireCheck.Require(Speakers.Length <= 200, path + ".speakers", "speakers must contain at most 200 entries.");
-        }
-
-        WireCheck.OptionalNonempty(NextCursor, path + ".next_cursor");
-        WireCheck.OptionalNonempty(PreviousCursor, path + ".previous_cursor");
     }
 }

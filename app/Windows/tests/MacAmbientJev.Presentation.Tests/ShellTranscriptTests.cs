@@ -208,7 +208,7 @@ public sealed partial class ShellStoreTests
         var request = await SelectRequest(store, engine, id); request.Complete(new EngineResult.TranscriptWatch(page));
         await ChangedTo(store, s => s.Transcript.Tail?.Revision == page.Revision);
     }
-    private static EngineTranscriptRow Row(string id, long start, string text) => new(id, start, start, text, [], null);
+    private static EngineTranscriptRow Row(string id, long start, string text) => new(id, start, start, text, null);
     private static EngineTranscriptPage Page(string session, ulong revision, string id, string? next, string? previous) => new(session, new EngineID(revision), [Row(id, 1, id)], next, previous);
     private static EngineOutput Rows(string session, EngineRowsKind kind) => new(1, new EngineID(1), null, new EngineEvent.Rows(new EngineRowsPayload(session, new EngineID(1), kind, [], [], null)));
     private static EngineSessionListResult SessionPage(string id, string? next, string? previous) => new([new EngineSessionSummary(id, null, EngineSessionStatus.Unreadable, Failure(EngineErrorCode.InvalidSettings, "unreadable", EngineRecoveryAction.Retry), id, "Unreadable", id, null, false, false, false, new EngineSessionMetadata.Unreadable("unreadable"))], next, previous);

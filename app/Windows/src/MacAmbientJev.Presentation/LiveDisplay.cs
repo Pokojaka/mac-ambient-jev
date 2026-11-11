@@ -7,11 +7,9 @@ using MacAmbientJev.Protocol;
 
 namespace MacAmbientJev.Presentation;
 
-public sealed record ShellTranscriptRowViewModel(string RowID, string Text, string TimeText, string HeadingText, string WaitingText)
+public sealed record ShellTranscriptRowViewModel(string RowID, string Text, string TimeText, string WaitingText)
 {
-    public string AccessibleName => string.IsNullOrEmpty(HeadingText)
-        ? $"{TimeText}, {Text}"
-        : $"{TimeText}, {HeadingText}, {Text}";
+    public string AccessibleName => $"{TimeText}, {Text}";
 }
 
 public sealed partial class LiveViewModel
@@ -114,15 +112,12 @@ public sealed partial class LiveViewModel
         if (_hasLastTail && ReferenceEquals(tail, _lastTail)) return;
         var source = tail is null ? Array.Empty<EngineTranscriptRow>() : tail.Rows;
         var projected = new ShellTranscriptRowViewModel[source.Length];
-        EngineSpeakerLabel[]? previousHeadings = null;
         for (var i = 0; i < source.Length; i++)
         {
             var row = source[i];
             projected[i] = new ShellTranscriptRowViewModel(row.RowID, row.Text,
                 string.Format(CultureInfo.InvariantCulture, "{0:00}:{1:00}", row.StartMS / 60_000, row.StartMS / 1_000 % 60),
-                HeadingText(row.Headings, previousHeadings),
                 row.ClauseState == EngineClauseState.AwaitingNextSegment ? "発話文の続き待ち" : string.Empty);
-            previousHeadings = row.Headings;
         }
 
         var projectedRowIDs = projected.Select(row => row.RowID).ToHashSet(StringComparer.Ordinal);
@@ -150,25 +145,6 @@ public sealed partial class LiveViewModel
         _lastTail = tail;
         _hasLastTail = true;
     }
-
-    private static string HeadingText(EngineSpeakerLabel[] headings, EngineSpeakerLabel[]? previous) =>
-        headings.Length == 0 || previous is not null && headings.AsSpan().SequenceEqual(previous)
-            ? string.Empty
-            : string.Join(" / ", headings.Select(SpeakerLabel));
-
-    private static string SpeakerLabel(EngineSpeakerLabel speaker) => speaker switch
-    {
-        EngineSpeakerLabel.Speaker1 => "Speaker 1",
-        EngineSpeakerLabel.Speaker2 => "Speaker 2",
-        EngineSpeakerLabel.Speaker3 => "Speaker 3",
-        EngineSpeakerLabel.Speaker4 => "Speaker 4",
-        EngineSpeakerLabel.Speaker5 => "Speaker 5",
-        EngineSpeakerLabel.Speaker6 => "Speaker 6",
-        EngineSpeakerLabel.Speaker7 => "Speaker 7",
-        EngineSpeakerLabel.Other => "OTHER",
-        EngineSpeakerLabel.Unknown => "UNKNOWN",
-        _ => throw new InvalidOperationException($"Unknown speaker label: {speaker}.")
-    };
 
     private static string EngineReadinessReason(ShellState state)
     {
