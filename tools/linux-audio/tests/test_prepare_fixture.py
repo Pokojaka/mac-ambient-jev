@@ -61,7 +61,7 @@ def test_prepare_csj_fixture_end_to_end(tmp_path):
         encoding="utf-8",
     )
 
-    prepare_fixture(
+    result = prepare_fixture(
         manifest,
         cache_root=tmp_path / "cache",
         output_root=tmp_path / "out",
@@ -72,16 +72,11 @@ def test_prepare_csj_fixture_end_to_end(tmp_path):
         assert wav.getframerate() == 16_000
         assert wav.getnchannels() == 1
 
-    assert (
-        fixture / "reference-verbatim.txt"
-    ).read_text(encoding="utf-8") == (
-        "質問ですあのうん回答です\n"
+    assert (fixture / "reference.txt").read_text(encoding="utf-8") == (
+        "質問です(F あの)(F うん)回答です\n"
     )
-    assert (
-        fixture / "reference-content.txt"
-    ).read_text(encoding="utf-8") == (
-        "質問です回答です\n"
-    )
+    assert result["files"] == {"audio": "audio.wav", "reference": "reference.txt"}
+    assert json.loads((fixture / "fixture.json").read_text(encoding="utf-8")) == result
 
 
 def write_manifest(tmp_path, resources):

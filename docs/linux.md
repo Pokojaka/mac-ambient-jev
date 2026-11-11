@@ -2,7 +2,7 @@
 
 portable 評価 CLI は `Package.swift` にある `MacAmbientJevEvaluateSession` と `MacAmbientJevEvaluateASR` の2本です。`MacAmbientJevProcessRecording` は音声を session に import し、VAD→ASR→任意の clause decisions を行って transcript を出力します。`MacAmbientJevTranscribeFile` は `FileTranscriptionPipeline` で単一ファイルを処理し、評価用 artifact を出力します。Swift の共通部分と通常検証は [testing.md](testing.md) を参照してください。
 
-`MacAmbientJevEvaluateSession` は `<manifest.json> <segments.json>`、`MacAmbientJevEvaluateASR` は `<reference.txt> <asr-artifact.json> [--output report.json]` を受け取ります。
+`MacAmbientJevEvaluateSession` は `<manifest.json> <segments.json>`、`MacAmbientJevEvaluateASR` は `<reference.txt> <asr-artifact.json> [--output asr-evaluation.json]` を受け取ります。
 
 ## 環境と実行範囲
 
@@ -29,19 +29,18 @@ FAIL は SKIP より優先する。標準出力は `overall`、`exit_code`、`ch
 
 ## 全量評価
 
-ASR の必須引数は `--full-audio`、`--full-asr-reference-verbatim`、`--work-root`、`--device`。自然会話は filler を含む verbatim 参照文が主評価で、`--full-asr-reference-content` は filler を除いた補助評価に使う。同じ推論結果をそれぞれの参照文で採点する。
+ASR の必須引数は `--full-audio`、`--full-asr-reference`、`--work-root`、`--device`。参照文は UTF-8 で、通常の文字は必須、`(F x)`（フィラー）/`(D x)`（言い直し断片）の非入れ子 ASCII 範囲だけを任意とする。
 
 ```bash
 bash scripts/verify_linux_audio.sh --full \
   --full-audio "$AUDIO_WAV" \
-  --full-asr-reference-verbatim "$REFERENCE_VERBATIM" \
-  --full-asr-reference-content "$REFERENCE_CONTENT" \
+  --full-asr-reference "$REFERENCE" \
   --work-root "$WORK_ROOT" \
   --device cpu \
   --json "$SUMMARY_JSON"
 ```
 
-content 参照文と summary 出力は省略できる。full 用の引数を smoke に渡すことはできない。full の ASR は Qwen3-ASR の既定 1.7B モデルを実行し、Swift CER 評価と baseline record 作成まで行う。suite の PASS 自体には CER の閾値判定や採用済み baseline との比較を含まない。
+summary だけ省略できる。full 用の引数を smoke に渡すことはできない。full は Qwen3-ASR の既定 1.7B モデルを実行し、単一 CER 評価と baseline 作成まで行う。PASS は CER 閾値判定や baseline 比較を含まない。`run_suite.py` は `--full-asr-reference` の参照文を読み（`reference.txt` は生成しない）、`work_root` に `qwen3-asr.json`（ASR artifact）、`asr-evaluation.json`、`qwen3-asr-current.json` を出力する。
 
 ## ASR 実行と CER
 
@@ -54,10 +53,12 @@ python3 -m asr.qwen3_asr "$AUDIO_WAV" \
   --language Japanese
 
 swift run --package-path app/MacAmbientJev MacAmbientJevEvaluateASR \
-  "$REFERENCE_VERBATIM" "$ASR_ARTIFACT" --output "$ASR_REPORT"
+  "$REFERENCE" "$ASR_ARTIFACT" --output "$ASR_EVALUATION"
 ```
 
-推論設定は dtype `bfloat16`、batch size 1、max new tokens 4096、context は空文字。指定した device と language も来歴に保存する。評価結果は `raw`、`normalized`、`normalizer_version` を持つ。正規化は Unicode 互換合成、空白・改行・句読点の除去で、filler 除去ではない。content 評価も hypothesis に同じ CER 正規化を適用するだけなので、verbatim と同等の主判定として扱わない。
+推論設定は dtype `bfloat16`、batch size 1、max new tokens 4096、context は空文字。指定 device と language も来歴に保存する。参照文を先に parse し、mark の構文を本文に含めず、必須片と任意片それぞれに既存 normalizer version 1（NFKC、空白・句読点除去）を適用する。ASCII 括弧は `(F x)` / `(D x)` 以外、未知 tag、閉じていない・入れ子の mark を拒否し、エラー位置は1始まりの Swift 文字位置で示す。
+
+hypothesis には同じ normalizer だけを適用し、注釈 parse や任意文字の除去はしない。編集距離は任意文字の削除を0、必須文字の削除を1、置換と挿入を各1とし、CER rate は必須参照文字数を分母にする。必須参照が空なら距離0の rate は0、それ以外は1。報告は top-level `cer` object と `normalizer_version` を持ち、`cer` は `rate`、`substitutions`、`deletions`（必須文字のみ）、`insertions`、`required_reference_characters`、`optional_reference_characters`、`hypothesis_characters` を持つ。文字数・編集操作数は Swift の文字単位（Character）。
 
 ## セッション全体のファイル処理 CLI
 
@@ -187,14 +188,14 @@ ONNX 発話文タガー（ClauseTagger.onnx、tokenizer.json、export.json、LIC
 PYTHONPATH=tools/linux-audio python3 -c 'import json,sys; from common.artifact import validate_asr_artifact; validate_asr_artifact(json.load(open(sys.argv[1], encoding="utf-8")))' \
   "/absolute/path/to/output/asr-artifact.json"
 swift run --package-path app/MacAmbientJev MacAmbientJevEvaluateASR \
-  "/absolute/path/to/reference.txt" \
+  "/absolute/path/to/output/reference.txt" \
   "/absolute/path/to/output/asr-artifact.json" \
-  --output "/absolute/path/to/output/asr-report.json"
+  --output "/absolute/path/to/output/asr-evaluation.json"
 ```
 
 ### 実モデル CLI の opt-in test
 
-[`test_transcribe_file_cli_model.py`](../tools/linux-audio/tests/test_transcribe_file_cli_model.py) は release CLI と evaluator を build し、両方の出力、artifact validator、長い fixture に対する normalized CER `<= 0.15` を検査します。既定では skip です。`RUN_MODEL_TESTS=1` のときは `QWEN3_ASR_ONNX_MODEL_DIRECTORY`（絶対 path の既存 readable directory）、`QWEN3_ASR_ONNX_MODEL_SIZE`（`0.6b` または `1.7b`）、`MAC_AMBIENT_JEV_SILERO_MODEL`（readable model file）が必須で、設定欠落時は test failure です。repository root から実行します。
+[`test_transcribe_file_cli_model.py`](../tools/linux-audio/tests/test_transcribe_file_cli_model.py) は release CLI と evaluator を build し、両方の出力、artifact validator、長い fixture に対する CER `<= 0.15` を検査します。既定では skip です。`RUN_MODEL_TESTS=1` のときは `QWEN3_ASR_ONNX_MODEL_DIRECTORY`（絶対 path の既存 readable directory）、`QWEN3_ASR_ONNX_MODEL_SIZE`（`0.6b` または `1.7b`）、`MAC_AMBIENT_JEV_SILERO_MODEL`（readable model file）が必須で、設定欠落時は test failure です。repository root から実行します。
 
 ```bash
 set -eu
@@ -256,11 +257,9 @@ file CLI の評価 artifact も厳密な schema v2 です。ONNX artifact のト
 
 ## baseline のスキーマ v2
 
-`tools/linux-audio/common/baseline.py` の record は `schema_version: 2`、`engine`、`conditions`、`corpus`、`metrics` のちょうど5 key です。`engine` は `qwen3-asr` / `transformers` の artifact 来歴です。
+`tools/linux-audio/common/baseline.py` の record は `schema_version: 2`、`engine`、`conditions`、`corpus`、`metrics` のちょうど5 key です。`engine` は `qwen3-asr` / `transformers` の artifact 来歴、`conditions` は `normalizer_version` だけ、`corpus` は小文字 SHA-256 の `audio` と `reference` です。
 
-`conditions` は `reference_kind`（`verbatim` / `content`）と `normalizer_version` の2 key、`corpus` は小文字 SHA-256 の `audio` と `reference` の2 key です。`metrics` は有限の数値で、`raw_cer`、`normalized_cer`、`rtf`、`model_load_seconds` を持ち、CUDA では実測 `resident_vram_mb` と `peak_vram_mb` を追加します。
-
-suite は work root に ASR artifact、参照種別ごとの評価、`qwen3-asr-verbatim-current.json`、必要なら `qwen3-asr-content-current.json` を作ります。
+`metrics` は有限値の `cer`、`rtf`、`model_load_seconds` で、CUDA では実測 `resident_vram_mb` と `peak_vram_mb` も含みます。suite は `reference_path` で渡された参照文を読み、work root に `qwen3-asr.json`（ASR artifact）、`asr-evaluation.json`、`qwen3-asr-current.json` を作ります。
 
 `compare_baseline` は engine、conditions、corpus の完全一致時だけ各 metric の baseline/current/delta を返します。record は有限の数値 metrics のみを持ちます。比較関数は suite に自動接続されていません。
 
@@ -286,11 +285,11 @@ python3 tools/linux-audio/prepare_fixture.py "$CORPUS_MANIFEST" \
   --cache-root "$CACHE_ROOT" --output-root "$FIXTURE_ROOT"
 ```
 
-生成物は mono PCM16 / 16 kHz の `audio.wav`、`reference-verbatim.txt`、`reference-content.txt`、`fixture.json` です。CSJ 転記は UTF-8 で読みます。
+生成物は mono PCM16 / 16 kHz の `audio.wav`、`reference.txt`、`fixture.json` です。`fixture.json` の top-level は `schema_version`、`id`、`files` で、`files` は `audio` と `reference` の2 keyです。参照文は UTF-8 です。
 
 音声正規化 `normalize_to_wav` は source と destination に異なるファイルを要求する。同一ファイルへ解決されるパス（シンボリックリンクを含む）は、出力先を変更する前に ValueError で拒否する。成功時は mono PCM16 / 16 kHz WAV を出力する。
 
-`tools/linux-audio/common/csj.py` の parser は番号・秒単位 start-end・英字ラベルを持つ header と、surface と katakana を `&` で区切る本文を読みます。空行と `%` コメントを無視します。`(F ...)` filler、`(D ...)` 言い直し断片、`(? ...)` 不確かな聞き取りを入れ子で扱います。verbatim は全注釈の中の語を残し、content は F だけを除きます。header の `<笑>`・`<雑音>` 等は非言語区間で、本文やASR参照文を持ちません。未知の書式、本文のない speech、非言語区間の本文、不正時刻は明示エラーです。
+`tools/linux-audio/common/csj.py` の parser は番号・秒単位 start-end・英字ラベルを持つ header と、surface と katakana を `&` で区切る本文を読み、空行と `%` コメントを無視します。CSJ の入れ子 F/D/? 注釈では外側 F/D を任意 mark として保ち、その内側の注釈を外側の本文へ平坦化します。`(? x)` は必須の `x`、`(?)` は空になり、任意 mark の外側にある `?` wrapper 内の F/D mark は保ちます。header の `<笑>`・`<雑音>` 等は非言語区間で、本文や参照文を持ちません。未知の書式、本文のない speech、非言語区間の本文、不正時刻は明示エラーです。
 
 既存 cache の SHA-256 不一致は直ちに失敗し、暗黙の再取得で上書きしない。新規 download も hash を検証してから公開する。外部音声は Git に入れず、利用条件と音声・参照文の対応を確認してローカルで準備する。`tools/corpora/public-ja-candidates-v1.json` は CSJ、RWCP、青空文庫/LibriVox の候補一覧であり、prepare 用の hash 固定済み resource manifest ではない。
 
@@ -301,4 +300,4 @@ python3 tools/linux-audio/prepare_fixture.py "$CORPUS_MANIFEST" \
 - 1.7B: モデル ID Qwen/Qwen3-ASR-1.7B、revision `7278e1e70fe206f11671096ffdd38061171dd6e5`。
 - 0.6B: モデル ID Qwen/Qwen3-ASR-0.6B、revision `5eb144179a02acc5e5ba31e748d22b0cf3e303b0`。
 
-各 job は Python unit test、VOICEVOX による日本語音声の生成、16 kHz mono 化、指定モデルの CPU 推論、artifact validator、portable Swift CER 評価を行います。非空の認識文・revision 一致・normalized CER 10% 以下を確認します。1.7B の失敗を 0.6B の成功で代替しません。Docker image ID/digest、VOICEVOX engine version・人物一覧・query、音声 hash、推論結果、評価、runner 情報を artifact として保存し、保持期間は 3 日です。
+各 job は Python unit test、VOICEVOX による日本語音声の生成、16 kHz mono 化、指定モデルの CPU 推論、artifact validator、portable Swift CER 評価を行います。平文参照文は全て必須文字として、非空の認識文・revision 一致・CER 10% 以下を確認します。1.7B の失敗を 0.6B の成功で代替しません。Docker image ID/digest、VOICEVOX engine version・人物一覧・query、音声 hash、推論結果、評価、runner 情報を artifact として保存し、保持期間は 3 日です。

@@ -1,13 +1,11 @@
 import Foundation
 
 public struct ASREvaluationResult: Codable, Sendable, Equatable {
-    public let raw: CharacterErrorRateResult
-    public let normalized: CharacterErrorRateResult
+    public let cer: CharacterErrorRateResult
     public let normalizerVersion: String
 
     enum CodingKeys: String, CodingKey {
-        case raw
-        case normalized
+        case cer
         case normalizerVersion = "normalizer_version"
     }
 }
@@ -16,18 +14,13 @@ public enum ASREvaluation {
     public static func evaluate(
         reference: String,
         hypothesis: String
-    ) -> ASREvaluationResult {
-        ASREvaluationResult(
-            raw: CharacterErrorRate.evaluate(
-                reference: reference,
-                hypothesis: hypothesis
-            ),
-            normalized: CharacterErrorRate.evaluate(
-                reference:
-                    JapaneseTextNormalizer.normalizeForCER(reference),
-                hypothesis:
-                    JapaneseTextNormalizer.normalizeForCER(hypothesis)
-            ),
+    ) throws -> ASREvaluationResult {
+        let cer = try CharacterErrorRate.evaluate(
+            reference: reference,
+            hypothesis: hypothesis
+        )
+        return ASREvaluationResult(
+            cer: cer,
             normalizerVersion: JapaneseTextNormalizer.version
         )
     }
@@ -85,7 +78,7 @@ public enum ASRArtifactEvaluator {
         else {
             throw ASRArtifactEvaluationError.invalidSegmentRange
         }
-        return ASREvaluation.evaluate(
+        return try ASREvaluation.evaluate(
             reference: reference,
             hypothesis: segment.text
         )

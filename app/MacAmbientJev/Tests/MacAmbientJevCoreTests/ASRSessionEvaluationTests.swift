@@ -50,9 +50,12 @@ func evaluationScoresJoinedSegmentTextAgainstReference() throws {
     ]
     """.utf8))
 
-    let report = ASRSessionEvaluator.evaluate(id: "r1", reference: "ＡＢＣ、公開鍵。", segments: segments)
+    let report = try ASRSessionEvaluator.evaluate(
+        id: "r1", reference: "(F ＡＢＣ、)公開鍵(D 暗号)。", segments: segments
+    )
 
     #expect(report.id == "r1")
-    #expect(report.asrEvaluation.raw.rate > 0)
-    #expect(report.asrEvaluation.normalized.rate == 0)
+    #expect(report.asrEvaluation.cer.rate == 0)
+    #expect(report.asrEvaluation.cer.requiredReferenceCharacters == 3)
+    #expect(report.asrEvaluation.cer.optionalReferenceCharacters == 5)
 }

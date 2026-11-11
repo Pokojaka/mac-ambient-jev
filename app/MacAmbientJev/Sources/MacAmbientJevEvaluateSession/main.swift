@@ -23,7 +23,7 @@ struct EvaluateSessionCommand {
             from: Data(contentsOf: URL(fileURLWithPath: arguments[1]))
         )
 
-        let report = ASRSessionEvaluator.evaluate(
+        let report = try ASRSessionEvaluator.evaluate(
             id: manifest.id,
             reference: try manifest.referenceText(manifestURL: manifestURL),
             segments: segments

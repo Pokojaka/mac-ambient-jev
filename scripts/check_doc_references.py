@@ -50,10 +50,10 @@ RUNTIME_BASENAMES = frozenset({
     "session.json", "events.jsonl", "processing_metadata.json", "checkpoint.json",
     "audio-chunks.jsonl", "audio-gaps.jsonl", "transcript.txt", "segments.json",
     "audio.wav", "audio.m4a", "audio.flac", "storage.json", "recording.flac", "run.json", "engine-metrics.json",
-    "memory.jsonl", "thermal.jsonl", "reference-verbatim.txt", "reference-content.txt",
+    "memory.jsonl", "thermal.jsonl", "reference.txt",
     "fixture.json", "qwen3-asr.json",
-    "asr-evaluation-verbatim.json", "asr-evaluation-content.json",
-    "qwen3-asr-verbatim-current.json", "qwen3-asr-content-current.json",
+    "asr-evaluation.json",
+    "qwen3-asr-current.json",
     "stdout.log", "stderr.log", "source-snapshot.tar.gz", "disk-usage.json",
 })
 # Apple SDK の型・property wrapper・framework。repo 型は追加しない。

@@ -153,5 +153,5 @@ def evaluator(arguments: list[str]) -> int:
     reference = strip(Path(arguments[0]).read_text(encoding="utf-8"))
     hypothesis = strip(json.loads(Path(arguments[1]).read_text(encoding="utf-8"))["segments"][0]["text"])
     rate = levenshtein(reference, hypothesis) / len(reference)
-    Path(arguments[3]).write_text(json.dumps({"normalized": {"rate": rate}}), encoding="utf-8")
+    Path(arguments[3]).write_text(json.dumps({"cer": {"rate": rate}}), encoding="utf-8")
     return 0

@@ -26,7 +26,8 @@ def cer(rate: float) -> dict:
         "substitutions": 1,
         "deletions": 0,
         "insertions": 0,
-        "reference_characters": 10,
+        "required_reference_characters": 8,
+        "optional_reference_characters": 2,
         "hypothesis_characters": 10,
     }
 
@@ -36,7 +37,7 @@ def write_json(path, payload):
     return path
 
 
-def asr_inputs(tmp_path, *, normalized_cer=0.0, dtype="bfloat16"):
+def asr_inputs(tmp_path, *, cer_rate=0.0, dtype="bfloat16"):
     audio = tmp_path / "audio.wav"
     audio.write_bytes(b"audio")
     reference = tmp_path / "reference.txt"
@@ -64,8 +65,7 @@ def asr_inputs(tmp_path, *, normalized_cer=0.0, dtype="bfloat16"):
         "evaluation_path": write_json(
             tmp_path / "asr-evaluation.json",
             {
-                "raw": cer(0.1),
-                "normalized": cer(normalized_cer),
+                "cer": cer(cer_rate),
                 "normalizer_version": "1",
             },
         ),
@@ -76,10 +76,7 @@ def asr_inputs(tmp_path, *, normalized_cer=0.0, dtype="bfloat16"):
 
 def asr_record(tmp_path, **kwargs):
     tmp_path.mkdir(parents=True, exist_ok=True)
-    return build_asr_baseline_record(
-        **asr_inputs(tmp_path, **kwargs),
-        reference_kind="verbatim",
-    )
+    return build_asr_baseline_record(**asr_inputs(tmp_path, **kwargs))
 
 
 def test_asr_baseline_records_engine_conditions_and_metrics(tmp_path):
@@ -87,13 +84,9 @@ def test_asr_baseline_records_engine_conditions_and_metrics(tmp_path):
 
     assert record.engine["package_versions"]["qwen-asr"] == "0.0.6"
     assert record.engine["inference_config"]["dtype"] == "bfloat16"
-    assert record.conditions == {
-        "reference_kind": "verbatim",
-        "normalizer_version": "1",
-    }
+    assert record.conditions == {"normalizer_version": "1"}
     assert record.metrics == {
-        "raw_cer": 0.1,
-        "normalized_cer": 0.0,
+        "cer": 0.0,
         "rtf": 0.2,
         "model_load_seconds": 20.0,
         "resident_vram_mb": 3000.0,
@@ -126,25 +119,17 @@ def test_asr_baseline_requires_normalizer_version(tmp_path):
     write_json(inputs["evaluation_path"], evaluation)
 
     with pytest.raises(ValueError, match="normalizer_version"):
-        build_asr_baseline_record(**inputs, reference_kind="verbatim")
-
-
-def test_asr_baseline_rejects_unknown_reference_kind(tmp_path):
-    with pytest.raises(ValueError, match="reference_kind"):
-        build_asr_baseline_record(
-            **asr_inputs(tmp_path),
-            reference_kind="cleaned",
-        )
+        build_asr_baseline_record(**inputs)
 
 
 def test_compare_reports_metric_delta(tmp_path):
     result = compare_baseline(
-        asr_record(tmp_path / "a", normalized_cer=0.10),
-        asr_record(tmp_path / "b", normalized_cer=0.12),
+        asr_record(tmp_path / "a", cer_rate=0.10),
+        asr_record(tmp_path / "b", cer_rate=0.12),
     )
-    assert result["normalized_cer"]["baseline"] == 0.10
-    assert result["normalized_cer"]["current"] == 0.12
-    assert result["normalized_cer"]["delta"] == pytest.approx(0.02)
+    assert result["cer"]["baseline"] == 0.10
+    assert result["cer"]["current"] == 0.12
+    assert result["cer"]["delta"] == pytest.approx(0.02)
 
 
 def test_compare_rejects_different_inference_config(tmp_path):
@@ -155,11 +140,11 @@ def test_compare_rejects_different_inference_config(tmp_path):
         )
 
 
-def test_compare_rejects_different_reference_kind(tmp_path):
+def test_compare_rejects_different_normalizer_version(tmp_path):
     baseline = asr_record(tmp_path)
     current = dataclasses.replace(
         baseline,
-        conditions={**baseline.conditions, "reference_kind": "content"},
+        conditions={**baseline.conditions, "normalizer_version": "2"},
     )
 
     with pytest.raises(ValueError, match="conditions"):

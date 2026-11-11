@@ -182,10 +182,10 @@ jobs:
 
           with open("real-inference/asr-evaluation.json", encoding="utf-8") as handle:
               evaluation = json.load(handle)
-          normalized_cer = evaluation["normalized"]["rate"]
-          print(f"normalized CER: {normalized_cer:.4f}")
-          assert normalized_cer <= 0.10, (
-              f"Japanese fixture CER exceeds 10%: {normalized_cer:.4f}"
+          cer = evaluation["cer"]["rate"]
+          print(f"CER: {cer:.4f}")
+          assert cer <= 0.10, (
+              f"Japanese fixture CER exceeds 10%: {cer:.4f}"
           )
           PY
 
