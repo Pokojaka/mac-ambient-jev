@@ -50,12 +50,8 @@ def prepare_fixture(
         roles["csj-transcript"].read_text(encoding="utf-8")
     )
     normalize_to_wav(roles["audio"], fixture_dir / "audio.wav")
-    (fixture_dir / "reference-verbatim.txt").write_text(
-        csj_reference_text(utterances, keep_fillers=True) + "\n",
-        encoding="utf-8",
-    )
-    (fixture_dir / "reference-content.txt").write_text(
-        csj_reference_text(utterances, keep_fillers=False) + "\n",
+    (fixture_dir / "reference.txt").write_text(
+        csj_reference_text(utterances) + "\n",
         encoding="utf-8",
     )
     result = {
@@ -63,8 +59,7 @@ def prepare_fixture(
         "id": manifest["id"],
         "files": {
             "audio": "audio.wav",
-            "reference_verbatim": "reference-verbatim.txt",
-            "reference_content": "reference-content.txt",
+            "reference": "reference.txt",
         },
     }
     write_json_atomic(fixture_dir / "fixture.json", result)

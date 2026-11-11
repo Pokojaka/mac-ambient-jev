@@ -55,7 +55,7 @@ Windows の共通 Core / Pipeline、評価 CLI、ProcessRecording CLI、保存�
 - 判定呼出しが失敗したら、そのリクエストの対象だけを保留して次を続ける。[発話文判定](decision-engine.md)
 - ライブ遅延は現行の閉 VAD 経路の「発話終了から最初の非空更新」から測る。[ライブ](live.md)・[検証](testing.md)
 - 参照文のある ASR CER を評価する。[検証](testing.md)
-- 自然会話の CER は verbatim を主、content を補助とする。cold load・warm 推論・常駐メモリを分け、baseline に再現条件を含める。cache の SHA 不一致は即失敗。[Linux 評価](linux.md)
+- 自然会話の評価は単一の正規化 CER とし、参照文中の `(F …)`（フィラー）/`(D …)`（言い直し断片）を任意文字、正規化後の必須参照文字数を分母とする。cold load・warm 推論・常駐メモリを分け、baseline に再現条件を含める。cache の SHA 不一致は即失敗。[Linux 評価](linux.md)
 - Linux ASR artifact は CER 用に全音声を 1 segment とし、run 計測は recording_id と completed・failed・paused を使う。メモリ取得失敗は値なしと理由を記録する。[Linux 評価](linux.md)・[検証](testing.md)
 
 ## 熱状態

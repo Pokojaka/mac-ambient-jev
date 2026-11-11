@@ -66,7 +66,7 @@ def run_with_mode(tmp_path: Path, environment: dict[str, str], mode: str) -> dic
 def test_good_run_passes(tmp_path, environment):
     summary = run_with_mode(tmp_path, environment, "good")
     assert summary["segments"] == 2
-    assert summary["normalized_cer"] == 0
+    assert summary["cer"] == 0
 
 
 @posix_only

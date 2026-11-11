@@ -92,53 +92,53 @@ def record_optional_commands(monkeypatch, work):
     return seen
 
 
-def test_asr_checks_score_verbatim_first_and_content_as_supplement(
+def test_asr_checks_use_one_reference_and_baseline_path(
     monkeypatch,
     tmp_path,
 ):
     audio = tmp_path / "fixture.wav"
-    verbatim = tmp_path / "reference-verbatim.txt"
-    content = tmp_path / "reference-content.txt"
+    reference = tmp_path / "reference.txt"
     work = tmp_path / "work"
     work.mkdir()
     for stale in (
         "qwen3-asr.json",
-        "asr-evaluation-verbatim.json",
-        "asr-evaluation-content.json",
+        "asr-evaluation.json",
+        "qwen3-asr-current.json",
     ):
         (work / stale).write_text("{}")
     seen = record_optional_commands(monkeypatch, work)
+    baseline_calls = []
+    original_baseline_check = run_suite.asr_baseline_check
+
+    def record_baseline(**kwargs):
+        baseline_calls.append(kwargs)
+        return original_baseline_check(**kwargs)
+
+    monkeypatch.setattr(run_suite, "asr_baseline_check", record_baseline)
 
     checks = run_suite.asr_model_checks(
         here=tmp_path / "tools" / "linux-audio",
         audio_path=audio,
-        asr_references={"content": content, "verbatim": verbatim},
+        reference_path=reference,
         work_root=work,
         device="cpu",
     )
 
     assert [check.name for check in checks] == [
         "qwen3-asr-runner",
-        "asr-evaluator-verbatim",
-        "asr-baseline-verbatim",
-        "asr-evaluator-content",
-        "asr-baseline-content",
+        "asr-evaluator",
+        "asr-baseline",
     ]
+    assert [call[0] for call in seen] == ["qwen3-asr-runner", "asr-evaluator"]
+    assert str(work / "qwen3-asr.json") in seen[0][1]
+    assert seen[1][1].count(str(reference)) == 1
+    assert str(work / "asr-evaluation.json") in seen[1][1]
     assert not (work / "qwen3-asr.json").exists()
-    assert str(verbatim) in seen[1][1]
-    assert str(content) in seen[2][1]
+    assert len(baseline_calls) == 1
+    assert baseline_calls[0]["reference_path"] == reference
+    assert baseline_calls[0]["output_path"] == work / "qwen3-asr-current.json"
+    assert not (work / "qwen3-asr-current.json").exists()
     assert checks[2].status is Status.SKIPPED_MISSING_DEPENDENCY
-
-
-def test_asr_checks_require_a_verbatim_reference(tmp_path):
-    with pytest.raises(ValueError, match="verbatim"):
-        run_suite.asr_model_checks(
-            here=tmp_path,
-            audio_path=tmp_path / "fixture.wav",
-            asr_references={"content": tmp_path / "content.txt"},
-            work_root=tmp_path / "work",
-            device="cpu",
-        )
 
 
 def write_asr_inputs(tmp_path):
@@ -166,17 +166,12 @@ def write_asr_inputs(tmp_path):
         language="Japanese",
     )))
     evaluation = tmp_path / "asr-evaluation.json"
-    rate = {
-        "rate": 0.0,
-        "substitutions": 0,
-        "deletions": 0,
-        "insertions": 0,
-        "reference_characters": 3,
-        "hypothesis_characters": 3,
-    }
     evaluation.write_text(json.dumps({
-        "raw": rate,
-        "normalized": rate,
+        "cer": {
+            "rate": 0.25,
+            "required_reference_characters": 3,
+            "optional_reference_characters": 0,
+        },
         "normalizer_version": "1",
     }))
     return audio, reference, artifact, evaluation
@@ -187,17 +182,16 @@ def test_asr_baseline_check_writes_a_loadable_record(tmp_path):
     output = tmp_path / "current.json"
 
     result = run_suite.asr_baseline_check(
-        name="asr-baseline-verbatim",
+        name="asr-baseline",
         audio_path=audio,
         reference_path=reference,
-        reference_kind="verbatim",
         artifact_path=artifact,
         evaluation_path=evaluation,
         output_path=output,
     )
 
     assert result.status is Status.PASS
-    assert load_baseline(output).conditions["reference_kind"] == "verbatim"
+    assert load_baseline(output).metrics["cer"] == 0.25
 
 
 def test_asr_baseline_check_fails_on_invalid_artifact(tmp_path):
@@ -207,10 +201,9 @@ def test_asr_baseline_check_fails_on_invalid_artifact(tmp_path):
     output.write_text("stale")
 
     result = run_suite.asr_baseline_check(
-        name="asr-baseline-verbatim",
+        name="asr-baseline",
         audio_path=audio,
         reference_path=reference,
-        reference_kind="verbatim",
         artifact_path=artifact,
         evaluation_path=evaluation,
         output_path=output,
@@ -245,28 +238,22 @@ def stub_model_suite(monkeypatch):
 FULL = [
     "--full",
     "--full-audio", "fixture.wav",
-    "--full-asr-reference-verbatim", "reference-verbatim.txt",
+    "--full-asr-reference", "reference.txt",
     "--work-root", "work",
     "--device", "cpu",
 ]
 
 
-def test_main_full_passes_references(
+def test_main_full_passes_reference(
     monkeypatch,
     capsys,
 ):
     captured = stub_model_suite(monkeypatch)
 
-    result = run_suite.main(
-        FULL + ["--full-asr-reference-content", "reference-content.txt"]
-    )
+    result = run_suite.main(FULL)
 
     assert result == 0
-    references = captured["asr_model_checks"]["asr_references"]
-    assert {kind: path.name for kind, path in references.items()} == {
-        "verbatim": "reference-verbatim.txt",
-        "content": "reference-content.txt",
-    }
+    assert captured["asr_model_checks"]["reference_path"].name == "reference.txt"
     json.loads(capsys.readouterr().out)
 
 

@@ -17,20 +17,16 @@ from common.runtime_metrics import is_cuda_device
 
 
 SCHEMA_VERSION = 2
-REFERENCE_KINDS = ("verbatim", "content")
 
 ENGINES = (ASR_ENGINE_NAME, ASR_BACKEND)
-CONDITION_KEYS = {"reference_kind", "normalizer_version"}
+CONDITION_KEYS = {"normalizer_version"}
 CORPUS_KEYS = {"audio", "reference"}
 RUNTIME_METRICS = {"rtf": "rtf", "model_load_seconds": "model_load_seconds"}
 CUDA_RUNTIME_METRICS = {
     "resident_vram_mb": "resident_vram_mb",
     "peak_vram_mb": "peak_vram_mb",
 }
-ASR_EVALUATION_METRICS = {
-    "raw_cer": ("raw", "rate"),
-    "normalized_cer": ("normalized", "rate"),
-}
+ASR_EVALUATION_METRICS = {"cer": ("cer", "rate")}
 
 
 def expected_metric_names(device: str) -> set[str]:
@@ -69,10 +65,6 @@ class BaselineRecord:
             raise ValueError(
                 f"conditions keys must be "
                 f"{sorted(CONDITION_KEYS)}"
-            )
-        if self.conditions["reference_kind"] not in REFERENCE_KINDS:
-            raise ValueError(
-                f"reference_kind must be one of {REFERENCE_KINDS}"
             )
         version = self.conditions["normalizer_version"]
         if not isinstance(version, str) or not version:
@@ -178,7 +170,6 @@ def build_asr_baseline_record(
     evaluation_path: pathlib.Path,
     audio_path: pathlib.Path,
     reference_path: pathlib.Path,
-    reference_kind: str,
 ) -> BaselineRecord:
     artifact = _load_object(artifact_path, "ASR artifact")
     validate_asr_artifact(artifact)
@@ -188,7 +179,6 @@ def build_asr_baseline_record(
         schema_version=SCHEMA_VERSION,
         engine=artifact["engine"],
         conditions={
-            "reference_kind": reference_kind,
             "normalizer_version": evaluation.get("normalizer_version"),
         },
         corpus={

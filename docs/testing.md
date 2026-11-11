@@ -651,7 +651,7 @@ driver は release の CLI と `MacAmbientJevEvaluateASR` の絶対 path、fixtu
 
 - 全コマンドの終了コードが 0 で、import の stdout に `session_id:` 行がちょうど 1 つある。
 - 出力 JSON は 2 件以上の segment を時系列・重なりなし・音声長以内で持ち、各 `text` は日本語を含む。`clause_state` は `classified` で、clause slice は priority を持ち再試行待ちがない。
-- `text` を時刻順に連結した raw 文を `MacAmbientJevEvaluateASR`（製品の正規化と CER 評価）で参照文と比較し、正規化後 CER が 0.15 以下。
+- `text` を時刻順に連結した raw 文を `MacAmbientJevEvaluateASR` で参照文と比較し、単一 CER の `cer.rate` が 0.15 以下。
 - セッション folder に `session.json`、末尾まで完結した `events.jsonl`、`processing_metadata.json`、`storage.json`（imported original と import 時のフレーム数）があり、`audio/original.*` が入力と byte 単位で同一である。audio directory 以下に `.caf` がなく、`recording.flac` と `.recording.flac.partial` もない。
 - `active_runs` の segmentation・asr・clause_boundary・content_priority があり、それぞれ `processing.run.started` / `processing.run.completed`（成功、失敗数 0）が1組ずつある。segmentation provenance の engine は `onnxruntime-silero-vad`、ASR provenance の engine は `onnxruntime-qwen3-asr` で、ASR model は [qwen3_asr_models.json](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/qwen3_asr_models.json) の `repository@commit`、`intra_op_threads` は2です。decision run の engine は ONNX で、Core ML を名乗りません。境界・優先度の判定 event が active run にあり、保留中の判定対象がありません。
 - 出力 segment と active ASR run の認識済み `asr.completed` event が segment ID と本文で一致する。
@@ -700,9 +700,9 @@ swift run --package-path app/MacAmbientJev MacAmbientJevEvaluateSession \
 }
 ```
 
-`reference` は `text` または `file` のどちらか一つ。file は UTF-8 の参照文で、相対パスなら manifest のディレクトリから解決する。audio は manifest の必須項目だが、この CLI は音声を読み込んだり認識したりしない。
+`reference` は `text` または `file` のどちらか一つ。file は UTF-8 で、相対パスなら manifest のディレクトリから解決する。inline/file とも EvaluateASR と同じ平坦な `(F x)` / `(D x)` mark を使い、無印が必須、mark 内が任意。括弧の不正や未知 tag は1始まりの Swift 文字位置付きで失敗する。audio は必須だが、この CLI は音声を読み込んだり認識したりしない。
 
-入力する `segments.json` の各要素から `start_ms` と `text` を読む。保存順に本文を改行で連結して CER を求める。レポートは `id` と `asr_evaluation`（raw/normalized CER と normalizer version）を持つ。
+入力する `segments.json` の各要素から `start_ms` と `text` を読む。保存順に本文を改行で連結して CER を求める。参照文は mark を parse 後に必須片・任意片ごとに正規化し、hypothesis は既存 normalizer の適用だけで変更する。分母は正規化後の必須参照文字数とする。レポートは `id` と `asr_evaluation` を持ち、その key は `cer` object と `normalizer_version` の2つだけ。CER object の項目定義は [Linux の CER 定義](linux.md#asr-実行と-cer)を参照する。
 
 Linux runner の ASR artifact は `MacAmbientJevEvaluateASR` で評価します。参照・artifact の二位置引数と任意の末尾 `--output` を受け取ります。詳細は [linux.md](linux.md) を参照してください。
 

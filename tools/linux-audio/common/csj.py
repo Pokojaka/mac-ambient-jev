@@ -8,9 +8,8 @@ Contract:
   non-verbal utterance with no body lines and contributes no reference text.
 - Lines starting with `%` are comments. Blank lines are ignored.
 - Surface annotations: `(F x)` filler, `(D x)` disfluent fragment, and
-  `(? x)` uncertain hearing (`(?)` when nothing was heard). Tags nest.
-  The verbatim reference keeps every annotated word; the content reference
-  drops fillers.
+  `(? x)` uncertain hearing (`(?)` when nothing was heard). F/D spans are
+  retained as marks; nested annotations are flattened into the outer span.
 - Anything else is a parser mismatch and raises ValueError.
 """
 
@@ -97,7 +96,7 @@ def parse_csj_transcript(text: str) -> list[CSJUtterance]:
         surface = raw.split("&", 1)[0].strip()
         if not surface:
             raise ValueError(f"CSJ body line {number} has no surface")
-        _clean_surface(surface, keep_fillers=True)
+        _clean_surface(surface)
         current["surface_lines"] = current["surface_lines"] + (surface,)
 
     flush()
@@ -106,23 +105,24 @@ def parse_csj_transcript(text: str) -> list[CSJUtterance]:
     return result
 
 
-def _clean_surface(text: str, *, keep_fillers: bool) -> str:
-    output, position = _parse_sequence(text, 0, keep_fillers=keep_fillers)
+def _clean_surface(text: str) -> str:
+    output, position = _parse_sequence(text, 0, inside_mark=False)
     if position != len(text):
         raise ValueError(f"unbalanced ')' in CSJ surface: {text!r}")
-    return "".join(output.split())
+    return output
 
 
 def _parse_sequence(
     text: str,
     position: int,
     *,
-    keep_fillers: bool,
+    inside_mark: bool,
 ) -> tuple[str, int]:
     output: list[str] = []
     while position < len(text) and text[position] != ")":
         if text[position] != "(":
-            output.append(text[position])
+            if not text[position].isspace():
+                output.append(text[position])
             position += 1
             continue
         tag_end = position + 1
@@ -136,23 +136,21 @@ def _parse_sequence(
         content, close = _parse_sequence(
             text,
             tag_end,
-            keep_fillers=keep_fillers,
+            inside_mark=inside_mark or tag in {"F", "D"},
         )
         if close >= len(text):
             raise ValueError(f"unclosed CSJ annotation in {text!r}")
-        if tag != "F" or keep_fillers:
+        if tag in {"F", "D"} and not inside_mark:
+            output.append(f"({tag} {content})")
+        else:
             output.append(content)
         position = close + 1
     return "".join(output), position
 
 
-def csj_reference_text(
-    utterances: list[CSJUtterance],
-    *,
-    keep_fillers: bool,
-) -> str:
+def csj_reference_text(utterances: list[CSJUtterance]) -> str:
     return "".join(
-        _clean_surface(line, keep_fillers=keep_fillers)
+        _clean_surface(line)
         for utterance in utterances
         for line in utterance.surface_lines
     )

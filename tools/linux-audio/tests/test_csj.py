@@ -36,17 +36,15 @@ def test_nonverbal_span_is_kept_by_parser_but_excluded_from_reference():
     assert items[2].nonverbal == "<笑>"
     assert items[2].surface_lines == ()
 
-    assert csj_reference_text([items[2]], keep_fillers=True) == ""
+    assert csj_reference_text([items[2]]) == ""
 
 
-def test_verbatim_keeps_fillers_and_content_drops_them():
-    items = parse_csj_transcript(SAMPLE)
-    assert csj_reference_text(items, keep_fillers=True) == (
-        "質問させていただきますあのうん理解にはつ遠く"
+def test_csj_reference_flattens_nested_annotations():
+    items = parse_csj_transcript(
+        "0001 00000.000-00001.000 L:\n"
+        "(F (? x)) (D y) (? z) (?) (F (D a)) (D (F b)) & surface\n"
     )
-    assert csj_reference_text(items, keep_fillers=False) == (
-        "質問させていただきます理解にはつ遠く"
-    )
+    assert csj_reference_text(items) == "(F x)(D y)z(F a)(D b)"
 
 
 @pytest.mark.parametrize(

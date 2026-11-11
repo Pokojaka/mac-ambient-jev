@@ -40,7 +40,7 @@ MODEL_VARIABLES = (
 )
 
 THREADS = 2
-MAX_NORMALIZED_CER = 0.15
+MAX_CER = 0.15
 IMPORT_TIMEOUT_SECONDS = 300
 RESUME_TIMEOUT_SECONDS = 300
 INSPECT_TIMEOUT_SECONDS = 60
@@ -270,7 +270,7 @@ def evaluate_cer(
         [str(evaluator), str(reference_path), str(artifact_path), "--output", str(report_path)],
         os.environ.copy(), EVALUATOR_TIMEOUT_SECONDS, "ASR evaluator",
     )
-    rate = load_json(report_path)["normalized"]["rate"]
+    rate = load_json(report_path)["cer"]["rate"]
     require(isinstance(rate, (int, float)) and not isinstance(rate, bool), "evaluator rate is not a number")
     return float(rate)
 
@@ -428,7 +428,7 @@ def run_acceptance(
     segments = read_segments(import_output)
     check_segments(segments, duration_ms)
     cer = evaluate_cer(evaluator, reference, transcript_text(segments), duration_ms, work / "cer")
-    require(cer <= MAX_NORMALIZED_CER, f"normalized CER {cer:.4f} exceeds {MAX_NORMALIZED_CER}")
+    require(cer <= MAX_CER, f"CER {cer:.4f} exceeds {MAX_CER}")
     check_session(session, fixture, session_id, samples, segments, expected_model, THREADS)
     events_before = (session / "events.jsonl").read_bytes()
 
@@ -456,7 +456,7 @@ def run_acceptance(
     require((session / "events.jsonl").read_bytes() == events_before,
             "resume of a completed session appended events")
     check_session(session, fixture, session_id, samples, segments, expected_model, THREADS)
-    return {"session_id": session_id, "segments": len(segments), "normalized_cer": cer}
+    return {"session_id": session_id, "segments": len(segments), "cer": cer}
 
 
 def main(argv: list[str]) -> int:

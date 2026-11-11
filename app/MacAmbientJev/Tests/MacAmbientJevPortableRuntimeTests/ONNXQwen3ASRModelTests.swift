@@ -211,9 +211,9 @@ struct ONNXQwen3ASRModelTests {
                 let firstStart = clock.now
                 let firstResult = try await engine.transcribe(audio.input)
                 let firstElapsed = firstStart.duration(to: clock.now)
-                let firstCER = CharacterErrorRate.evaluate(
-                    reference: normalizedForFixtureCER(fixture.reference),
-                    hypothesis: normalizedForFixtureCER(firstResult.text)
+                let firstCER = try CharacterErrorRate.evaluate(
+                    reference: fixture.reference,
+                    hypothesis: firstResult.text
                 )
 
                 #expect(!firstResult.text.isEmpty)
@@ -234,9 +234,9 @@ struct ONNXQwen3ASRModelTests {
                 let repeatStart = clock.now
                 let repeatResult = try await engine.transcribe(audio.input)
                 let repeatElapsed = repeatStart.duration(to: clock.now)
-                let repeatCER = CharacterErrorRate.evaluate(
-                    reference: normalizedForFixtureCER(fixture.reference),
-                    hypothesis: normalizedForFixtureCER(repeatResult.text)
+                let repeatCER = try CharacterErrorRate.evaluate(
+                    reference: fixture.reference,
+                    hypothesis: repeatResult.text
                 )
 
                 #expect(repeatResult.text == firstResult.text)
@@ -611,14 +611,6 @@ private func littleEndianUInt32(_ data: Data, at offset: Int) -> UInt32 {
         | (UInt32(data[offset + 1]) << 8)
         | (UInt32(data[offset + 2]) << 16)
         | (UInt32(data[offset + 3]) << 24)
-}
-
-private func normalizedForFixtureCER(_ text: String) -> String {
-    let stripped = text.unicodeScalars.filter {
-        !CharacterSet.whitespacesAndNewlines.contains($0)
-            && !CharacterSet.punctuationCharacters.contains($0)
-    }
-    return String(String.UnicodeScalarView(stripped))
 }
 
 private func expectJapaneseText(_ text: String) throws {

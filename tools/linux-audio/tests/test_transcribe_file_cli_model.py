@@ -202,15 +202,14 @@ def test_transcribe_file_cli_model(tmp_path: Path) -> None:
     )
     assert report_path.is_file(), f"Evaluator did not create {report_path}"
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    raw_cer = report["raw"]["rate"]
-    normalized_cer = report["normalized"]["rate"]
-    assert normalized_cer <= 0.15
+    cer = report["cer"]["rate"]
+    assert cer <= 0.15
 
     runtime = artifact["runtime"]
     print(
         "TranscribeFile model CLI diagnostics "
         f"size={model_size} duration_seconds={runtime['audio_seconds']} "
-        f"rtf={runtime['rtf']} raw_cer={raw_cer} normalized_cer={normalized_cer} "
+        f"rtf={runtime['rtf']} cer={cer} "
         f"segments={len(segments)} primary={primary_path} artifact={artifact_path} "
         f"reference={reference_path} report={report_path}"
     )

@@ -81,10 +81,10 @@ public enum ASRSessionEvaluator {
         id: String,
         reference: String,
         segments: [ASRSessionSegment]
-    ) -> ASRSessionReport {
+    ) throws -> ASRSessionReport {
         ASRSessionReport(
             id: id,
-            asrEvaluation: ASREvaluation.evaluate(
+            asrEvaluation: try ASREvaluation.evaluate(
                 reference: reference,
                 hypothesis: segments.map(\.text).joined(separator: "\n")
             )
