@@ -35,7 +35,6 @@ public enum EngineStage: String, Codable, CaseIterable, Equatable, Sendable {
     case validatingModels = "validating_models"
     case loadingModels = "loading_models"
     case vad
-    case diarization
     case asr
     case decisions
     case finalization
@@ -131,18 +130,6 @@ public enum EngineSessionStatus: String, Codable, CaseIterable, Equatable, Senda
     case processing
     case finalized
     case failed
-}
-
-public enum EngineSpeakerLabel: String, Codable, CaseIterable, Equatable, Sendable {
-    case speaker1 = "Speaker 1"
-    case speaker2 = "Speaker 2"
-    case speaker3 = "Speaker 3"
-    case speaker4 = "Speaker 4"
-    case speaker5 = "Speaker 5"
-    case speaker6 = "Speaker 6"
-    case speaker7 = "Speaker 7"
-    case other = "OTHER"
-    case unknown = "UNKNOWN"
 }
 
 public enum EngineClauseState: String, Codable, CaseIterable, Equatable, Sendable {
@@ -1010,7 +997,6 @@ public struct EngineTranscriptRow: Codable, Equatable, Sendable {
     public let startMS: Int64
     public let endMS: Int64
     public let text: String
-    public let headings: [EngineSpeakerLabel]
     @EngineNullable public private(set) var clauseState: EngineClauseState?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
@@ -1018,11 +1004,10 @@ public struct EngineTranscriptRow: Codable, Equatable, Sendable {
         case startMS = "start_ms"
         case endMS = "end_ms"
         case text
-        case headings
         case clauseState = "clause_state"
     }
 
-    public init(rowID: String, startMS: Int64, endMS: Int64, text: String, headings: [EngineSpeakerLabel], clauseState: EngineClauseState?) throws {
+    public init(rowID: String, startMS: Int64, endMS: Int64, text: String, clauseState: EngineClauseState?) throws {
         try enginePayloadRequireNonempty(rowID, "row_id")
         try enginePayloadRequire(startMS >= 0, "start_ms must not be negative")
         try enginePayloadRequire(endMS >= startMS, "end_ms must not precede start_ms")
@@ -1031,7 +1016,6 @@ public struct EngineTranscriptRow: Codable, Equatable, Sendable {
         self.startMS = startMS
         self.endMS = endMS
         self.text = text
-        self.headings = headings
         _clauseState = EngineNullable(wrappedValue: clauseState)
     }
 
@@ -1042,7 +1026,6 @@ public struct EngineTranscriptRow: Codable, Equatable, Sendable {
             startMS: container.decode(Int64.self, forKey: .startMS),
             endMS: container.decode(Int64.self, forKey: .endMS),
             text: container.decode(String.self, forKey: .text),
-            headings: container.decode([EngineSpeakerLabel].self, forKey: .headings),
             clauseState: container.decode(EngineNullable<EngineClauseState>.self, forKey: .clauseState).wrappedValue
         )
     }
@@ -1053,7 +1036,6 @@ public struct EngineTranscriptRow: Codable, Equatable, Sendable {
         try container.encode(startMS, forKey: .startMS)
         try container.encode(endMS, forKey: .endMS)
         try container.encode(text, forKey: .text)
-        try container.encode(headings, forKey: .headings)
         try container.encode(_clauseState, forKey: .clauseState)
     }
 }

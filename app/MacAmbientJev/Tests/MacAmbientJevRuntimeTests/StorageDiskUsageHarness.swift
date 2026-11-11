@@ -23,25 +23,6 @@ private struct StorageHarnessVAD: FinalTranscriptVADSegmenter {
     }
 }
 
-private struct StorageHarnessDiarizer: DiarizationEngine {
-    let provenance = storageHarnessProvenance
-    func prepare() async throws {}
-    func unload() async {}
-
-    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] {
-        let file = try AVAudioFile(forReading: fileURL)
-        guard canonicalSampleRate == CanonicalAudio.sampleRate,
-              file.processingFormat.sampleRate == canonicalSampleRate,
-              file.processingFormat.channelCount == CanonicalAudio.channelCount, file.length > 0 else {
-            throw StorageHarnessError.invalidAudio
-        }
-        return [SpeakerSpan(
-            speakerID: "synthetic-speaker", startFrame: 0,
-            endFrame: Int64(canonicalSampleRate), confidence: 1
-        )]
-    }
-}
-
 private struct StorageHarnessASR: ASREngine {
     let provenance = storageHarnessProvenance
     func prepare() async throws {}
@@ -150,8 +131,7 @@ func storageDiskUsageHarness() async throws {
     let processor = NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
-            asr: StorageHarnessASR(), diarization: StorageHarnessDiarizer(),
-            finalTranscriptVAD: StorageHarnessVAD()
+            asr: StorageHarnessASR(), finalTranscriptVAD: StorageHarnessVAD()
         ),
         audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
         contentPriority: .disabled,

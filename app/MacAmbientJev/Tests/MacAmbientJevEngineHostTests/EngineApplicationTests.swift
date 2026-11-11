@@ -81,7 +81,6 @@ import MacAmbientJevTestSupport
         }
         #expect(page.rows.count == 1)
         #expect(page.rows.first?.text == "日本語のテストです。")
-        #expect(page.rows.first?.headings == [.speaker1])
         #expect(page.nextCursor == nil)
         #expect(try await h.failureCode(
             of: "transcript.read",
@@ -105,7 +104,7 @@ import MacAmbientJevTestSupport
         let bundle = URL(fileURLWithPath: exported.destinationPath, isDirectory: true)
         #expect(bundle.deletingLastPathComponent().standardizedFileURL.path == exportDirectory.standardizedFileURL.path)
         let text = try String(contentsOf: bundle.appending(path: "transcript.txt"), encoding: .utf8)
-        #expect(text == "[00:00] Speaker 1: 日本語のテストです。\n")
+        #expect(text == "[00:00] 日本語のテストです。\n")
         #expect(try FileManager.default.contentsOfDirectory(atPath: bundle.path).sorted() == ["audio.flac", "transcript.txt"])
 
         let sourceLayout = SessionLayout(
@@ -476,7 +475,6 @@ private final class GatedFinalizationInferenceProvider: EngineInferenceProviding
         EngineInference(
             engines: SessionProcessingEngines(
                 asr: FakeASR(calls: calls),
-                diarization: FakeDiarizer(calls: calls),
                 finalTranscriptVAD: GatedOfflineFinalTranscriptVAD(gate: gate)
             ),
             contentPriority: .disabled,

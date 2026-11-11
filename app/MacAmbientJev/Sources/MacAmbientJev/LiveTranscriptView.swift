@@ -68,12 +68,9 @@ struct LiveTranscriptView: View {
     private func transcriptList(proxy: ScrollViewProxy) -> some View {
         let rows = viewModel.rows
         return ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(rows.enumerated()), id: \.element.id) { entry in
-                    let heading = Self.speakerHeading(for: entry.offset, in: rows)
-                    transcriptRow(entry.element, speakerHeading: heading)
-                        .padding(.top, Self.topSpacing(forIndex: entry.offset, speakerHeading: heading))
-                        .id(entry.element.id)
+            LazyVStack(alignment: .leading, spacing: AppSpacing.xs) {
+                ForEach(rows) { row in
+                    transcriptRow(row).id(row.id)
                 }
             }
             .padding(AppSpacing.lg)
@@ -104,20 +101,7 @@ struct LiveTranscriptView: View {
         }
     }
 
-    static func speakerHeading(for index: Int, in rows: [LiveTranscriptRow]) -> String? {
-        let labels = rows[index].displaySpeakerLabels
-        guard !labels.isEmpty else { return nil }
-        guard index == 0 || rows[index - 1].displaySpeakerLabels != labels else { return nil }
-        return labels.joined(separator: " / ")
-    }
-
-    /// A new speaker heading gets the larger gap; rows continuing the same turn stay close.
-    static func topSpacing(forIndex index: Int, speakerHeading: String?) -> CGFloat {
-        if index == 0 { return 0 }
-        return speakerHeading == nil ? AppSpacing.xs : AppSpacing.md
-    }
-
-    private func transcriptRow(_ row: LiveTranscriptRow, speakerHeading: String?) -> some View {
+    private func transcriptRow(_ row: LiveTranscriptRow) -> some View {
         HStack(alignment: .top, spacing: AppSpacing.md) {
             Button {
                 detailRowID = row.id
@@ -128,7 +112,7 @@ struct LiveTranscriptView: View {
                     .frame(width: 42, alignment: .leading)
             }
             .buttonStyle(.plain)
-            .help("この行の発話文の判定状態と話者区間を表示")
+            .help("この行の発話文の判定状態を表示")
             .accessibilityLabel("時刻 \(formatTime(row.startMilliseconds))、詳細を表示")
             .popover(isPresented: detailPopover(for: row.id), arrowEdge: .trailing) {
                 transcriptDetails(row)
@@ -136,12 +120,6 @@ struct LiveTranscriptView: View {
             }
 
             VStack(alignment: .leading, spacing: AppSpacing.xs) {
-                if let speakerHeading {
-                    Text(speakerHeading)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-
                 Text(row.text)
                     .font(.body)
                     .textSelection(.enabled)
@@ -169,21 +147,9 @@ struct LiveTranscriptView: View {
     }
 
     private func transcriptDetails(_ row: LiveTranscriptRow) -> some View {
-        VStack(alignment: .leading, spacing: AppSpacing.xs) {
-            Text(row.clauseState.rowDetailsDescription)
-
-            if !row.speakers.isEmpty {
-                Text("話者区間")
-                    .font(.caption.weight(.semibold))
-                ForEach(Array(row.speakers.enumerated()), id: \.offset) { entry in
-                    let span = entry.element
-                    Text("\(span.displayLabel ?? span.id) · \(formatTime(span.startMilliseconds))–\(formatTime(span.endMilliseconds))")
-                        .font(.caption.monospacedDigit())
-                }
-            }
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
+        Text(row.clauseState.rowDetailsDescription)
+            .font(.caption)
+            .foregroundStyle(.secondary)
     }
 
     private func formatTime(_ milliseconds: Int64) -> String {

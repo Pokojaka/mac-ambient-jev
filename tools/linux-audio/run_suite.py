@@ -13,7 +13,6 @@ from enum import Enum
 from common.baseline import (
     REFERENCE_KINDS,
     build_asr_baseline_record,
-    build_diarization_baseline_record,
 )
 from common.files import write_json_atomic
 
@@ -216,48 +215,6 @@ def asr_baseline_check(
     return CheckResult(name, Status.PASS, str(output_path))
 
 
-def diarization_baseline_check(
-    *,
-    audio_path: pathlib.Path,
-    speaker_reference: pathlib.Path,
-    artifact_path: pathlib.Path,
-    evaluation_path: pathlib.Path,
-    output_path: pathlib.Path,
-) -> CheckResult:
-    output_path.unlink(missing_ok=True)
-    for path in (
-        audio_path,
-        speaker_reference,
-        artifact_path,
-        evaluation_path,
-    ):
-        if not path.is_file():
-            return CheckResult(
-                "diarization-baseline-record",
-                Status.SKIPPED_MISSING_DEPENDENCY,
-                f"Required artifact {str(path)!r} is missing",
-            )
-    try:
-        record = build_diarization_baseline_record(
-            artifact_path=artifact_path,
-            evaluation_path=evaluation_path,
-            audio_path=audio_path,
-            speaker_reference_path=speaker_reference,
-        )
-        record.write(output_path)
-    except Exception as exc:
-        return CheckResult(
-            "diarization-baseline-record",
-            Status.FAIL,
-            f"{type(exc).__name__}: {exc}",
-        )
-    return CheckResult(
-        "diarization-baseline-record",
-        Status.PASS,
-        str(output_path),
-    )
-
-
 def asr_model_checks(
     *,
     here: pathlib.Path,
@@ -343,97 +300,6 @@ def asr_model_checks(
     return checks
 
 
-def diarization_model_checks(
-    *,
-    here: pathlib.Path,
-    audio_path: pathlib.Path,
-    speaker_reference: pathlib.Path,
-    work_root: pathlib.Path,
-    device: str,
-    profile: str,
-    match_threshold: float,
-    ambiguity_margin: float,
-    min_clean_speech_ms: int,
-) -> list[CheckResult]:
-    work_root.mkdir(parents=True, exist_ok=True)
-
-    nemotron_output = work_root / "nemotron3.json"
-    diarization_evaluation_output = (
-        work_root / "diarization-evaluation.json"
-    )
-    diarization_baseline_output = (
-        work_root / "nemotron3-current.json"
-    )
-    nemotron_output.unlink(missing_ok=True)
-    diarization_evaluation_output.unlink(missing_ok=True)
-    root = here.parents[1]
-
-    nemotron = optional_command_check(
-        "nemotron3-runner",
-        [
-            sys.executable,
-            "-m",
-            "diarization.nemotron3",
-            str(audio_path),
-            "--output",
-            str(nemotron_output),
-            "--device",
-            device,
-            "--profile",
-            profile,
-            "--match-threshold",
-            str(match_threshold),
-            "--ambiguity-margin",
-            str(ambiguity_margin),
-            "--min-clean-speech-ms",
-            str(min_clean_speech_ms),
-        ],
-        here,
-        modules=(
-            "nemo",
-            "huggingface_hub",
-            "torch",
-        ),
-        paths=(audio_path,),
-    )
-
-    diarization_evaluator = optional_command_check(
-        "diarization-evaluator",
-        [
-            "swift",
-            "run",
-            "--package-path",
-            str(root / "app" / "MacAmbientJev"),
-            "MacAmbientJevEvaluateDiarization",
-            str(speaker_reference),
-            str(nemotron_output),
-            "--output",
-            str(diarization_evaluation_output),
-        ],
-        root,
-        executables=("swift",),
-        paths=(
-            speaker_reference,
-            nemotron_output,
-        ),
-        outputs=(diarization_evaluation_output,),
-    )
-
-    diarization_baseline = diarization_baseline_check(
-        audio_path=audio_path,
-        speaker_reference=speaker_reference,
-        artifact_path=nemotron_output,
-        evaluation_path=diarization_evaluation_output,
-        output_path=diarization_baseline_output,
-    )
-
-    return [
-        nemotron,
-        diarization_evaluator,
-        diarization_baseline,
-    ]
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     mode = parser.add_mutually_exclusive_group(
@@ -455,16 +321,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--work-root", type=pathlib.Path)
     parser.add_argument("--device")
-    parser.add_argument(
-        "--with-diarization",
-        action="store_true",
-        help="add the post-V1 Nemotron diarization checks to --full",
-    )
-    parser.add_argument("--full-speaker-reference", type=pathlib.Path)
-    parser.add_argument("--diarization-profile")
-    parser.add_argument("--speaker-match-threshold", type=float)
-    parser.add_argument("--speaker-ambiguity-margin", type=float)
-    parser.add_argument("--min-clean-speech-ms", type=int)
     args = parser.parse_args(argv)
 
     full_options = {
@@ -473,13 +329,6 @@ def main(argv: list[str] | None = None) -> int:
             args.full_asr_reference_verbatim,
         "--work-root": args.work_root,
         "--device": args.device,
-    }
-    diarization_options = {
-        "--full-speaker-reference": args.full_speaker_reference,
-        "--diarization-profile": args.diarization_profile,
-        "--speaker-match-threshold": args.speaker_match_threshold,
-        "--speaker-ambiguity-margin": args.speaker_ambiguity_margin,
-        "--min-clean-speech-ms": args.min_clean_speech_ms,
     }
     if args.full:
         missing = [name for name, value in full_options.items() if value is None]
@@ -495,31 +344,8 @@ def main(argv: list[str] | None = None) -> int:
             ).items()
             if value is not None
         ]
-        if given or args.with_diarization:
-            parser.error(
-                f"{', '.join(given or ['--with-diarization'])} "
-                "requires --full"
-            )
-    if args.with_diarization:
-        missing = [
-            name
-            for name, value in diarization_options.items()
-            if value is None
-        ]
-        if missing:
-            parser.error(
-                f"--with-diarization requires {', '.join(missing)}"
-            )
-    else:
-        given = [
-            name
-            for name, value in diarization_options.items()
-            if value is not None
-        ]
         if given:
-            parser.error(
-                f"{', '.join(given)} requires --with-diarization"
-            )
+            parser.error(f"{', '.join(given)} requires --full")
 
     here = pathlib.Path(__file__).resolve().parent
     root = here.parents[1]
@@ -563,21 +389,6 @@ def main(argv: list[str] | None = None) -> int:
                 device=args.device,
             )
         )
-    if args.with_diarization:
-        checks.extend(
-            diarization_model_checks(
-                here=here,
-                audio_path=args.full_audio,
-                speaker_reference=args.full_speaker_reference,
-                work_root=args.work_root,
-                device=args.device,
-                profile=args.diarization_profile,
-                match_threshold=args.speaker_match_threshold,
-                ambiguity_margin=args.speaker_ambiguity_margin,
-                min_clean_speech_ms=args.min_clean_speech_ms,
-            )
-        )
-
     summary = summarize(checks)
     payload = summary.to_dict()
     print(

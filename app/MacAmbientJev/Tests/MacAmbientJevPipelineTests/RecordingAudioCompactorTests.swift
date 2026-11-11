@@ -458,7 +458,7 @@ func aRecordingWithoutFramesIsNeverScheduledForCompaction() async throws {
     try ProcessingMetadataStore(sessionURL: layout.sessionURL).save(ProcessingMetadata(
         finalizationAttempt: nil,
         activeRuns: ActiveRuns(
-            segmentation: "seg", asr: "asr", diarization: "diar", clauseBoundary: "boundary", contentPriority: "priority"
+            segmentation: "seg", asr: "asr", clauseBoundary: "boundary", contentPriority: "priority"
         ),
         pendingClauseBoundarySegments: [],
         pendingContentPriorityClauses: []
@@ -469,17 +469,14 @@ func aRecordingWithoutFramesIsNeverScheduledForCompaction() async throws {
 }
 
 @Test
-func theMaintainerCompactsARecordingAndRemovesItsTransients() async throws {
+func theMaintainerCompactsARecording() async throws {
     let layout = try makeLayout()
     defer { cleanUp(layout) }
     try await recordPCM(layout)
-    try FileManager.default.createDirectory(at: layout.derivedDirectory, withIntermediateDirectories: true)
-    try Data(count: 1).write(to: layout.diarizationInputURL)
     let manifest = recordingManifest
 
     try SessionStorageMaintainer.run(.compactRecording, layout: layout, manifest: manifest)
 
-    #expect(!exists(layout.derivedDirectory))
     try expectConverged(layout, info: try TimelineAudioInfo(committedFrames: Int64(recordedSamples.count), gapEvents: []), samples: recordedSamples)
 }
 
@@ -493,8 +490,6 @@ func maintenanceCancellationBeforeFirstCandidateReportsEveryCandidateAsUncomplet
     }
     try await recordPCM(first)
     for layout in [first, second] {
-        try FileManager.default.createDirectory(at: layout.derivedDirectory, withIntermediateDirectories: true)
-        try Data(count: 1).write(to: layout.diarizationInputURL)
         try Data(count: 1).write(to: layout.recordingFLACPartialURL)
     }
     let firstManifest = try first.loadManifest()
@@ -519,7 +514,6 @@ func maintenanceCancellationBeforeFirstCandidateReportsEveryCandidateAsUncomplet
         }
     }.value
     #expect(directRunWasCancelled)
-    #expect(exists(second.derivedDirectory))
 
     let failures = await Task {
         await SessionStorageMaintainer.maintain(items) { _ in
@@ -556,9 +550,7 @@ func maintenanceCancellationBeforeFirstCandidateReportsEveryCandidateAsUncomplet
     #expect(try SessionAudioStorageStore(layout: first).load() == .recordingPCM)
     #expect(try SessionAudioStorageStore(layout: second).load() == .recordingPCM)
     #expect(exists(first.processingDirectory))
-    #expect(exists(first.derivedDirectory))
     #expect(exists(first.recordingFLACPartialURL))
-    #expect(exists(second.derivedDirectory))
     #expect(exists(second.recordingFLACPartialURL))
 }
 
@@ -573,8 +565,6 @@ func maintenanceCancellationDuringCandidateReportsCurrentAndRemainingButNotCompl
         cleanUp(skipped)
     }
     for layout in [completed, skipped] {
-        try FileManager.default.createDirectory(at: layout.derivedDirectory, withIntermediateDirectories: true)
-        try Data(count: 1).write(to: layout.diarizationInputURL)
         try Data(count: 1).write(to: layout.recordingFLACPartialURL)
     }
     let completedManifest = try completed.loadManifest()
@@ -618,9 +608,7 @@ func maintenanceCancellationDuringCandidateReportsCurrentAndRemainingButNotCompl
     for layout in [completed, interrupted, skipped] {
         #expect(try SessionAudioStorageStore(layout: layout).load() == .recordingPCM)
     }
-    #expect(!exists(completed.derivedDirectory))
     #expect(!exists(completed.recordingFLACPartialURL))
-    #expect(exists(skipped.derivedDirectory))
     #expect(exists(skipped.recordingFLACPartialURL))
 }
 

@@ -1,6 +1,6 @@
 # セッション保存形式
 
-保存音声は再処理の基礎であり、文字起こし・話者・BTSJ 発話文の境界・優先度は派生結果です。発話文の境界と優先度は app bundle 同梱の Core ML 発話文モデルが判定します。保存 key と event 名の `clause` / `節` はその発話文単位の識別名です。派生結果は追記専用のイベントログに残し、処理 metadata が選ぶ run だけを現在の結果として公開します。処理の流れは [architecture.md](architecture.md) を参照してください。
+保存音声は再処理の基礎であり、文字起こし・BTSJ 発話文の境界・優先度は派生結果です。発話文の境界と優先度は app bundle 同梱の Core ML 発話文モデルが判定します。保存 key と event 名の `clause` / `節` はその発話文単位の識別名です。派生結果は追記専用のイベントログに残し、処理 metadata が選ぶ run だけを現在の結果として公開します。処理の流れは [architecture.md](architecture.md) を参照してください。
 
 以下の表は **JSON 上の実際のキーと値**です。イベントと処理 metadata は snake_case のキーを使いますが、checkpoint と音声用 JSONL は camelCase です。String enum の値はキー変換の対象ではなく、`clauseBoundary`、`contentPriority`、`lowPriority` などは camelCase のままです。
 
@@ -28,7 +28,7 @@ lookup・一覧・復旧は列挙で得た実フォルダー名を使い、指�
 
 Windows では root を CreateFileW で検査し、固定した親 handle から NtCreateFile で子を開きます。reparse point は全て拒否します。原子保存は同一ディレクトリに排他的な一時ファイルを作成して FlushFileBuffers で同期し、`writeAtomically` は `msj_rename` helper で公開します。公開 file access API は helper 呼び出し前にファイルを flush し、呼び出し後に親ディレクトリを flush します。`msj_rename` は `FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS` を設定して NtSetInformationFile を呼び出すだけです。`SessionFileAccess.rename` も同じ helper を使います。ログは LockFileEx で排他制御します。API の失敗はエラーにし、保証の弱い経路へ切り替えません。詳細は [windows.md](windows.md) を参照してください。以下の POSIX descriptor の説明は macOS と Linux に適用します。
 
-`sessionsRoot` 自体と直下のセッションフォルダー、セッション以下の全ディレクトリ・ファイルに symlink は使えません。`session.json`、`events.jsonl`、`processing_metadata.json`、audio ディレクトリの `storage.json`、checkpoint・chunk index・gap log・PCM chunk、保存済み original・FLAC、処理中の CAF・FLAC partial も同じ規則です。末尾ファイルだけでなく `audio`・`processing`・`derived` などの親ディレクトリの symlink も、読み書き・列挙・復旧・削除で明示エラーにします。catalog と復旧はリンクされたセッションをエラー行として扱い、リンク先をセッションとして処理しません。
+`sessionsRoot` 自体と直下のセッションフォルダー、セッション以下の全ディレクトリ・ファイルに symlink は使えません。`session.json`、`events.jsonl`、`processing_metadata.json`、audio ディレクトリの `storage.json`、checkpoint・chunk index・gap log・PCM chunk、保存済み original・FLAC、`.recording.flac.partial` も同じ規則です。末尾ファイルだけでなく `audio`・`processing` などの親ディレクトリの symlink も、読み書き・列挙・復旧・削除で明示エラーにします。catalog と復旧はリンクされたセッションをエラー行として扱い、リンク先をセッションとして処理しません。
 
 `SessionFileAccess` は呼出し元が明示した実 root を `O_DIRECTORY | O_NOFOLLOW` で開き、子ディレクトリを固定した descriptor から `openat` でたどります。通常ファイルは `O_NOFOLLOW` で開いた descriptor を使い、書込み用一時ファイルは同じ実ディレクトリに排他的に作成して `renameat` で公開します。公開前にファイルと公開後にディレクトリを同期します。Apple と Windows の音声 decoder は `SessionFileAccess` が session root に固定して開いた handle を decode の全期間使います。URL を事前検証した後に path から開き直す経路はありません。Windows の decoder が CRT descriptor や Media Foundation の byte stream を使う場合も、元の固定 handle の duplicate から作られます。開いた後でパスが置き換わっても、その操作は開いた元のファイルを使い、symlink の外部対象を変更しません。
 
@@ -46,14 +46,13 @@ Windows では root を CreateFileW で検査し、固定した親 handle から
 └── audio/
     ├── storage.json                  保存音声の権威。セッション作成時に書く
     ├── recording.flac                録音の FLAC 保存形式（storage.json が recordingFLAC のとき）
+    ├── .recording.flac.partial       FLAC 化中の一時ファイル
     ├── original.<元の拡張子>          import のみ。拡張子なしなら original
-    ├── processing/
-    │   ├── checkpoint.json
-    │   ├── audio-chunks.jsonl
-    │   ├── audio-gaps.jsonl
-    │   └── chunk-000000.f32le ...     0 始まりの連番
-    └── derived/
-        └── diarization-input.caf     発話区間のある確定処理の話者分離入力
+    └── processing/
+        ├── checkpoint.json
+        ├── audio-chunks.jsonl
+        ├── audio-gaps.jsonl
+        └── chunk-000000.f32le ...     0 始まりの連番
 ```
 
 ### storage.json
@@ -76,13 +75,13 @@ Windows では root を CreateFileW で検査し、固定した親 handle から
 {"state":"importedOriginal","timeline":{"channelCount":1,"committedFrames":9600000,"gapEvents":[{"frameCount":8000,"reason":"overflow","startFrame":160000}],"sampleRate":16000}}
 ```
 
-状態ごとの audio ディレクトリの中身は次のとおりです。確定処理の終了後は、derived ディレクトリと import の processing ディレクトリは残りません。
+状態ごとの audio ディレクトリの中身は次のとおりです。`.recording.flac.partial` は FLAC 化中だけ存在する一時ファイルで、確定処理の終了処理と起動時の保存整理で削除します。import の processing ディレクトリも確定処理の終了後は残りません。
 
 | 状態 | 作られる時 | audio ディレクトリの中身 |
 | --- | --- | --- |
-| `recordingPCM` | 録音セッションの作成時から FLAC 化まで | `storage.json`、processing ディレクトリ（PCM chunk）。確定処理の間だけ derived ディレクトリ |
+| `recordingPCM` | 録音セッションの作成時から FLAC 化まで | `storage.json`、processing ディレクトリ（PCM chunk） |
 | `recordingFLAC` | FLAC 化の完了時 | `storage.json`、`recording.flac` |
-| `importedOriginal` | import セッションの作成時から | `storage.json`、`original*`。確定処理の間だけ processing ディレクトリ（処理タイムライン）と derived ディレクトリ |
+| `importedOriginal` | import セッションの作成時から | `storage.json`、`original*`。確定処理の間だけ processing ディレクトリ（処理タイムライン） |
 
 - `storage.json` が保存音声の形を決める唯一の権威で、3 状態のどれかです。`recordingPCM` は processing ディレクトリの PCM chunk が録音です。`recordingFLAC` は `timeline`（長さと欠落記録）を持ち、`recording.flac` が録音です。`importedOriginal` は `timeline`（直近の処理タイムライン構築の長さと欠落記録。構築前は null）を持ち、original が元です。ファイルの欠落・破損・セッションの作成方法との不一致はセッションごとのエラーで、推測で補いません。状態が `recordingFLAC` なら PCM が残っていても読まず、FLAC が欠落または復号できなければエラーです。
 - 録音は `recordingPCM` の間、処理タイムライン自体が保存音声です。入力の全 channel を平均し、連続 SRC を通した **16,000 Hz・mono・32-bit float PCM** を保存します。
@@ -93,17 +92,9 @@ Windows では root を CreateFileW で検査し、固定した親 handle から
 - macOS の AVAudioConverter は通常の priming 後に EOS まで drain し、正確な変換長の floor または ceil にあたる出力を全て保持します。Windows の境界丸め・tail trimming と macOS の EOS 出力長は同じ規則ではありません。また、異なる converter の出力 sample 値は bit-identical ではありません。
 - Windows の Media Foundation AAC decode は Source Reader が返す PCM を EOS まで消費します。platform codec padding が decoded frames に含まれる場合もそのまま source timeline に含め、再生時間等から推定した padding trimming は行いません。
 - 各 platform の timeline builder は Core の [`ImportedAudioTimelineBuilding`](../app/MacAmbientJev/Sources/MacAmbientJevCore/ImportedAudioTimelineBuilding.swift) を実装し、セッションに保存済みの original だけを読み、コピーせずに processing timeline を作って checkpoint を返します。builder は `storage.json` を書きません。共通 Pipeline の [`SessionProcessingAudio`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionProcessingAudio.swift) は注入された builder を `SessionLayout.processingDirectory`（audio 配下の処理ディレクトリ）とともに呼び、checkpoint から reader を作成して音声を検証した後、`.importedOriginal(reader.info)` を `storage.json` に保存します。
-- `derived` の CAF は処理用の派生音声で、確定処理がセッション情報を読めない開始失敗を除く全ての結果（完了・失敗・一時停止・その他の開始失敗）で削除します。import の処理タイムラインと `recording.flac.partial` も同じ扱いです。録音の PCM は一時ファイルではなく、FLAC 状態を保存するまで権威です。録音の書き出し音声は `recording.flac` のコピー、import の書き出し音声は original のコピーであり、内部 PCM chunk と外部書き出しは別物です。
+- `SessionTransientAudio.urls` は `.recording.flac.partial` を全 source の削除対象にし、import の場合だけ processing ディレクトリも加えます。録音の PCM は一時ファイルではなく、FLAC 状態を保存するまで権威です。録音の書き出し音声は `recording.flac` のコピー、import の書き出し音声は original のコピーであり、内部 PCM chunk と外部書き出しは別物です。
 
-### 正規 CAF の生成と読み取り
-
-derived ディレクトリの話者分離入力 CAF は、Core の Foundation-only [`ProcessingTimelineAudioExporter`](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingTimelineAudioExporter.swift) が [`TimelineAudioReading`](../app/MacAmbientJev/Sources/MacAmbientJevCore/TimelineAudio.swift) から書き、[`CanonicalCAFReader`](../app/MacAmbientJev/Sources/MacAmbientJevCore/CanonicalCAFReader.swift) が読み取ります。入力フレームは有限値の 16 kHz mono Float32 で、IEEE-754 sample bit pattern は変更せず little-endian で保存します。exporter の読み取り・書き込みは `framesPerBuffer` の bounded chunk 単位です。`CanonicalCAFReader.readSamples` は呼び出し側が指定する frame range を読み取ります。0 frame も許可します。
-
-CAF は [Core Audio Format specification](https://developer.apple.com/library/archive/documentation/MusicAudio/Reference/CAFSpec/CAF_spec/CAF_spec.html) に沿う明示的な 68-byte header で、`caff` version 1 / flags 0、32-byte `desc`（16,000 Hz、`lpcm`、flags 3、packet bytes 4、packet frames 1、mono、32 bits）、data chunk size `4 + 4 × committedFrames` と edit count 0 を持ち、`free` padding は書きません。`CanonicalCAFReader` はこの最小形式と、`free` chunk（body は 4,016 bytes）を含む committed Mac CAF fixture を受け付けます。Core tests は sample bits の完全一致を検証し、Mac AVFoundation と runtime source も両形式を受け付けます。
-
-CAF data chunk length で表現できないフレーム数は side effect の前に失敗します。短い・長い読み取りは frame、expected、actual を含むエラー、非有限値は absolute frame を含むエラーとなり、reader と I/O のエラーはそのまま伝播します。公開時は `SessionFileAccess` を `sessionURL` root として使い、隠し UUID sibling を排他的に作成します。書き込み・synchronize・close を全て throwing で実行してから `SessionFileAccess.rename` で destination を置換し、directory を同期します。Windows では、公開 file access API が `msj_rename` helper の呼び出し前に file を flush し、呼び出し後に parent directory を flush します。helper は `FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS` を設定して NtSetInformationFile を呼び出すだけです。`SessionFileAccess.rename` は同じ helper を使います。エラー時は sibling を cleanup し、書き込み失敗時に既存 destination は置換されません。cleanup も失敗した場合は両方を明示する combined error を返します。
-
-根拠: [共有 ImportedAudioTimelineWriter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ImportedAudioTimelineWriter.swift)、[CanonicalAudio.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/CanonicalAudio.swift)、[macOS AudioFileTimelineBuilder.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/AudioFileTimelineBuilder.swift)、[macOS CanonicalAudioResampler.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/CanonicalAudioResampler.swift)、[Windows AudioFileTimelineBuilder.swift](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/AudioFileTimelineBuilder.swift)、[Windows AudioImportDecoder.swift](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/AudioImportDecoder.swift)、[Windows CanonicalAudioResampler.swift](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/CanonicalAudioResampler.swift)、[CWindowsAudio.cpp](../app/MacAmbientJev/Sources/CWindowsAudio/CWindowsAudio.cpp)、[CMiniaudio README](../app/MacAmbientJev/Sources/CMiniaudio/README.md)。
+根拠: [共有 ImportedAudioTimelineWriter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ImportedAudioTimelineWriter.swift)、[CanonicalAudio.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/CanonicalAudio.swift)、[macOS AudioFileTimelineBuilder.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/AudioFileTimelineBuilder.swift)、[macOS CanonicalAudioResampler.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/CanonicalAudioResampler.swift)、[Windows AudioFileTimelineBuilder.swift](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/AudioFileTimelineBuilder.swift)、[Windows CanonicalAudioResampler.swift](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/CanonicalAudioResampler.swift)、[Windows AudioImportDecoder.swift](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/AudioImportDecoder.swift)、[CWindowsAudio.cpp](../app/MacAmbientJev/Sources/CWindowsAudio/CWindowsAudio.cpp)、[CMiniaudio README](../app/MacAmbientJev/Sources/CMiniaudio/README.md)。
 
 ### 録音の FLAC 化
 
@@ -118,7 +109,7 @@ CAF data chunk length で表現できないフレーム数は side effect の前
 frame index は byte offset と先頭 sample（および小さな frame 情報）だけを保持し、最初の random read 時の構造 scan、または全音声検証時に一度だけ構築します。random read は要求範囲と交差する frame だけを復号します。音声全体の PCM は保持せず、メモリ使用量は小さな frame index を除いて録音時間に比例しません。ファイル I/O は `SessionFileAccess` が session root に固定した handle を使います。
 
 1. processing ディレクトリの checkpoint と PCM を検証します。`committedFrames` が 0 の録音は compactor の `committedFrames > 0` guard により変換対象にならず、`recordingPCM` のままで FLAC を作りません（`audioSource` は nil です）。`RecordingFLAC.write` を 0 frame で直接呼んだ場合も、出力ファイルを開く前に明確な empty-recording error を返します。
-2. 古い `recording.flac.partial` を削除し、`RecordingFLAC` で `recording.flac.partial` へ書き込み、synchronize します。
+2. 古い `.recording.flac.partial` を削除し、`RecordingFLAC` で `.recording.flac.partial` へ書き込み、synchronize します。
 3. partial の STREAMINFO と全 frame を検証し、total samples が `committedFrames` と正確に一致することを確認します。全 frame を順次復号して CRC と MD5 を検証し、PCM source の全 sample の量子化値とも比較します。読み書きと検証は FLAC block 単位の streaming 処理で、音声全体の PCM を保持しない bounded-memory です。短い読み取り、PCM 不一致、復号失敗はエラーです。
 4. `recording.flac` へ rename して公開し、`storage.json` を `recordingFLAC(timeline)` に保存します。この保存が権威を切り替える唯一の操作です。
 5. processing ディレクトリを削除して audio ディレクトリを synchronize します。
@@ -188,25 +179,24 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 | `asr.pending` | run、seg run、segment、開始・終了範囲 | 空 object `{}`。確定処理でのみ出力する |
 | `asr.completed` | run、seg run、segment、開始・終了範囲 | `text`: String、`detected_language`: optional String、`engine`: String、`model`: optional String、`outcome`: `recognized` または `empty` |
 | `asr.failed` | run、seg run、segment、開始・終了範囲 | `kind`: 下記の失敗種別、`message`: String |
-| `speaker.span` | run、開始・終了範囲 | `speaker_id`: String、`start_frame`: Int64、`end_frame`: Int64、`confidence`: optional Double |
 | `clause_boundaries.assessed` | run（境界判定 run） | 下記の境界判定 object |
 | `clause_boundaries.pending` | run（境界判定 run） | `source`: 区間参照、`reason`: 保留理由、`message`: String |
 | `clauses.closed` | run（境界判定 run） | 下記の節 object。複数行にまたがるため envelope の segment は使わない |
 | `content_priority.assigned` | run（優先度 run） | `assignments`: 判定 object の配列、`request`: リクエスト記録または null |
 
-`stage` の raw value は `segmentation`、`asr`、`diarization`、`clauseBoundary`、`contentPriority` です。metadata のキー `clause_boundary` / `content_priority` と、stage の値 `clauseBoundary` / `contentPriority` を混同しないでください。
+`stage` の raw value は `segmentation`、`asr`、`clauseBoundary`、`contentPriority` です。metadata のキー `clause_boundary` / `content_priority` と、stage の値 `clauseBoundary` / `contentPriority` を混同しないでください。
 
-`asr.completed.outcome` は本文の全 Unicode scalar が空白・改行・句読点（Foundation の whitespacesAndNewlines と punctuationCharacters の文字集合）なら `empty`、それ以外は `recognized` です。`engine` と `model` は認識した実エンジンの provenance から取ります。本番の engine は `qwen3-asr-swift`、外部モデル ID は aufklarer/Qwen3-ASR-1.7B-MLX-8bit です（リポジトリパスではありません）。認識不能を特定の日本語文面との一致で判定しません。
+`asr.completed.outcome` は本文の全 Unicode scalar が空白・改行・句読点（Foundation の whitespacesAndNewlines と punctuationCharacters の文字集合）なら `empty`、それ以外は `recognized` です。`engine` と `model` は認識した実エンジンの provenance から取ります。Mac の本番 engine は `qwen3-asr-swift`、外部モデル ID は aufklarer/Qwen3-ASR-1.7B-MLX-8bit です（リポジトリパスではありません）。認識不能を特定の日本語文面との一致で判定しません。
 
 `asr.failed.kind` は `engine_unavailable`（準備できないエンジン）、`audio_unreadable`（区間音声読取失敗）、`transcription_failed`（認識呼び出し失敗）のいずれかです。TIMEOUT の専用種別はありません。
 
-イベントには空本文を含む全区間が残ります。ライブの `segment.created` / `asr.completed` は暫定結果で、確定処理では新しい segmentation / ASR run を作ります。`speaker.span` の ID はエンジンの raw ID で、表示用の Speaker 番号をイベントへ書き戻しません。
+イベントには空本文を含む全区間が残ります。ライブの `segment.created` / `asr.completed` は暫定結果で、確定処理では新しい segmentation / ASR run を作ります。
 
-`processing.run.completed` の count は段階ごとの処理対象件数です。segmentation / ASR は区間、diarization は span を数えます。clauseBoundary は判定が成立した区間と保留の区間、contentPriority は可視本文のある発話文の成立数と保留数を数えます。通常の decision run は判定保留があっても `succeeded: true` を出し、`failed_count` に保留数を保存します。これはローカル必須処理の失敗を意味しません。再試行 run の実際の失敗は `succeeded: false` です（再試行 run の終了・count 規則は下記）。保存破損や参照の不整合は保留に変換せず、エラーにします。
+`processing.run.completed` の count は段階ごとの処理対象件数です。segmentation / ASR は区間、clauseBoundary は判定が成立した区間と保留の区間、contentPriority は可視本文のある発話文の成立数と保留数を数えます。通常の decision run は判定保留があっても `succeeded: true` を出し、`failed_count` に保留数を保存します。これはローカル必須処理の失敗を意味しません。再試行 run の実際の失敗は `succeeded: false` です（再試行 run の終了・count 規則は下記）。保存破損や参照の不整合は保留に変換せず、エラーにします。
 
-検証済み VAD が0区間の確定処理では segmentation / diarization / ASR の各 run に provenance を持つ開始と、成功・完了0件・失敗0件の完了を保存します。対象がないため `segment.created`、ASR 区間イベント、`speaker.span` は作りません。derived 内の話者分離入力 CAF を生成・参照せず、保存音声も変更しません。3 run の保存検証後、空の transcript と `complete` を公開し、`active_runs` はローカル必須3段階だけを新しい run へ切り替え、任意の decision pointer は nil、両保留配列は空にします。発話文判定の呼出しは0です。再処理でも新しい run を作り、完了した空結果を未完了扱いで自動復旧しません。
+検証済み VAD が0区間の確定処理では segmentation と ASR の run を開始し、両方の `processing.run.completed` は `succeeded: true`、`completed_count: 0`、`failed_count: 0` です。対象がないため `segment.created`、`asr.pending`、ASR 結果イベントは作りません。ASR の prepare・推論と発話文判定は行わず、保存音声も変更しません。空の transcript と `complete` を公開し、`active_runs` は segmentation と ASR の run ID を選び、任意の decision pointer は設定せず、両保留配列を空にします。再処理でも新しい run を作り、完了した空結果を未完了扱いで自動復旧しません。
 
-根拠: [ActiveRuns.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ActiveRuns.swift)、[ASREventPayloads.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)、[PipelineCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/PipelineCoordinator.swift)、[TranscriptTypes.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptTypes.swift)、[DiarizationCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/DiarizationCoordinator.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FinalTranscriptPipeline.swift)、[LiveASRSession.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveASRSession.swift)。
+根拠: [ActiveRuns.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ActiveRuns.swift)、[ASREventPayloads.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)、[PipelineCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/PipelineCoordinator.swift)、[TranscriptTypes.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptTypes.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FinalTranscriptPipeline.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)、[LiveASRSession.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveASRSession.swift)。
 
 ### 発話文判定イベント
 
@@ -293,8 +283,8 @@ CancellationError または取り消し済み task を一時停止とするの�
 | --- | --- | --- |
 | segmentation（Mac） | `fluidaudio-silero-vad` / FluidAudio の Repo.vad.rawValue / `FluidAudio@0.15.8` | `pre_roll_seconds` = `0.1`、`max_segment_seconds` = `14.0`、`min_silence_seconds` = `0.75`、`vad_threshold` = `0.5`、`split_search_window_seconds` = `2.0`、`split_energy_frame_seconds` = `0.02`、`minimum_independent_segment_seconds` = `0.5` |
 | segmentation（Linux / Windows） | `onnxruntime-silero-vad` / 固定 model のファイル名 `silero_vad_16k_op15.onnx` / `silero-vad@5cd7945676eb32225748052e2e6a0580e4686a08+onnxruntime@1.31.0` | Mac の segmentation と同じ7キーに、`negative_vad_threshold` = `0.35`、`chunk_samples` = `4096`、`frame_samples` = `512`、`frame_aggregation` = `noisy-or`、`model_sha256` = 固定 model の SHA-256、`intra_op_threads` を加える。詳細は [windows.md](windows.md#silero-vad-の区間検出) |
-| asr | `qwen3-asr-swift` / 外部モデル ID aufklarer/Qwen3-ASR-1.7B-MLX-8bit / `speech-swift@c4c2fabbe825a9290c19e2f45d54ca3eae96b003` | `language=Japanese`、`minimum_input_seconds=0.02` |
-| diarization | `fluidaudio-offline-diarizer` / FluidAudio の Repo.diarizer.rawValue / `FluidAudio@0.15.8` | `config` = FluidAudio の OfflineDiarizerConfig.default、`embedding.min_segment_duration_seconds` = `0.3` |
+| asr（Mac） | `qwen3-asr-swift` / 外部モデル ID aufklarer/Qwen3-ASR-1.7B-MLX-8bit / `speech-swift@c4c2fabbe825a9290c19e2f45d54ca3eae96b003` | `language=Japanese`、`minimum_input_seconds=0.02` |
+| asr（Linux / Windows） | `onnxruntime-qwen3-asr` / `${size.repository}@${size.commit}`（選択サイズごとに固定） / `onnxruntime-<runtimeVersion>`（現在 `1.31.0`） | `language=ja`、`minimum_input_seconds=0.02`、`quantization=int4`、`mel_variant=whisper-slaney-128-nfft400-hop160-reflect-global-log10`、`max_new_tokens=448`、`no_repeat_ngram=3 when input_seconds > 15; disabled otherwise`、`intra_op_threads=指定値 N`、`inter_op_threads=1`、`cpu_memory_arena=false` |
 | clauseBoundary | `coreml-clause-tagger`（Mac）または `onnx-clause-tagger`（Linux / Windows）/ 外部 model ID Pokojaka/modernbert-ja-30m-utterance-tagger / version = model の64桁 state-hash revision | `model_id` と `model_revision` は実際にロードした identity、`unit_policy=btsj-utterance-sentence`、`mode` は `live`、`final`、`retry`、`candidate_characters=、。？！?!`、`boundary_threshold=0.5`、`continuation_threshold=0.5`（いずれも厳密な `>` 判定）、`next_head_character_limit=60`、`window_content_tokens=190`、`window_policy=whole-piece-max-min-context`、`span_policy=argmax-o-f-d-b-remove-f-b`、`span_window_policy=whole-piece-max-min-context`、`encoding_revision=1`、`max_tokens=192`、`compute_units=cpu-only`、`text_policy=neutral-punctuation-piecewise` |
 | contentPriority | `coreml-clause-tagger`（Mac）または `onnx-clause-tagger`（Linux / Windows）/ 外部 model ID Pokojaka/modernbert-ja-30m-utterance-tagger / version = model の64桁 state-hash revision | 実際の `model_id` / `model_revision`、`unit_policy=btsj-utterance-sentence`、`mode` は `live`、`final`、`retry`、`minimum_demotion_confidence=0.9`、`maximum_targets=40`、`encoding_revision=1`、`max_tokens=192`、`compute_units=cpu-only`、`text_policy=filler-backchannel-removed-neutral-punctuation-piecewise` |
 | decision unavailable | `unavailable` / `model=nil` / version `1` | `mode=live`、`unit_policy=btsj-utterance-sentence` |
@@ -303,9 +293,9 @@ CancellationError または取り消し済み task を一時停止とするの�
 
 保存済み transcript の読込・materialization は保存済み run を使い、現在の `model_id` とは照合しません。利用者の再試行は保留対象だけを再判定し、成功済み判定を source record として引き継ぎます。確定処理は、live 優先度 run と確定処理の state-hash `model_revision` が一致するときに、各 run の保存済み `filler_ranges` を適用した発話文本文の UTF-8 byte 列が完全一致する判定を再利用し、`model_id` は照合しません。全量再処理は境界と優先度を再計算し、この条件を満たす live 優先度だけを再利用します。
 
-ライブの境界判定 run と優先度 run は判定結果を逐次保存し、対象列の終端で完了イベントを出します。確定処理への移行で取り消した run は完了イベントなしでも保存済み結果を保持します。ライブ run は metadata の `active_runs` に選ばず、確定処理は独立した境界・優先度 run の pointer を公開します。CLI の `ContentPriorityAccess.disabled` は Core ML tagger による判定を無効にし、必須の segmentation・diarization・ASR は実行した上で、任意の decision run を実行しません。ライブ ASR は完了イベントへ engine / model を記録しますが、確定処理と同じ started provenance を各 ASR run に出すわけではありません。
+ライブの境界判定 run と優先度 run は判定結果を逐次保存し、対象列の終端で完了イベントを出します。確定処理への移行で取り消した run は完了イベントなしでも保存済み結果を保持します。ライブ run は metadata の `active_runs` に選ばず、確定処理は独立した境界・優先度 run の pointer を公開します。CLI の `ContentPriorityAccess.disabled` は Core ML tagger による判定を無効にし、必須の segmentation・ASR を実行した上で、任意の decision run を実行しません。ライブ ASR は完了イベントへ engine / model を記録しますが、確定処理と同じ started provenance を各 ASR run に出すわけではありません。
 
-根拠: [RunProvenance.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/RunProvenance.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FinalTranscriptPipeline.swift)、[FluidVADSegmentationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADSegmentationEngine.swift)、[SileroFinalTranscriptVADSegmenter.swift](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/SileroFinalTranscriptVADSegmenter.swift)、[NativeQwen3ASREngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeQwen3ASREngine.swift)、[FluidOfflineDiarizationEngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidOfflineDiarizationEngine.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)。
+根拠: [RunProvenance.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/RunProvenance.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FinalTranscriptPipeline.swift)、[FluidFinalTranscriptVADSegmenter.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidFinalTranscriptVADSegmenter.swift)、[SileroFinalTranscriptVADSegmenter.swift](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/SileroFinalTranscriptVADSegmenter.swift)、[NativeQwen3ASREngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeQwen3ASREngine.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)。
 
 ローカル判定と固定 model path の実装: [AppPaths.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AppPaths.swift)、[LocalClauseTagger.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/LocalClauseTagger.swift)、[ClauseTaggerModel.swift](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/ClauseTaggerModel.swift)、[ClauseTaggerTokenizer.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerTokenizer.swift)、[ClauseTaggerEncoding.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerEncoding.swift)。
 
@@ -316,8 +306,8 @@ CancellationError または取り消し済み task を一時停止とするの�
 | キー | 型 | 意味 |
 | --- | --- | --- |
 | `schema_version` | Int | 必須。値は `3` だけ |
-| `finalization_attempt` | object または null | 最新の確定処理の状態 |
-| `active_runs` | object または null | 一括公開された現在の run 集合 |
+| `finalization_attempt` | 必須。object または null | 最新の確定処理の状態 |
+| `active_runs` | 必須。object または null | 一括公開された現在の run 集合 |
 | `pending_clause_boundary_segments` | 区間参照の配列 | 必須。公開済み snapshot で境界判定が未成立の区間。時間順 |
 | `pending_content_priority_clauses` | 発話文参照の配列 | 必須。公開済み境界判定 run の閉じた非空発話文のうち、優先度が未成立のもの。原文順 |
 
@@ -329,11 +319,11 @@ finalization_attempt の全フィールド:
 | --- | --- | --- |
 | `attempt_id` | String | 確定処理の試行 ID |
 | `state` | String | `running` / `paused` / `failed` / `complete` |
-| `failure_reason` | String または null | failed の理由 |
+| `failure_reason` | optional String。nil は key を省略 | failed の理由 |
 
-active_runs の全フィールドは optional String の `segmentation`、`asr`、`diarization`、`clause_boundary`、`content_priority` です。`clause_boundary` と `content_priority` は任意の decision run pointer です。どちらもローカル必須3段階ではありません。成功判定用の内部集合は JSON に保存しません。
+`active_runs` の key は `segmentation`、`asr`、`clause_boundary`、`content_priority` の4つで、値は全て optional String です。nil の key は JSON に出しません。`clause_boundary` と `content_priority` は両方 nil または両方 run ID が設定され、公開された decision pointer がある場合は `segmentation` と `asr` も設定されます。成功判定用の内部集合は JSON に保存しません。
 
-開始時は公開済み active_runs と保留を保持したまま running にします。ローカル必須3段階が全て成功したときだけ、complete、新しい active_runs（segmentation・ASR・diarization の run、decision pointer は未設定）、全ての非空区間の境界保留を**一回の write** で保存し、優先度の保留を空にします。公開と保留保存の間にクラッシュ窓はありません。その後、App でモデルを読み込めれば境界・優先度 run を実行し、run pointer と両保留配列を一回の write で公開します。モデルを初期化できなければ判定 run を公開せず、境界保留を残します。CLI の `ContentPriorityAccess.disabled` は判定を実行せず、任意 decision run pointer は設定しません。公開時に active_runs が snapshot の作成元と変わっていれば公開しません。優先度だけの再試行は優先度 run pointer と保留配列だけを更新します。failed / paused は公開済みの結果を置き換えません。
+開始時は公開済み active_runs と保留を保持したまま running にします。ローカル必須2段階が全て成功したときだけ、complete、新しい active_runs（segmentation と ASR の run、decision pointer は未設定）、認識本文のある全区間の境界保留を**一回の write**で保存し、優先度の保留を空にします。公開と保留保存の間にクラッシュ窓はありません。判定対象の本文があり、App でモデルを初期化できれば境界・優先度 run を実行し、run pointer と両保留配列を一回の write で公開します。VAD が0区間など判定対象がない場合は decision run を作らず、pointer は未設定、保留配列は空です。モデルを初期化できなければ判定 run を公開せず、境界保留を残します。CLI の `ContentPriorityAccess.disabled` は判定を実行せず、任意 decision run pointer は設定しません。公開時に active_runs が snapshot の作成元と変わっていれば公開しません。優先度だけの再試行は優先度 run pointer と保留配列だけを更新します。failed / paused は公開済みの結果を置き換えません。
 
 復旧対象は running / paused の試行、またはまだ active_runs のない保存音声です。復旧は新しい確定 run の全量実行です。failed を自動再実行しません。complete で保留配列が空でなければ、保留の再判定は利用者の明示的な再試行だけで行います。起動時の復旧は公開済みの保留を通常は再試行しません。公開済み snapshot より新しい未公開の確定・再試行判定 run がある場合、標準復旧の対象は、終了 event のない開始済み run（クラッシュ・電源断・事前の取消し、または失敗 cleanup の保存 I/O error により未完了の run）と、`succeeded: true` で完了したが metadata 公開前の run です。成功 `processing.run.completed` 自体は snapshot を公開しません。これらは公開済み snapshot だけから再構築し、未公開 run の部分結果を使いません。`succeeded: false` の失敗完了 event が durable な run は復旧対象にせず、既存の公開済み pending を利用者が明示的に再試行します。失敗完了の保存 I/O error は元の判定失敗とともに伝播し、run の durable な終了を主張しません。durable outcome 後の cancellation / settings / shutdown pause は公開済み結果を held に戻しません。復旧対象となる場合も両保留配列をイベントログで検証します。破損した metadata は自動復旧時には理由を報告して保持し、利用者の明示的な再処理だけが置換を許可します。schema_version の相違・欠落・型違いは置換の対象外で、読取・追記・復旧・再処理をエラーにします。
 
@@ -351,7 +341,7 @@ active_runs の全フィールドは optional String の `segmentation`、`asr`�
 | `sampleRate` | Double | `16000` |
 | `channelCount` | Int | `1` |
 | `sampleFormat` | String | `float32LE` |
-| `chunkFiles` | String 配列 | タイムライン順の chunk basename。重複・空・`.`・`..`・`/` を含む名前は不正 |
+| `chunkFiles` | String 配列 | タイムライン順の chunk basename。重複・空・`.`・`..`・Windows 禁止文字や制御文字・末尾のドット/空白・予約名は不正 |
 | `chunkFrameCounts` | Int 配列 | chunkFiles と同じ長さ。各値は 1〜Int32.max。合計が committedFrames に一致 |
 | `gapEvents` | object 配列 | durable 音声内に含まれる欠落記録 |
 
@@ -368,7 +358,7 @@ chunk を atomic write して synchronize した後、その index を append / 
 
 読取時には snapshot、chunk index、連続する公開済み chunk を合わせて最新の checkpoint を復元します。snapshot 更新前にクラッシュしても、末尾に完全な連番 chunk があれば取り込みます。各 chunk のサイズ・channel 幅・記録フレーム数を検証し、不一致・欠損は明示エラーにします。gap は実際の durable 範囲まで切り詰め、音声の公開前に残った gap 全体を有効とはみなしません。音声用 JSONL の commit として採用するのは LF 終端の行です。
 
-`ProcessingTimeline` の型は `version`（1）、`sampleRate`、`channelCount`、`sampleFormat` を持ち、frame からミリ秒への変換を定義します。独立した timeline JSON ファイルは保存せず、永続音声の自己記述情報は、`recordingPCM` と import の処理タイムラインでは checkpoint に、`recordingFLAC` では `storage.json` の `timeline` にあります。保存済みセッションとエンジン入力は非 canonical 形式を拒否します。表示時刻は frame × 1000 / 16000 の小数部を 0 方向に切り捨てます。イベントの source frame は保存タイムラインの座標であり、入力デバイスや original の frame 座標ではありません。VAD・ASR・話者分離で再度 mono 化や SRC は行いません。
+`ProcessingTimeline` の型は `version`（1）、`sampleRate`、`channelCount`、`sampleFormat` を持ち、frame からミリ秒への変換を定義します。独立した timeline JSON ファイルは保存せず、永続音声の自己記述情報は、`recordingPCM` と import の処理タイムラインでは checkpoint に、`recordingFLAC` では `storage.json` の `timeline` にあります。保存済みセッションとエンジン入力は非 canonical 形式を拒否します。表示時刻は frame × 1000 / 16000 の小数部を 0 方向に切り捨てます。イベントの source frame は保存タイムラインの座標であり、入力デバイスや original の frame 座標ではありません。VAD・ASR で再度 mono 化や SRC は行いません。
 
 根拠: [DurableAudioWriter.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/DurableAudioWriter.swift)、[ProcessingTimeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingTimeline.swift)、[ProcessingTimelineReader.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingTimelineReader.swift)、[AudioBlockRing.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/AudioBlockRing.swift)、[LiveTranscriptionCadence.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/LiveTranscriptionCadence.swift)、[ASR.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASR.swift)。
 
@@ -386,7 +376,7 @@ chunk を atomic write して synchronize した後、その index を append / 
 
 `EventLogTranscriptReader` は header・ローカル transcript の decoding を担当し、発話文イベントの共有解析・source/carry 検証・組み立て replay は [ClauseEventLog.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseEventLog.swift) にあります。公開済み run の完了・pending 整合は [PublishedTranscriptValidation.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/PublishedTranscriptValidation.swift)、再試行対象の検証と計数は [DecisionRetryAnalyzer.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionRetryAnalyzer.swift) が担当します。reader・再試行・catalog・ライブ再利用は同じ `ClauseEventLog` を使い、独立した発話文 decoder を持ちません。
 
-`TranscriptMaterializer` が公開 run の区間・ASR・話者・節の境界・優先度を適用します。materialization はモデルを読み込み・実行せず、保存済み assessment の `filler_ranges`（F・B除去範囲）だけを原文へ投影します。assessment がまだない区間、境界 pending / failed、判定を無効にした CLI では原文をそのまま表示本文に使います。assessment がある区間は F・B除去範囲を適用した後、保存済み LOW の clause slice をさらに除去します。CLI の `segments.json` は配列で、各 object の全キーは次のとおりです。
+`TranscriptMaterializer` が公開 run の区間・ASR・発話文境界・優先度を適用します。materialization はモデルを読み込み・実行せず、保存済み assessment の `filler_ranges`（F・B除去範囲）だけを原文へ投影します。assessment がない区間、境界 pending / failed、判定を無効にした CLI では F・B除去範囲を使わず原文を基にし、どの場合も表示本文の最終段階で数字表記変換を適用します。assessment がある区間は F・B除去範囲を適用した後、保存済み LOW の clause slice をさらに除去します。CLI の `segments.json` は配列で、各 object の全キーは次のとおりです。
 
 | キー | 型 |
 | --- | --- |
@@ -394,11 +384,10 @@ chunk を atomic write して synchronize した後、その index を append / 
 | `source` | 区間参照 |
 | `start_ms`, `end_ms` | Int64 |
 | `text` | String。ASR 原文 |
-| `display_text` | String。F・B除去範囲と保存済み LOW 発話文を適用した表示本文 |
-| `speakers` | object 配列。各 object は `id`: String、`start_ms` / `end_ms`: Int64、`confidence`: optional Double |
+| `display_text` | String。F・B除去範囲と保存済み LOW 発話文を適用し、最後に数字表記変換した表示本文 |
 | `clause_state` | `awaiting_next_segment` / `boundary_pending` / `priority_pending` / `classified` |
 | `clause_slices` | object 配列。各 object は `reference`: 節参照、`source_range`: 原文の範囲、`priority`: `primary` / `lowPriority` / null、`needs_retry`: Bool |
 
-原文が空の区間は公開 JSON・ライブ表示・テキスト書き出しに出しません。イベントログからは削除しません。`isDiarized` と話者の `displayLabel` は画面用の内部情報で、公開 JSON に出しません。`segments.json.text` とイベント中の ASR 本文は原文のままで、Linux の CER 評価などはこの原文を読みます。`display_text` は画面と同じ表示本文です。区間をまたぐ節の全 parts は各行に複製せず、`clause_slices` の節参照から `clauses.closed` を辿ります。全範囲の境界が未成立の行は `clause_slices` が空で `boundary_pending` です。部分的な未解決範囲がある行も `boundary_pending` ですが、独立して閉じた保存済み節の slice は保持します。フィラー・相槌だけの行や全 LOW の行で `display_text` が空になった行も、原文があれば JSON に残します。テキスト書き出し `transcript.txt` は画面と同じ発話と表示本文を使い、表示本文が空白・改行だけになる行は除外します。話者ラベルは 80% 以上を占める 1 人、満たさなければ併記します。
+原文が空の区間は公開 JSON・ライブ表示・テキスト書き出しに出しません。イベントログからは削除しません。`segments.json.text` とイベント中の ASR 本文は原文のままで、Linux の CER 評価などはこの原文を読みます。`display_text` は画面と同じ表示本文で、判定結果がない場合も最終段階の数字表記変換を適用します。区間をまたぐ発話文の全 parts は各行に複製せず、`clause_slices` の発話文参照から `clauses.closed` を辿ります。全範囲の境界が未成立の行は `clause_slices` が空で `boundary_pending` です。部分的な未解決範囲がある行も `boundary_pending` ですが、独立して閉じた保存済み発話文の slice は保持します。フィラー・相槌だけの行や全 LOW の行で `display_text` が空になった行も、原文があれば JSON に残します。テキスト書き出し `transcript.txt` は画面と同じ発話と表示本文を使い、表示本文が空白・改行だけになる行は除外します。
 
 根拠: [SessionRecovery.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionRecovery.swift)、[EventLogTranscriptReader.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/EventLogTranscriptReader.swift)、[Materialization.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift)、[SessionExporter.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionExporter.swift)、[ファイル処理 CLI](../app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/main.swift)。

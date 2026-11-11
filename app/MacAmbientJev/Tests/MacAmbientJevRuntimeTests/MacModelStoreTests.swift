@@ -97,7 +97,7 @@ func concurrentCallersShareOneVerification() async throws {
     })
 
     try await withThrowingTaskGroup(of: Void.self) { group in
-        for _ in 0..<5 { group.addTask { _ = try await store.verifiedDirectory(.diarization) } }
+        for _ in 0..<5 { group.addTask { _ = try await store.verifiedDirectory(.vad) } }
         try await group.waitForAll()
     }
     #expect(runs.count == 1)
@@ -125,7 +125,6 @@ func enginesWithoutModelsFailWithTheTypedErrorBeforeLoading() async throws {
     let store = try MacModelStore(paths: paths)
 
     await #expect(throws: MacModelError.notInstalled(.asr)) { try await NativeQwen3ASREngine(models: store).prepare() }
-    await #expect(throws: MacModelError.notInstalled(.diarization)) { try await FluidOfflineDiarizationEngine(models: store).prepare() }
     await #expect(throws: MacModelError.notInstalled(.vad)) {
         _ = try await FluidVADSegmentationEngine.make(
             models: store, segmentationRunID: "seg", canonicalSampleRate: 16_000, measureMicInputLevels: false

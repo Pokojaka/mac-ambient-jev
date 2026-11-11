@@ -71,7 +71,7 @@ func processingMetadataEncodesThePublishedStageContract() throws {
     let metadata = ProcessingMetadata(
         finalizationAttempt: FinalizationAttempt(attemptID: "final", state: .complete, failureReason: nil),
         activeRuns: ActiveRuns(
-            segmentation: "seg", asr: "asr", diarization: "diar",
+            segmentation: "seg", asr: "asr",
             clauseBoundary: "boundary", contentPriority: "priority"
         ),
         pendingClauseBoundarySegments: [],
@@ -86,7 +86,7 @@ func processingMetadataEncodesThePublishedStageContract() throws {
     ]))
     let runs = try #require(object["active_runs"] as? [String: String])
     #expect(runs == [
-        "segmentation": "seg", "asr": "asr", "diarization": "diar",
+        "segmentation": "seg", "asr": "asr",
         "clause_boundary": "boundary", "content_priority": "priority"
     ])
     #expect(try JSONDecoder().decode(ProcessingMetadata.self, from: data) == metadata)

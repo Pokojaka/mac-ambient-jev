@@ -10,7 +10,7 @@ import MacAmbientJevEngineProtocol
     @Test func controlCharactersPageBelowTenAndEncodeAsCompleteWireEnvelopes() throws {
         let text = String(repeating: "\u{0001}", count: 30_000)
         let segments = try (0..<10).map { index in
-            try materializedSegment(id: "control-\(index)", text: text, speakers: [], isDiarized: false)
+            try segment(id: "control-\(index)", text: text)
         }
         let rows = try EngineTranscriptProjection.rows(for: segments)
 
@@ -54,7 +54,7 @@ import MacAmbientJevEngineProtocol
 
     @Test func tailReturnsNewestSuffixIncludingFinalRow() throws {
         let segments = try (0..<10).map { index in
-            try materializedSegment(id: "row-\(index)", text: "text-\(index)", speakers: [], isDiarized: false)
+            try segment(id: "row-\(index)", text: "text-\(index)")
         }
         let rows = try EngineTranscriptProjection.rows(for: segments)
         let tail = try EngineTranscriptProjection.tail(of: rows, limit: 3)
@@ -66,7 +66,7 @@ import MacAmbientJevEngineProtocol
 
     @Test func oversizedSingleControlCharacterRowThrowsRowTooLarge() throws {
         let text = String(repeating: "\u{0001}", count: 60_000)
-        let rows = try EngineTranscriptProjection.rows(for: [materializedSegment(id: "oversized", text: text, speakers: [], isDiarized: false)])
+        let rows = try EngineTranscriptProjection.rows(for: [segment(id: "oversized", text: text)])
 
         do {
             _ = try EngineTranscriptProjection.page(of: rows, from: 0, limit: 200)
@@ -81,7 +81,7 @@ import MacAmbientJevEngineProtocol
     @Test func encodedChangesExceedPageBudgetForIndividuallyLegalRows() throws {
         let text = String(repeating: "\u{0001}", count: 25_000)
         let segments = try (0..<5).map { index in
-            try materializedSegment(id: "change-\(index)", text: text, speakers: [], isDiarized: false)
+            try segment(id: "change-\(index)", text: text)
         }
         let rows = try EngineTranscriptProjection.rows(for: segments)
         let rowSizes = try rows.map(EngineTranscriptProjection.encodedRowBytes)
@@ -93,8 +93,8 @@ import MacAmbientJevEngineProtocol
     @Test func encodedChangesCollectEveryOversizedRowFailure() throws {
         let text = String(repeating: "\u{0001}", count: 60_000)
         let segments = try [
-            materializedSegment(id: "oversized-1", text: text, speakers: [], isDiarized: false),
-            materializedSegment(id: "oversized-2", text: text, speakers: [], isDiarized: false)
+            segment(id: "oversized-1", text: text),
+            segment(id: "oversized-2", text: text)
         ]
         let rows = try EngineTranscriptProjection.rows(for: segments)
 
@@ -118,7 +118,7 @@ import MacAmbientJevEngineProtocol
     @Test @MainActor func incrementalProjectionOnlyProjectsChangedSegments() throws {
         let incremental = EngineTranscriptProjection.Incremental(rows: [])
         var segments = try (0..<1_000).map { index in
-            try materializedSegment(id: "row-\(index)", text: "text-\(index)", speakers: [], isDiarized: false)
+            try segment(id: "row-\(index)", text: "text-\(index)")
         }
 
         let initial = try incremental.update(segments)
@@ -129,7 +129,7 @@ import MacAmbientJevEngineProtocol
 
         let projectedBeforeAppend = incremental.totalProjectedSegments
         let diffedBeforeAppend = incremental.totalDiffedRows
-        let appended = try materializedSegment(id: "row-1000", text: "text-1000", speakers: [], isDiarized: false)
+        let appended = try segment(id: "row-1000", text: "text-1000")
         segments.append(appended)
         let afterAppend = try incremental.update(segments)
         #expect(afterAppend.rows == (try EngineTranscriptProjection.rows(for: segments)))
@@ -139,7 +139,7 @@ import MacAmbientJevEngineProtocol
         #expect(incremental.totalProjectedSegments == 1_001)
         incremental.commit()
 
-        segments[0] = try materializedSegment(id: "row-0", text: "edited early row", speakers: [], isDiarized: false)
+        segments[0] = try segment(id: "row-0", text: "edited early row")
         let afterEdit = try incremental.update(segments)
         #expect(afterEdit.rows == (try EngineTranscriptProjection.rows(for: segments)))
         #expect(afterEdit.changes.upserts.map(\.rowID) == ["row-0"])
@@ -147,7 +147,7 @@ import MacAmbientJevEngineProtocol
         incremental.commit()
 
         segments.remove(at: 1)
-        segments[1] = try materializedSegment(id: "row-2", text: "", speakers: [], isDiarized: false)
+        segments[1] = try segment(id: "row-2", text: "")
         let afterRemovalAndHide = try incremental.update(segments)
         #expect(afterRemovalAndHide.rows == (try EngineTranscriptProjection.rows(for: segments)))
         #expect(afterRemovalAndHide.changes.removedRowIDs == ["row-1", "row-2"])
@@ -161,10 +161,10 @@ import MacAmbientJevEngineProtocol
     }
 
     @Test @MainActor func incrementalUpdateRemovesRowsFromSeededBaseline() throws {
-        let finalized = try materializedSegment(id: "finalized", text: "finalized cache", speakers: [], isDiarized: false)
+        let finalized = try segment(id: "finalized", text: "finalized cache")
         let baselineRows = try EngineTranscriptProjection.rows(for: [finalized])
         let incremental = EngineTranscriptProjection.Incremental(rows: baselineRows)
-        let live = try materializedSegment(id: "live", text: "manual live row", speakers: [], isDiarized: false)
+        let live = try segment(id: "live", text: "manual live row")
 
         let updated = try incremental.update([live])
 
@@ -173,12 +173,12 @@ import MacAmbientJevEngineProtocol
         #expect(updated.changes.removedRowIDs == ["finalized"])
     }
 
-    @Test @MainActor func incrementalRowsAndChangesMatchFullProjectionAcrossSpeakerAndLowPriorityChanges() throws {
+    @Test @MainActor func incrementalRowsAndChangesMatchFullProjectionAcrossLowPriorityChanges() throws {
         let incremental = EngineTranscriptProjection.Incremental(rows: [])
-        let speakerA = try diarizedSegment(id: "a", text: "speaker a", start: 100, speakerID: "A")
-        let speakerB = try diarizedSegment(id: "b", text: "speaker b", start: 200, speakerID: "B")
+        let firstSegment = try segment(id: "a", text: "segment a", start: 100, end: 200)
+        let secondSegment = try segment(id: "b", text: "segment b", start: 200, end: 300)
         let lowOnly = try lowPrioritySegment(id: "low", text: "はい。うん。")
-        var segments = [speakerA, speakerB, lowOnly]
+        var segments = [firstSegment, secondSegment, lowOnly]
 
         let first = try incremental.update(segments)
         let fullFirst = try EngineTranscriptProjection.rows(for: segments)
@@ -187,9 +187,9 @@ import MacAmbientJevEngineProtocol
         #expect(first.changes.removedRowIDs.isEmpty)
         incremental.commit()
 
-        let newFirstSpeaker = try diarizedSegment(id: "z", text: "speaker z", start: 0, speakerID: "Z")
-        let visibleLow = try materializedSegment(id: "low", text: "はい。うん。", speakers: [], isDiarized: false)
-        segments = [newFirstSpeaker, speakerA, speakerB, visibleLow]
+        let newFirst = try segment(id: "z", text: "segment z", start: 0)
+        let visibleLow = try segment(id: "low", text: "はい。うん。")
+        segments = [newFirst, firstSegment, secondSegment, visibleLow]
         let second = try incremental.update(segments)
         let fullSecond = try EngineTranscriptProjection.rows(for: segments)
         let expectedSecond = EngineTranscriptProjection.changes(from: fullFirst, to: fullSecond)
@@ -197,11 +197,9 @@ import MacAmbientJevEngineProtocol
         #expect(second.changes.upserts == expectedSecond.upserts)
         #expect(second.changes.removedRowIDs == expectedSecond.removedRowIDs)
         #expect(second.rows.map(\.rowID) == ["z", "a", "b", "low"])
-        #expect(second.rows.first?.headings == [.speaker1])
-        #expect(second.rows[1].headings == [.speaker2])
         incremental.commit()
 
-        segments = [speakerA, speakerB, visibleLow]
+        segments = [firstSegment, secondSegment, visibleLow]
         let third = try incremental.update(segments)
         let fullThird = try EngineTranscriptProjection.rows(for: segments)
         let expectedThird = EngineTranscriptProjection.changes(from: fullSecond, to: fullThird)
@@ -213,11 +211,11 @@ import MacAmbientJevEngineProtocol
 
     @Test @MainActor func incrementalRetainsUncommittedDirtyRowsAcrossUpdates() throws {
         let incremental = EngineTranscriptProjection.Incremental(rows: [])
-        let original = try materializedSegment(id: "first", text: "original", speakers: [], isDiarized: false)
+        let original = try segment(id: "first", text: "original")
         let first = try incremental.update([original])
         #expect(first.changes.upserts.map(\.rowID) == ["first"])
 
-        let added = try materializedSegment(id: "second", text: "second", speakers: [], isDiarized: false)
+        let added = try segment(id: "second", text: "second")
         let second = try incremental.update([original, added])
         #expect(second.changes.upserts.map(\.rowID) == ["first", "second"])
         #expect(second.rows == (try EngineTranscriptProjection.rows(for: [original, added])))
@@ -226,10 +224,10 @@ import MacAmbientJevEngineProtocol
 
     @Test @MainActor func incrementalCollectsDistinctDuplicateIDsAndCanRetryAfterRepair() throws {
         let incremental = EngineTranscriptProjection.Incremental(rows: [])
-        let firstA = try materializedSegment(id: "a", text: "first a", speakers: [], isDiarized: false)
-        let firstB = try materializedSegment(id: "b", text: "first b", speakers: [], isDiarized: false)
-        let secondA = try materializedSegment(id: "a", text: "second a", speakers: [], isDiarized: false)
-        let secondB = try materializedSegment(id: "b", text: "second b", speakers: [], isDiarized: false)
+        let firstA = try segment(id: "a", text: "first a")
+        let firstB = try segment(id: "b", text: "first b")
+        let secondA = try segment(id: "a", text: "second a")
+        let secondB = try segment(id: "b", text: "second b")
 
         do {
             _ = try incremental.update([firstA, firstB, secondA, secondB])
@@ -259,13 +257,11 @@ import MacAmbientJevEngineProtocol
     }
 }
 
-private func materializedSegment(
+private func segment(
     id: String,
     text: String,
     start: Int64 = 0,
     end: Int64 = 100,
-    speakers: [MaterializedSpeakerSpan],
-    isDiarized: Bool,
     clauseSlices: [ClauseRowSlice] = []
 ) throws -> MaterializedTranscriptSegment {
     let source = try SegmentTextReference(
@@ -274,22 +270,7 @@ private func materializedSegment(
     let projection = try TranscriptTextProjector().project(sourceText: text, fillerRanges: [])
     return try MaterializedTranscriptSegment(
         segmentID: id, source: source, startMilliseconds: start, endMilliseconds: end,
-        text: text, textProjection: projection, speakers: speakers, clauseState: .classified,
-        clauseSlices: clauseSlices, isDiarized: isDiarized
-    )
-}
-
-private func diarizedSegment(id: String, text: String, start: Int64, speakerID: String) throws -> MaterializedTranscriptSegment {
-    try materializedSegment(
-        id: id,
-        text: text,
-        start: start,
-        end: start + 100,
-        speakers: [MaterializedSpeakerSpan(
-            id: speakerID, startMilliseconds: start, endMilliseconds: start + 100,
-            confidence: 1, displayLabel: nil
-        )],
-        isDiarized: true
+        text: text, textProjection: projection, clauseState: .classified, clauseSlices: clauseSlices
     )
 }
 
@@ -306,5 +287,5 @@ private func lowPrioritySegment(id: String, text: String) throws -> Materialized
             priority: .lowPriority, needsRetry: false
         )
     ]
-    return try materializedSegment(id: id, text: text, speakers: [], isDiarized: false, clauseSlices: slices)
+    return try segment(id: id, text: text, clauseSlices: slices)
 }

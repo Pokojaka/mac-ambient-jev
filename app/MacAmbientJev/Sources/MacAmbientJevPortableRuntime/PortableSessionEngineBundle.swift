@@ -4,7 +4,7 @@ import MacAmbientJevONNX
 import MacAmbientJevPipeline
 
 /// The concrete portable engines of one processing operation. Building it validates the Silero file and acquires the process-wide ONNX
-/// environment; the ASR, diarization and clause tagger models load on first use, and a failure there stops the operation.
+/// environment; the ASR and clause tagger models load on first use, and a failure there stops the operation.
 public struct PortableSessionEngineBundle: Sendable {
     public let configuration: PortableProcessingConfiguration
     public let engines: SessionProcessingEngines
@@ -21,10 +21,6 @@ public struct PortableSessionEngineBundle: Sendable {
             asr: ONNXQwen3ASREngine(
                 modelDirectory: configuration.qwen3ModelDirectory,
                 size: configuration.qwen3Size,
-                intraOpThreads: configuration.threads
-            ),
-            diarization: try ONNXCommunity1DiarizationEngine(
-                modelDirectory: configuration.diarizationModelDirectory,
                 intraOpThreads: configuration.threads
             ),
             finalTranscriptVAD: SileroFinalTranscriptVADSegmenter(

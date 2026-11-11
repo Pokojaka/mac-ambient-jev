@@ -40,7 +40,7 @@ def environment(tmp_path: Path) -> dict[str, str]:
     silero = tmp_path / "silero.onnx"
     silero.write_bytes(b"x")
     directories = {}
-    for name in ("qwen", "diarization", "tagger"):
+    for name in ("qwen", "tagger"):
         directories[name] = tmp_path / name
         directories[name].mkdir()
     return {
@@ -48,7 +48,6 @@ def environment(tmp_path: Path) -> dict[str, str]:
         acceptance.SILERO_VARIABLE: str(silero),
         acceptance.QWEN3_DIRECTORY_VARIABLE: str(directories["qwen"]),
         acceptance.QWEN3_SIZE_VARIABLE: "0.6b",
-        acceptance.DIARIZATION_VARIABLE: str(directories["diarization"]),
         acceptance.CLAUSE_TAGGER_VARIABLE: str(directories["tagger"]),
     }
 
@@ -75,8 +74,7 @@ def test_good_run_passes(tmp_path, environment):
     ("mode", "message"),
     [
         ("wrong_transcript", "CER"),
-        ("missing_stage", "active run missing for diarization"),
-        ("bad_speaker", "nonempty raw id"),
+        ("missing_stage", "active run missing for asr"),
         ("missing_file", "storage.json"),
         ("leftover_caf", "CAF"),
         ("coreml_decision", "ONNX engine"),
@@ -129,7 +127,7 @@ def test_session_id_line_must_appear_once():
 
 
 def segments_fixture() -> list[dict]:
-    return fake.exported(fake.good_segments(fake.reference_text()), "good")
+    return fake.exported(fake.good_segments(fake.reference_text()))
 
 
 def test_segment_checks():
@@ -148,30 +146,3 @@ def test_segment_checks():
         mutate(broken)
         with pytest.raises(AcceptanceFailure, match=message):
             acceptance.check_segments(broken, fake.DURATION_MS)
-
-
-def span(speaker: str, start: int, end: int) -> dict:
-    return {"id": speaker, "start_ms": start, "end_ms": end}
-
-
-def segment(start: int, end: int, spans: list[dict]) -> dict:
-    return {"segment_id": f"s{start}", "start_ms": start, "end_ms": end, "speakers": spans}
-
-
-def test_speaker_labels_follow_the_product_mapper():
-    eight = [segment(i * 100, i * 100 + 100, [span(f"id{i}", i * 100, i * 100 + 100)]) for i in range(8)]
-    labels = acceptance.make_speaker_labels(eight)
-    assert [labels[f"id{i}"] for i in range(8)] == [f"Speaker {n}" for n in range(1, 8)] + ["OTHER"]
-    acceptance.check_speakers(eight, 800)
-    assert acceptance.turn_labels(segment(0, 100, []), labels) == ["UNKNOWN"]
-    mixed = segment(0, 100, [span("id0", 0, 60), span("id1", 60, 100)])
-    assert acceptance.turn_labels(mixed, labels) == ["Speaker 1", "Speaker 2"]
-    dominant = segment(0, 100, [span("id0", 0, 85), span("id1", 85, 100)])
-    assert acceptance.turn_labels(dominant, labels) == ["Speaker 1"]
-
-
-def test_speaker_span_must_stay_in_range():
-    with pytest.raises(AcceptanceFailure, match="out of bounds"):
-        acceptance.check_speakers([segment(0, 100, [span("a", 0, 900)])], 800)
-    with pytest.raises(AcceptanceFailure, match="raw id"):
-        acceptance.check_speakers([segment(0, 100, [span("", 0, 100)])], 800)

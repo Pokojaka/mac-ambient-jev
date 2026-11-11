@@ -11,10 +11,6 @@ from common.runtime_metrics import RuntimeMeasurement, is_cuda_device
 SCHEMA_VERSION = 2
 ASR_ENGINE_NAME = "qwen3-asr"
 ASR_BACKEND = "transformers"
-DIARIZATION_ENGINE_NAME = "nemotron-3-diarization"
-DIARIZATION_BACKEND = "nemo"
-SPEAKER_POLICY = {"tracked_limit": 7, "overflow": "other"}
-
 ENGINE_KEYS = {
     "name",
     "model",
@@ -32,13 +28,6 @@ BASE_RUNTIME_KEYS = {
     "rtf",
 }
 ASR_SEGMENT_KEYS = {"start_ms", "end_ms", "text", "language"}
-OVERFLOW_RESOLVER_KEYS = {
-    "embedding_model",
-    "embedding_revision",
-    "match_threshold",
-    "ambiguity_margin",
-    "min_clean_speech_ms",
-}
 
 
 def installed_package_versions(names: Iterable[str]) -> dict[str, str]:
@@ -341,132 +330,3 @@ def validate_asr_artifact(artifact: dict[str, Any]) -> None:
         raise ValueError("segment.text must be a string")
     if not isinstance(segment["language"], str):
         raise ValueError("segment.language must be a string")
-
-
-def _validate_time_range(span: dict, name: str) -> None:
-    start = span.get("start_ms")
-    end = span.get("end_ms")
-    if (
-        not _is_int(start)
-        or not _is_int(end)
-        or start < 0
-        or end <= start
-    ):
-        raise ValueError(f"invalid {name} time range")
-
-
-def _validate_public_speaker(speaker: object) -> None:
-    speaker = _require_object(speaker, "speaker")
-    kind = speaker.get("kind")
-    if kind == "tracked":
-        _require_keys(speaker, {"kind", "index"}, "tracked speaker")
-        index = speaker["index"]
-        if not _is_int(index) or not 1 <= index <= 7:
-            raise ValueError("speaker tracked index must be in 1...7")
-    elif kind in {"other", "unknown"}:
-        _require_keys(speaker, {"kind"}, f"{kind} speaker")
-    else:
-        raise ValueError(
-            "speaker kind must be tracked, other, or unknown"
-        )
-
-
-def _validate_overflow_resolver(resolver: object) -> None:
-    resolver = _require_object(resolver, "overflow_resolver")
-    _require_keys(resolver, OVERFLOW_RESOLVER_KEYS, "overflow_resolver")
-    _require_text(
-        resolver["embedding_model"],
-        "overflow_resolver.embedding_model",
-    )
-    _require_text(
-        resolver["embedding_revision"],
-        "overflow_resolver.embedding_revision",
-    )
-    min_clean_speech_ms = resolver["min_clean_speech_ms"]
-    if not _is_int(min_clean_speech_ms) or min_clean_speech_ms <= 0:
-        raise ValueError(
-            "overflow_resolver.min_clean_speech_ms "
-            "must be a positive integer"
-        )
-    match_threshold = resolver["match_threshold"]
-    ambiguity_margin = resolver["ambiguity_margin"]
-    if not _is_number(match_threshold) or not 0 <= match_threshold <= 1:
-        raise ValueError(
-            "overflow_resolver.match_threshold must be in 0...1"
-        )
-    if (
-        not _is_number(ambiguity_margin)
-        or not 0 <= ambiguity_margin <= match_threshold
-    ):
-        raise ValueError("overflow_resolver.ambiguity_margin is invalid")
-
-
-def build_diarization_artifact(
-    *,
-    engine: dict[str, Any],
-    runtime: dict[str, float],
-    spans: list[dict[str, Any]],
-    raw_spans: list[dict[str, Any]],
-    overflow_resolver: dict[str, Any],
-) -> dict[str, Any]:
-    artifact = {
-        "schema_version": SCHEMA_VERSION,
-        "engine": engine,
-        "speaker_policy": dict(SPEAKER_POLICY),
-        "spans": spans,
-        "raw_spans": raw_spans,
-        "overflow_resolver": overflow_resolver,
-        "runtime": runtime,
-    }
-    validate_diarization_artifact(artifact)
-    return artifact
-
-
-def validate_diarization_artifact(artifact: dict[str, Any]) -> None:
-    if artifact.get("schema_version") != SCHEMA_VERSION:
-        raise ValueError("unsupported schema_version")
-    _require_keys(
-        artifact,
-        {
-            "schema_version",
-            "engine",
-            "speaker_policy",
-            "spans",
-            "raw_spans",
-            "overflow_resolver",
-            "runtime",
-        },
-        "diarization artifact",
-    )
-    engine = validate_engine(
-        artifact["engine"],
-        name=DIARIZATION_ENGINE_NAME,
-        backend=DIARIZATION_BACKEND,
-    )
-    if artifact["speaker_policy"] != SPEAKER_POLICY:
-        raise ValueError("speaker_policy must be first7-plus-other")
-
-    spans = artifact["spans"]
-    if not isinstance(spans, list):
-        raise ValueError("spans must be a list")
-    for span in spans:
-        span = _require_object(span, "span")
-        _require_keys(span, {"start_ms", "end_ms", "speaker"}, "span")
-        _validate_time_range(span, "span")
-        _validate_public_speaker(span["speaker"])
-
-    raw_spans = artifact["raw_spans"]
-    if not isinstance(raw_spans, list):
-        raise ValueError("raw_spans must be a list")
-    for raw_span in raw_spans:
-        raw_span = _require_object(raw_span, "raw span")
-        _require_keys(
-            raw_span,
-            {"start_ms", "end_ms", "speaker_label"},
-            "raw span",
-        )
-        _validate_time_range(raw_span, "raw span")
-        _require_text(raw_span["speaker_label"], "raw span speaker_label")
-
-    _validate_overflow_resolver(artifact["overflow_resolver"])
-    _validate_runtime(artifact["runtime"], device=engine["device"])

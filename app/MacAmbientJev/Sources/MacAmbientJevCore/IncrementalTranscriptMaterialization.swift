@@ -316,8 +316,8 @@ public final class IncrementalTranscriptMaterializer {
         }
         return try MaterializedTranscriptSegment(segmentID: source.segmentID, source: source,
             startMilliseconds: milliseconds(segment.start), endMilliseconds: milliseconds(segment.end),
-            text: entry.text, textProjection: projection, speakers: [],
-            clauseState: state, clauseSlices: slices, isDiarized: false)
+            text: entry.text, textProjection: projection,
+            clauseState: state, clauseSlices: slices)
     }
 
     private func boundaryContext(at position: Int, state: ClauseBoundaryState) throws -> (emptySeparator: Bool, missingPredecessor: Bool) {

@@ -439,7 +439,7 @@ private struct LifecycleScanFailure: Error, LocalizedError {
         #expect(pending.presentation.recoveryStatusText == recoveryText)
         await modelGate.release()
         try await second.prepareModels()
-        let completedText = "文字起こしと話者分離が完了しました（1区間）"
+        let completedText = "文字起こしが完了しました（1区間）"
         let completed = try await second.waitForState(after: pending.revision.value) { state in
             state.setup == .ready
                 && state.recovery == .completed
@@ -624,8 +624,6 @@ private struct LifecycleScanFailure: Error, LocalizedError {
             .detectingSpeech,
             .preparingASR,
             .loadingASR,
-            .preparingDiarization,
-            .diarizing,
             .classifyingContent,
             .decisionDeferred
         ]
@@ -702,7 +700,7 @@ private struct LifecycleScanFailure: Error, LocalizedError {
         }
         #expect(partialFailure.revision.value > complete.revision.value)
         #expect(partialFailure.presentation.processingStatusText == cleanupFailure)
-        #expect(partialFailure.presentation.processingStatusText != "文字起こしと話者分離が完了しました")
+        #expect(partialFailure.presentation.processingStatusText != "文字起こしが完了しました（1区間）")
 
         try await fixture.shutdown()
         let shutdownState = try await fixture.currentState()

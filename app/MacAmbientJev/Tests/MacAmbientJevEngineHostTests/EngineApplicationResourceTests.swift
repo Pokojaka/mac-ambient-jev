@@ -68,8 +68,7 @@ private final class ResourceGatedProvider: EngineInferenceProviding, @unchecked 
     func makeInference(settings: EngineSettings) throws -> EngineInference {
         let standard = try base.makeInference(settings: settings)
         return EngineInference(engines: SessionProcessingEngines(
-            asr: ResourceGatedASR(gate: gate, calls: base.calls),
-            diarization: FakeDiarizer(calls: base.calls), finalTranscriptVAD: ResourceFinalVAD()),
+            asr: ResourceGatedASR(gate: gate, calls: base.calls), finalTranscriptVAD: ResourceFinalVAD()),
             contentPriority: standard.contentPriority, timelineBuilder: standard.timelineBuilder,
             makeLiveVADSession: standard.makeLiveVADSession)
     }
@@ -116,7 +115,7 @@ private final class ResourceGatedProvider: EngineInferenceProviding, @unchecked 
         #expect(paused.finalizationAttempt?.state == .paused && paused.finalizationAttempt?.attemptID == attempt && provider.base.calls.count("asr") == 1)
         #expect(paused.activeRuns == nil && f.app.core.processingQueue.held.first?.reason == pressure.hold)
         #expect(f.app.core.currentState().presentation.processingStatusText == pressure.hold.finalizationExplanation)
-        #expect(provider.base.calls.count("asr.unload") > 0 && provider.base.calls.count("diarization.unload") > 0)
+        #expect(provider.base.calls.count("asr.unload") > 0)
         let original = try SessionLayout(sessionURL: sessionURL).importedOriginalURL()
         #expect(try Data(contentsOf: original) == bytes)
         if shutsDown {

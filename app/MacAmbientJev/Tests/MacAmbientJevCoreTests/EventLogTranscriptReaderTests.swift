@@ -44,26 +44,12 @@ func eventLogTranscriptReaderReconstructsOnlyActiveRuns() async throws {
             provenance: RunProvenance(engine: "test", model: "test", version: "test", configuration: [:])
         )
     ))
-    _ = try await writer.append(EventDraft(
-        eventType: "speaker.span",
-        sessionID: sessionID,
-        processingRunID: "diar-active",
-        sourceStartFrame: 0,
-        sourceEndFrame: 1_000,
-        payload: SpeakerSpan(
-            speakerID: "speaker-1",
-            startFrame: 0,
-            endFrame: 1_000,
-            confidence: 0.9
-        )
-    ))
     let recovered = try SessionRecovery.recoverJSONL(
         Data(contentsOf: root.appending(path: "events.jsonl"))
     )
     let activeRuns = ActiveRuns(
         segmentation: "seg-active",
-        asr: "asr-active",
-        diarization: "diar-active"
+        asr: "asr-active"
     )
     let events = try EventLogTranscriptReader().events(
         lines: recovered.lines,
@@ -79,7 +65,6 @@ func eventLogTranscriptReaderReconstructsOnlyActiveRuns() async throws {
 
     #expect(materialized.count == 1)
     #expect(materialized[0].text == "現在の結果")
-    #expect(materialized[0].speakers.first?.id == "speaker-1")
     #expect(materialized[0].clauseState == .boundaryPending)
 }
 
@@ -614,7 +599,7 @@ func liveReuseDoesNotInventAStreamEndForAnUnassessedSuccessor() async throws {
     #expect(throws: EventLogTranscriptReaderError.self) { _ = try log.boundaryRun("boundary_live") }
 }
 
-@Test(arguments: [ProcessingStage.segmentation, .asr, .diarization])
+@Test(arguments: [ProcessingStage.segmentation, .asr])
 func readersRejectUnknownLocalPointersInsteadOfInventingAnEmptyTranscript(stage: ProcessingStage) async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -623,8 +608,7 @@ func readersRejectUnknownLocalPointersInsteadOfInventingAnEmptyTranscript(stage:
     #expect(try EventLogTranscriptReader().events(lines: lines, activeRuns: transcriptRuns).isEmpty)
     let invalid = ActiveRuns(
         segmentation: stage == .segmentation ? "missing" : "seg",
-        asr: stage == .asr ? "missing" : "asr",
-        diarization: stage == .diarization ? "missing" : "diar"
+        asr: stage == .asr ? "missing" : "asr"
     )
     #expect(throws: EventLogTranscriptReaderError.self) {
         _ = try EventLogTranscriptReader().events(lines: lines, activeRuns: invalid)

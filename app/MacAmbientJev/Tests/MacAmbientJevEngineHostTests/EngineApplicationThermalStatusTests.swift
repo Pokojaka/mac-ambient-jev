@@ -13,8 +13,6 @@ import MacAmbientJevPipeline
     .preparingASR,
     .loadingASR,
     .asrBacklogged,
-    .preparingDiarization,
-    .diarizing,
     .classifyingContent,
     .decisionDeferred
 ])

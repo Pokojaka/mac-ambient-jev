@@ -82,12 +82,6 @@ def test_prepare_csj_fixture_end_to_end(tmp_path):
     ).read_text(encoding="utf-8") == (
         "質問です回答です\n"
     )
-    assert json.loads(
-        (fixture / "speaker-reference.json").read_text(encoding="utf-8")
-    ) == [
-        {"end_ms": 1000, "speaker_label": "L", "start_ms": 0},
-        {"end_ms": 1500, "speaker_label": "R", "start_ms": 500},
-    ]
 
 
 def write_manifest(tmp_path, resources):

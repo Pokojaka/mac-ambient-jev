@@ -1,10 +1,6 @@
 import pytest
 
-from common.csj import (
-    csj_reference_text,
-    csj_speaker_reference,
-    parse_csj_transcript,
-)
+from common.csj import csj_reference_text, parse_csj_transcript
 
 
 SAMPLE = """%講演ID:D04M0041
@@ -23,12 +19,11 @@ SAMPLE = """%講演ID:D04M0041
 """
 
 
-def test_csj_parser_reads_time_speaker_and_surface():
+def test_csj_parser_reads_time_and_surface():
     items = parse_csj_transcript(SAMPLE)
     assert len(items) == 4
     assert items[0].start_ms == 8805
     assert items[0].end_ms == 12085
-    assert items[0].speaker == "L"
     assert items[0].nonverbal is None
     assert items[0].surface_lines == (
         "質問させていただきます",
@@ -41,11 +36,7 @@ def test_nonverbal_span_is_kept_by_parser_but_excluded_from_reference():
     assert items[2].nonverbal == "<笑>"
     assert items[2].surface_lines == ()
 
-    assert csj_speaker_reference(items) == [
-        {"start_ms": 8805, "end_ms": 12085, "speaker_label": "L"},
-        {"start_ms": 9417, "end_ms": 9838, "speaker_label": "R"},
-        {"start_ms": 13698, "end_ms": 16817, "speaker_label": "L"},
-    ]
+    assert csj_reference_text([items[2]], keep_fillers=True) == ""
 
 
 def test_verbatim_keeps_fillers_and_content_drops_them():

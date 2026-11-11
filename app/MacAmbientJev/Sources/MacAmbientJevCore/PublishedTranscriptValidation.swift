@@ -4,8 +4,7 @@ extension ClauseEventLog {
     /// A selected empty local stage still needs its successful completion record.
     func validateLocalRuns(_ activeRuns: ActiveRuns) throws {
         let selected: [(ProcessingStage, String?)] = [
-            (.segmentation, activeRuns.segmentation), (.asr, activeRuns.asr),
-            (.diarization, activeRuns.diarization)
+            (.segmentation, activeRuns.segmentation), (.asr, activeRuns.asr)
         ]
         for (stage, selectedRunID) in selected {
             guard let runID = selectedRunID else { continue }

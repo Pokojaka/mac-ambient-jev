@@ -26,12 +26,10 @@ public enum MacModelError: Error, Equatable, LocalizedError, Sendable {
 }
 
 extension MacModel {
-    /// The model directory relative to `modelsRoot`. The diarization models sit one level down
-    /// because the repository folder is part of the layout FluidAudio's own cache used.
+    /// The model directory relative to `modelsRoot`.
     var relativeDirectory: String {
         switch self {
         case .asr: "qwen3-asr-1.7b-mlx-8bit"
-        case .diarization: "fluidaudio-offline-diarizer/speaker-diarization"
         case .vad: "fluidaudio-silero-vad"
         }
     }
@@ -41,7 +39,6 @@ extension MacModel {
 /// Engines load only from `verifiedDirectory`; only `fetch` writes model files.
 public final class MacModelStore: Sendable {
     private let modelsRoot: URL
-    private let directories: [MacModel: URL]
     private let manifest: [MacModel: ModelManifestEntry]
     private let verifyFiles: @Sendable (URL, ModelManifestEntry) throws -> Void
     private let state = VerificationState()
@@ -54,25 +51,12 @@ public final class MacModelStore: Sendable {
         )
     }
 
-    /// A store whose diarization model sits in `directory`, for the measurement oracle. The
-    /// files are still checked against the manifest.
-    public convenience init(diarizationDirectory directory: URL) throws {
-        try self.init(
-            modelsRoot: directory,
-            manifest: MacModelManifest.bundled(),
-            verify: { try ModelVerifier.verify(directory: $0, entry: $1) },
-            directories: [.diarization: directory]
-        )
-    }
-
     init(
         modelsRoot: URL,
         manifest: [MacModel: ModelManifestEntry],
-        verify: @escaping @Sendable (URL, ModelManifestEntry) throws -> Void,
-        directories: [MacModel: URL] = [:]
+        verify: @escaping @Sendable (URL, ModelManifestEntry) throws -> Void
     ) {
         self.modelsRoot = modelsRoot
-        self.directories = directories
         self.manifest = manifest
         self.verifyFiles = verify
     }
@@ -80,7 +64,7 @@ public final class MacModelStore: Sendable {
     public func entry(_ model: MacModel) -> ModelManifestEntry { manifest[model]! }
 
     public func directory(_ model: MacModel) -> URL {
-        directories[model] ?? modelsRoot.appending(path: model.relativeDirectory, directoryHint: .isDirectory)
+        modelsRoot.appending(path: model.relativeDirectory, directoryHint: .isDirectory)
     }
 
     /// A cheap check without hashing: every manifest file is a regular file of the pinned byte count.

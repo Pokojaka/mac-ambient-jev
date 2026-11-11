@@ -88,7 +88,6 @@ public enum EngineStage
     [WireValue("validating_models")] ValidatingModels,
     [WireValue("loading_models")] LoadingModels,
     [WireValue("vad")] Vad,
-    [WireValue("diarization")] Diarization,
     [WireValue("asr")] Asr,
     [WireValue("decisions")] Decisions,
     [WireValue("finalization")] Finalization,
@@ -193,19 +192,6 @@ public enum EngineSessionStatus
     [WireValue("processing")] Processing,
     [WireValue("finalized")] Finalized,
     [WireValue("failed")] Failed,
-}
-
-public enum EngineSpeakerLabel
-{
-    [WireValue("Speaker 1")] Speaker1,
-    [WireValue("Speaker 2")] Speaker2,
-    [WireValue("Speaker 3")] Speaker3,
-    [WireValue("Speaker 4")] Speaker4,
-    [WireValue("Speaker 5")] Speaker5,
-    [WireValue("Speaker 6")] Speaker6,
-    [WireValue("Speaker 7")] Speaker7,
-    [WireValue("OTHER")] Other,
-    [WireValue("UNKNOWN")] Unknown,
 }
 
 public enum EngineClauseState

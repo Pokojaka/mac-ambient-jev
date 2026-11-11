@@ -51,10 +51,7 @@ Invoke-Step 'doc reference check' { python scripts/check_doc_references.py }
 Invoke-Step 'test time limits check' { python -B scripts/check_test_time_limits.py }
 Invoke-Step 'ONNX Runtime fetcher self-test' { python -B scripts/test_fetch_onnxruntime.py }
 Invoke-Step 'Silero VAD fetcher self-test' { python -B scripts/test_fetch_silero_vad.py }
-Invoke-Step 'Community-1 diarization fetcher self-test' { python -B scripts/test_fetch_community1_diarization.py }
 Invoke-Step 'clause tagger fetcher self-test' { python -B scripts/test_fetch_clause_tagger.py }
-Invoke-Step 'diarization run comparison self-test' { python -B scripts/test_compare_diarization_runs.py }
-Invoke-Step 'canonical CAF converter self-test' { python -B scripts/test_prepare_canonical_caf.py }
 Invoke-Step 'Qwen3-ASR tokenizer fetcher self-test' { python -B scripts/test_fetch_qwen3_asr_tokenizer.py }
 Invoke-Step 'Qwen3-ASR model fetcher self-test' { python -B scripts/test_fetch_qwen3_asr_model.py }
 Invoke-Step 'pinned download self-test' { python -B scripts/test_pinned_download.py }
@@ -175,13 +172,8 @@ if ($FullModel) {
     $env:QWEN3_ASR_ONNX_MODEL_DIRECTORY = Get-SinglePath 'Qwen3-ASR model fetch' $qwen3Lines
     $env:QWEN3_ASR_ONNX_MODEL_SIZE = '0.6b'
 
-    Write-Host '==> fetch Community-1 diarization model'
-    $diarizationLines = @(& python scripts/fetch_community1_diarization.py)
-    $env:MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY = Get-SinglePath 'Community-1 diarization fetch' $diarizationLines
-
     Invoke-ModelSuite 'Silero VAD' 'SileroVADParityTests'
     Invoke-ModelSuite 'Qwen3-ASR' 'ONNXQwen3ASRModelTests|Qwen3ASRTokenReferenceTests'
-    Invoke-ModelSuite 'Community-1 diarization' 'Community1ONNXStageTests|Community1ONNXEndToEndTests'
     Invoke-ModelSuite 'clause tagger' 'ONNXClauseTaggerTests'
 
     Invoke-Step 'Swift build release ProcessRecording' { swift build --package-path app/MacAmbientJev -c release --product MacAmbientJevProcessRecording }

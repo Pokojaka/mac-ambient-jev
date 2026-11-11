@@ -16,7 +16,7 @@ public sealed partial class ShellStoreTests
         const ulong historyRevision = 7;
         const long maxGrowth = 4 * 1024 * 1024;
         var stopwatch = Stopwatch.StartNew(); var clock = new ManualClock(); var engine = NewEngine();
-        EngineTranscriptRow Row(string id, long start, string text) => new(id, start, start, text, [], null);
+        EngineTranscriptRow Row(string id, long start, string text) => new(id, start, start, text, null);
         var sample = StrictWireCodec.Encode(Row("history-0000000000", 0, "x")).Length;
         var largeTextLength = EngineCodec.MaxRowBytes - sample + 1;
         var sessionError = Failure(EngineErrorCode.InvalidSettings, "unreadable", EngineRecoveryAction.Retry);

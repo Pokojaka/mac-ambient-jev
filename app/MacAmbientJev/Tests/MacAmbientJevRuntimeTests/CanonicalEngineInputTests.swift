@@ -8,46 +8,6 @@ import Synchronization
 import Testing
 
 @Test
-func canonicalCAFAudioSourceReadsBoundedRandomRangesWithoutAudioCopies() throws {
-    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: root) }
-    let url = root.appending(path: "canonical.caf")
-    let format = try #require(AVAudioFormat(standardFormatWithSampleRate: CanonicalAudio.sampleRate, channels: 1))
-    let file = try AVAudioFile(forWriting: url, settings: format.settings)
-    let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16000))
-    let channels = try #require(buffer.floatChannelData)
-    buffer.frameLength = buffer.frameCapacity
-    for block in 0..<8 {
-        for frame in 0..<16000 { channels[0][frame] = Float((block * 16000 + frame) % 997) / 997 }
-        try file.write(from: buffer)
-    }
-    file.close()
-    let originalSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
-    let source = try CanonicalCAFAudioSource(fileURL: url, sessionURL: url.deletingLastPathComponent())
-    #expect(source.sampleCount == 128000)
-    for (offset, count) in [(8203, 20017), (127993, 20017), (128000, 320), (128003, 320), (0, 320), (503, 8192)] {
-        let destination = UnsafeMutablePointer<Float>.allocate(capacity: count)
-        defer { destination.deallocate() }
-        destination.initialize(repeating: -2, count: count)
-        try source.copySamples(into: destination, offset: offset, count: count)
-        let available = max(0, min(count, source.sampleCount - offset))
-        for index in 0..<available { #expect(destination[index] == Float((offset + index) % 997) / 997) }
-        for index in available..<count { #expect(destination[index] == -2) }
-    }
-    let destination = UnsafeMutablePointer<Float>.allocate(capacity: 1)
-    defer { destination.deallocate() }
-    #expect(throws: ProcessingTimelineReaderError.invalidFrameRange) {
-        try source.copySamples(into: destination, offset: -1, count: 1)
-    }
-    #expect(throws: ProcessingTimelineReaderError.invalidFrameRange) {
-        try source.copySamples(into: destination, offset: 0, count: -1)
-    }
-    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["canonical.caf"])
-    #expect(try url.resourceValues(forKeys: [.fileSizeKey]).fileSize == originalSize)
-}
-
-@Test
 func nativeQwenRejectsNoncanonicalRateBeforeModelLoading() async throws {
     let paths = AppPaths(applicationSupportURL: URL(fileURLWithPath: "/tmp/unused-support"),
         cacheURL: URL(fileURLWithPath: "/tmp/unused-cache"), sessionsRootOverride: nil)
@@ -59,7 +19,6 @@ func nativeQwenRejectsNoncanonicalRateBeforeModelLoading() async throws {
 
 private struct EngineInputObservation: Equatable {
     var vad: [String] = []
-    var diarization: [String] = []
     var asr: [String] = []
 }
 
@@ -79,22 +38,6 @@ private struct ObservingVAD: FinalTranscriptVADSegmenter {
             $0.vad.append("\(info.sampleRate)/\(info.channelCount)/\(CanonicalAudio.sampleFormat)")
         }
         return [SegmentReference(segmentationRunID: runID, segmentID: "probe", startFrame: 0, endFrame: 16_000)]
-    }
-}
-
-private struct ObservingDiarizer: DiarizationEngine {
-    let log: EngineInputLog
-    let provenance = engineInputProvenance
-    func prepare() async throws {}
-    func unload() async {}
-
-    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] {
-        let file = try AVAudioFile(forReading: fileURL)
-        let format = file.fileFormat
-        log.state.withLock {
-            $0.diarization.append("\(canonicalSampleRate)/\(format.sampleRate)/\(format.channelCount)/\(file.length)")
-        }
-        return [SpeakerSpan(speakerID: "probe", startFrame: 0, endFrame: 16_000, confidence: 1)]
     }
 }
 
@@ -134,8 +77,7 @@ func finalizationEnginesReceiveCanonicalAudioForRecordedAndImportedSessions() as
     let log = EngineInputLog()
     let processor = NativeSessionProcessor(
         paths: paths,
-        engines: SessionProcessingEngines(asr: ObservingASR(log: log), diarization: ObservingDiarizer(log: log),
-            finalTranscriptVAD: ObservingVAD(log: log)),
+        engines: SessionProcessingEngines(asr: ObservingASR(log: log), finalTranscriptVAD: ObservingVAD(log: log)),
         audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
         contentPriority: .disabled,
         sleep: { _ in }
@@ -189,7 +131,6 @@ func finalizationEnginesReceiveCanonicalAudioForRecordedAndImportedSessions() as
 
     #expect(log.state.withLock { $0 } == EngineInputObservation(
         vad: ["16000.0/1/float32LE", "16000.0/1/float32LE"],
-        diarization: ["16000.0/16000.0/1/32000", "16000.0/16000.0/1/32000"],
         asr: ["16000/16000", "16000/16000"]
     ))
 }

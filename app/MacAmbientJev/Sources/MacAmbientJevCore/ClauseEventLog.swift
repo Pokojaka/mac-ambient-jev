@@ -171,9 +171,6 @@ struct ClauseEventLog {
                     asrRunID: runID, asrEventSeq: header.eventSeq
                 ))
                 localEvidence[.asr, default: []].insert(runID)
-            case "speaker.span":
-                _ = try line.body(SpeakerSpanBody.self)
-                localEvidence[.diarization, default: []].insert(try line.requiredRunID())
             case "clause_boundaries.assessed":
                 let runID = try line.requiredRunID()
                 let assessment = try line.body(PayloadBody<ClauseBoundaryAssessment>.self).payload

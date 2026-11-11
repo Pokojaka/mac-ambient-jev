@@ -201,7 +201,6 @@ private final class DecisionRetryFailureInference: EngineInferenceProviding, @un
         return EngineInference(
             engines: SessionProcessingEngines(
                 asr: FakeASR(calls: calls),
-                diarization: FakeDiarizer(calls: calls),
                 finalTranscriptVAD: FakeFinalVAD()
             ),
             contentPriority: .localTagger({ try factory.makeCoordinator() }, usageCounter: usageCounter),

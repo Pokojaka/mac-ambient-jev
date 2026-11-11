@@ -1,12 +1,10 @@
 import Foundation
 import MacAmbientJevCore
-import MacAmbientJevDiarization
 import MacAmbientJevONNX
 
 public enum PortableModelKind: String, CaseIterable, Sendable, Equatable {
     case vad
     case asr
-    case diarization
     case clauseTagger = "clause_tagger"
 }
 
@@ -47,10 +45,9 @@ public enum PortableModelPreparationError: Error, LocalizedError, Equatable {
     }
 }
 
-/// Verifies the pinned installed models of one configuration, then loads each, in order VAD, ASR, diarization and,
-/// only when the configuration has a clause tagger directory, the tagger. It never downloads (see
-/// `PortableModelDownloads`), never substitutes a
-/// model and creates no recognition or decision request. Each model is released after it loads.
+/// Verifies and loads the configured VAD and ASR models, then the clause tagger when configured. It never
+/// downloads (see `PortableModelDownloads`), substitutes a model, or creates recognition or decision requests.
+/// Each model is released after it loads.
 public struct PortableModelPreparationService: Sendable {
     struct Step: Sendable {
         let model: PortableModelKind
@@ -64,7 +61,7 @@ public struct PortableModelPreparationService: Sendable {
         configuration: PortableProcessingConfiguration,
         onProgress: @escaping @Sendable (PortableModelPreparationProgress) -> Void
     ) async throws {
-        try await Self.run(steps: try Self.steps(for: configuration), onProgress: onProgress)
+        try await Self.run(steps: Self.steps(for: configuration), onProgress: onProgress)
     }
 
     static func run(
@@ -87,15 +84,13 @@ public struct PortableModelPreparationService: Sendable {
         }
     }
 
-    static func steps(for configuration: PortableProcessingConfiguration) throws -> [Step] {
+    static func steps(for configuration: PortableProcessingConfiguration) -> [Step] {
         let threads = configuration.threads
         let silero = configuration.sileroModelURL
         let sileroGuidance = configuration.sileroGuidance
         let clauseTaggerGuidance = configuration.clauseTaggerGuidance
         let qwen = configuration.qwen3ModelDirectory
         let qwenSize = configuration.qwen3Size
-        let diarization = configuration.diarizationModelDirectory
-        let diarizationFiles = try Community1Assets.manifestEntries().flatMap(\.files)
 
         var steps = [
             Step(
@@ -128,19 +123,6 @@ public struct PortableModelPreparationService: Sendable {
                     }
                 }
             ),
-            Step(
-                model: .diarization,
-                validate: {
-                    try Self.verify(.diarization, directory: diarization, files: diarizationFiles, guidance: Self.downloadGuidance)
-                },
-                load: {
-                    try await Self.load(.diarization, path: diarization.path) {
-                        let engine = try ONNXCommunity1DiarizationEngine(modelDirectory: diarization, intraOpThreads: threads)
-                        try await engine.prepare()
-                        await engine.unload()
-                    }
-                }
-            ),
         ]
 
         if let tagger = configuration.clauseTaggerModelDirectory {
@@ -161,8 +143,8 @@ public struct PortableModelPreparationService: Sendable {
 
     static let downloadGuidance = "設定画面の「モデルを準備」を押すと、もう一度ダウンロードします"
 
-    /// Verifies every file with `ModelVerifier`. A downloaded file (ASR, diarization) that fails the size or
-    /// hash check is deleted so the next preparation downloads it again.
+    /// Verifies each VAD, ASR, or clause-tagger file with `ModelVerifier`. A corrupt downloaded ASR file is
+    /// deleted so the next preparation downloads it again.
     static func verify(
         _ model: PortableModelKind, directory: URL, files: [ModelManifestFile], guidance: String
     ) throws {
@@ -189,7 +171,7 @@ public struct PortableModelPreparationService: Sendable {
                     )
                 }
                 var deleted = ""
-                if model == .asr || model == .diarization {
+                if model == .asr {
                     try SessionFileAccess.removeIfPresent(url, relativeTo: directory)
                     deleted = "。ファイルを削除しました"
                 }

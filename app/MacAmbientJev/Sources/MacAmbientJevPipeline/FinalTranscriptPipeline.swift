@@ -8,11 +8,6 @@ public protocol SessionProcessingAudioHandling: Sendable {
         onStatus: @escaping @Sendable (String) async -> Void
     ) async throws -> any TimelineAudioReading
     func compactRecording(layout: SessionLayout) async throws
-    func exportDiarizationAudio(
-        reader: any TimelineAudioReading,
-        to destinationURL: URL,
-        sessionURL: URL
-    ) throws
 }
 
 public protocol FinalTranscriptVADSegmenter: Sendable {
@@ -52,8 +47,6 @@ struct FinalTranscriptPipelineFailure: Error, LocalizedError {
 public enum FinalTranscriptPipelineError: LocalizedError {
     case missingRunEvent(eventType: String, stage: ProcessingStage, runID: String)
     case invalidVADRange(String)
-    case invalidSpeakerSpan(speakerID: String, startFrame: Int64, endFrame: Int64, totalFrames: Int64)
-    case invalidSpeakerMetadata(String)
     case persistedSegmentsMismatch(String)
 
     public var errorDescription: String? {
@@ -62,10 +55,6 @@ public enum FinalTranscriptPipelineError: LocalizedError {
             "\(stage.rawValue) run \(runID) の \(eventType) を確認できません"
         case let .invalidVADRange(segmentID):
             "VAD 区間 \(segmentID) の範囲が不正です"
-        case let .invalidSpeakerSpan(speakerID, startFrame, endFrame, totalFrames):
-            "話者 \(speakerID) の区間 \(startFrame)〜\(endFrame) が音声の範囲 0〜\(totalFrames) を外れています"
-        case let .invalidSpeakerMetadata(speakerID):
-            "話者 \(speakerID) の ID または confidence が不正です"
         case let .persistedSegmentsMismatch(runID):
             "segmentation run \(runID) の保存済み区間が一致しません"
         }
@@ -77,9 +66,7 @@ struct FinalTranscriptPipeline: Sendable {
     let sessionURL: URL
     let audio: any TimelineAudioReading
     let asr: any ASREngine
-    let diarization: any DiarizationEngine
     let vadSegmenter: any FinalTranscriptVADSegmenter
-    let audioHandling: any SessionProcessingAudioHandling
     let sleep: @Sendable (Duration) async throws -> Void
 
     /// - Throws: `FinalTranscriptPipelineCancellation` or `FinalTranscriptPipelineFailure`.
@@ -124,12 +111,10 @@ struct FinalTranscriptPipeline: Sendable {
         asrMetrics: inout ASRBatchMetrics?
     ) async throws -> FinalTranscriptPipelineOutcome {
         let info = audio.info
-        let layout = SessionLayout(sessionURL: sessionURL)
         let materializer = TranscriptMaterializer(sampleRate: info.sampleRate)
         let writer = try SessionWriter(sessionURL: sessionURL)
         let segmentationRunID = "seg_final_\(UUID().uuidString.lowercased())"
         let asrRunID = "asr_final_\(UUID().uuidString.lowercased())"
-        let diarizationRunID = "diar_final_\(UUID().uuidString.lowercased())"
 
         func startRun(_ stage: ProcessingStage, _ runID: String, _ provenance: RunProvenance) async throws {
             try Task.checkCancellation()
@@ -142,63 +127,12 @@ struct FinalTranscriptPipeline: Sendable {
             try Task.checkCancellation()
         }
 
-        func completeEmptyRun(_ stage: ProcessingStage, _ runID: String) async throws {
-            try Task.checkCancellation()
-            try await writer.append(EventDraft(
-                eventType: "processing.run.completed",
-                sessionID: sessionID,
-                processingRunID: runID,
-                payload: ProcessingRunCompletedPayload(
-                    stage: stage,
-                    succeeded: true,
-                    completedCount: 0,
-                    failedCount: 0
-                )
-            ))
-            try Task.checkCancellation()
-        }
-
         await onStatus(.activity(.detectingSpeech))
         try await startRun(.segmentation, segmentationRunID, vadSegmenter.provenance)
         let vadSegments = try await vadSegmenter.segment(reader: audio, runID: segmentationRunID)
         try validateVADSegments(vadSegments, runID: segmentationRunID)
 
-        var transcriptEvents: [TranscriptEvent]
-        if vadSegments.isEmpty {
-            try await startRun(.diarization, diarizationRunID, diarization.provenance)
-            try await completeEmptyRun(.diarization, diarizationRunID)
-            transcriptEvents = []
-        } else {
-            let diarizationInputURL = layout.diarizationInputURL
-            try audioHandling.exportDiarizationAudio(
-                reader: audio,
-                to: diarizationInputURL,
-                sessionURL: layout.sessionURL
-            )
-
-            await onStatus(.activity(.preparingDiarization))
-            try await startRun(.diarization, diarizationRunID, diarization.provenance)
-            let diarizationCoordinator = DiarizationCoordinator(
-                sessionID: sessionID,
-                runID: diarizationRunID,
-                writer: writer,
-                engine: diarization,
-                materializer: materializer
-            )
-            await onStatus(.activity(.diarizing))
-            let diarizationResult = try await diarizationCoordinator.process(
-                fileURL: diarizationInputURL,
-                canonicalSampleRate: info.sampleRate,
-                existingEvents: [],
-                activeRuns: ActiveRuns(
-                    segmentation: segmentationRunID,
-                    asr: asrRunID,
-                    diarization: diarizationRunID
-                )
-            )
-            try validateSpeakerSpans(diarizationResult.speakerSpans)
-            transcriptEvents = diarizationResult.events
-        }
+        var transcriptEvents: [TranscriptEvent] = []
 
         if !vadSegments.isEmpty {
             await onStatus(.activity(.preparingASR))
@@ -283,8 +217,7 @@ struct FinalTranscriptPipeline: Sendable {
         await onPhase(.postprocessing)
         let activeRuns = ActiveRuns(
             segmentation: segmentationRunID,
-            asr: asrRunID,
-            diarization: diarizationRunID
+            asr: asrRunID
         )
 
         try validatePersistedRuns(
@@ -292,7 +225,6 @@ struct FinalTranscriptPipeline: Sendable {
             segments: vadSegments,
             expected: [
                 (.segmentation, segmentationRunID),
-                (.diarization, diarizationRunID),
                 (.asr, asrRunID)
             ]
         )
@@ -323,25 +255,6 @@ struct FinalTranscriptPipeline: Sendable {
                   segment.startFrame < segment.endFrame,
                   segment.endFrame <= audio.info.committedFrames else {
                 throw FinalTranscriptPipelineError.invalidVADRange(segment.segmentID)
-            }
-        }
-    }
-
-    private func validateSpeakerSpans(_ spans: [SpeakerSpan]) throws {
-        for span in spans {
-            guard !span.speakerID.isEmpty,
-                  span.confidence.map({ $0.isFinite && (0...1).contains($0) }) ?? true else {
-                throw FinalTranscriptPipelineError.invalidSpeakerMetadata(span.speakerID)
-            }
-            guard span.startFrame >= 0,
-                  span.startFrame < span.endFrame,
-                  span.endFrame <= audio.info.committedFrames else {
-                throw FinalTranscriptPipelineError.invalidSpeakerSpan(
-                    speakerID: span.speakerID,
-                    startFrame: span.startFrame,
-                    endFrame: span.endFrame,
-                    totalFrames: audio.info.committedFrames
-                )
             }
         }
     }

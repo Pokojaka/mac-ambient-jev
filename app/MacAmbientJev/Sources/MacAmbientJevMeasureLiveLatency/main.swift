@@ -328,24 +328,12 @@ struct MeasureLiveLatencyCommand {
         let collected = await collector.results(sampleRate: CanonicalAudio.sampleRate)
         let latencies = collected.records.map { $0.firstUpdateSeconds - $0.endSpeechSeconds }.sorted()
         let finalSegmentByID = Dictionary(uniqueKeysWithValues: collected.finalSegments.map { ($0.segmentID, $0) })
-        let finalSpeakerLabels = speakerLabels(for: collected.finalSegments)
         let finalSegments: [[String: Any]] = collected.finalSegments.map { segment in
-            let speakers: [[String: Any]] = segment.speakers.map { span in
-                [
-                    "speaker_id": span.id,
-                    "display_label": span.displayLabel ?? SpeakerDisplayMapper.label(for: span.id, labels: finalSpeakerLabels),
-                    "start_ms": span.startMilliseconds,
-                    "end_ms": span.endMilliseconds,
-                    "confidence": span.confidence as Any? ?? NSNull()
-                ]
-            }
-            return [
+            [
                 "segment_id": segment.segmentID,
                 "start_ms": segment.startMilliseconds,
                 "end_ms": segment.endMilliseconds,
-                "text": segment.text,
-                "speaker_spans": speakers,
-                "display_speaker_labels": SpeakerDisplayMapper.turnLabels(for: segment, labels: finalSpeakerLabels)
+                "text": segment.text
             ]
         }
         let latencySamples: [[String: Any]] = collected.records.map { record in
@@ -360,24 +348,13 @@ struct MeasureLiveLatencyCommand {
         let vadSegments: [[String: Any]] = collected.vadFrames.keys.sorted().map { segmentID in
             guard let frames = collected.vadFrames[segmentID] else { return [:] }
             let finalSegment = finalSegmentByID[segmentID]
-            let speakers: [[String: Any]] = (finalSegment?.speakers ?? []).map { span in
-                [
-                    "speaker_id": span.id,
-                    "display_label": span.displayLabel ?? SpeakerDisplayMapper.label(for: span.id, labels: finalSpeakerLabels),
-                    "start_ms": span.startMilliseconds,
-                    "end_ms": span.endMilliseconds,
-                    "confidence": span.confidence as Any? ?? NSNull()
-                ]
-            }
             return [
                 "segment_id": segmentID,
                 "vad_start_frame": frames.start,
                 "vad_end_frame": frames.end,
                 "final_start_ms": finalSegment?.startMilliseconds as Any? ?? NSNull(),
                 "final_end_ms": finalSegment?.endMilliseconds as Any? ?? NSNull(),
-                "final_text": finalSegment?.text as Any? ?? NSNull(),
-                "speaker_spans": speakers,
-                "display_speaker_labels": finalSegment.map { SpeakerDisplayMapper.turnLabels(for: $0, labels: finalSpeakerLabels) } as Any? ?? NSNull()
+                "final_text": finalSegment?.text as Any? ?? NSNull()
             ]
         }
         let output: [String: Any] = [
@@ -454,19 +431,6 @@ struct MeasureLiveLatencyCommand {
         guard !sorted.isEmpty else { return nil }
         let index = Int((Double(sorted.count - 1) * quantile).rounded(.up))
         return sorted[min(sorted.count - 1, index)]
-    }
-
-    private static func speakerLabels(
-        for segments: [MaterializedTranscriptSegment]
-    ) -> [String: String] {
-        SpeakerDisplayMapper.makeLabels(spans: segments.flatMap(\.speakers).map { span in
-            SpeakerSpan(
-                speakerID: span.id,
-                startFrame: span.startMilliseconds,
-                endFrame: span.endMilliseconds,
-                confidence: span.confidence
-            )
-        })
     }
 
     static func feedAudio(

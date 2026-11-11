@@ -19,17 +19,15 @@ public struct PortableProcessingConfiguration: Sendable, Equatable {
     public static let sileroModelKey = "MAC_AMBIENT_JEV_SILERO_MODEL"
     public static let qwen3DirectoryKey = "QWEN3_ASR_ONNX_MODEL_DIRECTORY"
     public static let qwen3SizeKey = "QWEN3_ASR_ONNX_MODEL_SIZE"
-    public static let diarizationDirectoryKey = "MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY"
     public static let clauseTaggerDirectoryKey = "MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY"
     public static let maximumThreads = 4
 
     public let sileroModelURL: URL
     public let qwen3ModelDirectory: URL
     public let qwen3Size: Qwen3ASRModelSize
-    public let diarizationModelDirectory: URL
     /// Non-nil exactly when decisions are requested.
     public let clauseTaggerModelDirectory: URL?
-    /// Threads for ASR, diarization and the clause tagger. The VAD always uses one.
+    /// Threads for ASR and the clause tagger. The VAD always uses one.
     public let threads: Int
     /// What a missing or invalid Silero file tells the user to do.
     public let sileroGuidance: String
@@ -40,7 +38,6 @@ public struct PortableProcessingConfiguration: Sendable, Equatable {
         sileroModelURL: URL,
         qwen3ModelDirectory: URL,
         qwen3Size: Qwen3ASRModelSize,
-        diarizationModelDirectory: URL,
         clauseTaggerModelDirectory: URL?,
         threads: Int,
         sileroGuidance: String,
@@ -49,7 +46,6 @@ public struct PortableProcessingConfiguration: Sendable, Equatable {
         self.sileroModelURL = sileroModelURL
         self.qwen3ModelDirectory = qwen3ModelDirectory
         self.qwen3Size = qwen3Size
-        self.diarizationModelDirectory = diarizationModelDirectory
         self.clauseTaggerModelDirectory = clauseTaggerModelDirectory
         self.threads = threads
         self.sileroGuidance = sileroGuidance
@@ -68,7 +64,6 @@ public struct PortableProcessingConfiguration: Sendable, Equatable {
         let sileroModelURL = try existingPath(environment, key: sileroModelKey, isDirectory: false)
         let qwen3ModelDirectory = try existingPath(environment, key: qwen3DirectoryKey, isDirectory: true)
         let qwen3Size = try qwen3Size(environment)
-        let diarizationModelDirectory = try existingPath(environment, key: diarizationDirectoryKey, isDirectory: true)
         let clauseTaggerModelDirectory = withDecisions
             ? try existingPath(environment, key: clauseTaggerDirectoryKey, isDirectory: true)
             : nil
@@ -76,7 +71,6 @@ public struct PortableProcessingConfiguration: Sendable, Equatable {
             sileroModelURL: sileroModelURL,
             qwen3ModelDirectory: qwen3ModelDirectory,
             qwen3Size: qwen3Size,
-            diarizationModelDirectory: diarizationModelDirectory,
             clauseTaggerModelDirectory: clauseTaggerModelDirectory,
             threads: threads,
             sileroGuidance: "python3 scripts/fetch_silero_vad.py を実行し、出力されたファイルを \(sileroModelKey) の指す場所に置く",

@@ -31,13 +31,11 @@ QWEN3_MANIFEST = (
 SILERO_VARIABLE = "MAC_AMBIENT_JEV_SILERO_MODEL"
 QWEN3_DIRECTORY_VARIABLE = "QWEN3_ASR_ONNX_MODEL_DIRECTORY"
 QWEN3_SIZE_VARIABLE = "QWEN3_ASR_ONNX_MODEL_SIZE"
-DIARIZATION_VARIABLE = "MAC_AMBIENT_JEV_DIARIZATION_ONNX_MODEL_DIRECTORY"
 CLAUSE_TAGGER_VARIABLE = "MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY"
 MODEL_VARIABLES = (
     SILERO_VARIABLE,
     QWEN3_DIRECTORY_VARIABLE,
     QWEN3_SIZE_VARIABLE,
-    DIARIZATION_VARIABLE,
     CLAUSE_TAGGER_VARIABLE,
 )
 
@@ -50,17 +48,10 @@ EVALUATOR_TIMEOUT_SECONDS = 60
 EVENT_SCHEMA_VERSION = 3
 SAMPLE_RATE = 16_000
 
-INDIVIDUAL_SPEAKER_LIMIT = 7
-VALID_LABELS = {f"Speaker {n}" for n in range(1, INDIVIDUAL_SPEAKER_LIMIT + 1)} | {
-    "OTHER",
-    "UNKNOWN",
-}
-
 # active_runs key -> (stage name in processing.run.* payloads, expected provenance engine)
 STAGES = {
     "segmentation": ("segmentation", "onnxruntime-silero-vad"),
     "asr": ("asr", "onnxruntime-qwen3-asr"),
-    "diarization": ("diarization", "onnxruntime-community1-diarizer"),
     "clause_boundary": ("clauseBoundary", None),
     "content_priority": ("contentPriority", None),
 }
@@ -71,7 +62,6 @@ SEGMENT_KEYS = {
     "end_ms",
     "text",
     "display_text",
-    "speakers",
     "clause_state",
     "clause_slices",
 }
@@ -285,62 +275,6 @@ def evaluate_cer(
     return float(rate)
 
 
-# --- speakers ---------------------------------------------------------------
-
-
-def make_speaker_labels(segments: list[dict[str, Any]]) -> dict[str, str]:
-    """Port of SpeakerDisplayMapper.makeLabels: ordered by first start, then id."""
-    first_start: dict[str, int] = {}
-    for segment in segments:
-        for span in segment["speakers"]:
-            if span["start_ms"] < span["end_ms"]:
-                first_start[span["id"]] = min(first_start.get(span["id"], span["start_ms"]), span["start_ms"])
-    ordered = sorted(first_start.items(), key=lambda item: (item[1], item[0]))
-    return {
-        speaker: f"Speaker {index + 1}" if index < INDIVIDUAL_SPEAKER_LIMIT else "OTHER"
-        for index, (speaker, _) in enumerate(ordered)
-    }
-
-
-def turn_labels(segment: dict[str, Any], labels: dict[str, str]) -> list[str]:
-    """Port of SpeakerDisplayMapper.turnLabels."""
-    overlap: dict[str, int] = {}
-    for span in segment["speakers"]:
-        value = min(segment["end_ms"], span["end_ms"]) - max(segment["start_ms"], span["start_ms"])
-        if value > 0:
-            overlap[span["id"]] = overlap.get(span["id"], 0) + value
-    total = sum(overlap.values())
-    if total == 0:
-        return ["UNKNOWN"]
-    dominant = max(overlap, key=lambda speaker: overlap[speaker])
-    if overlap[dominant] / total >= 0.8:
-        return [labels.get(dominant, "UNKNOWN")]
-    result: list[str] = []
-    for span in sorted(segment["speakers"], key=lambda s: s["start_ms"]):
-        if span["id"] in overlap:
-            label = labels.get(span["id"], "UNKNOWN")
-            if label not in result:
-                result.append(label)
-    return result
-
-
-def check_speakers(segments: list[dict[str, Any]], duration_ms: int) -> None:
-    for segment in segments:
-        spans = segment["speakers"]
-        require(isinstance(spans, list), "speakers must be an array")
-        for span in spans:
-            require(isinstance(span, dict) and isinstance(span.get("id"), str) and span["id"] != "",
-                    "speaker span needs a nonempty raw id")
-            require(is_int(span.get("start_ms")) and is_int(span.get("end_ms"))
-                    and 0 <= span["start_ms"] < span["end_ms"] <= duration_ms,
-                    f"speaker span out of bounds: {span}")
-    labels = make_speaker_labels(segments)
-    for segment in segments:
-        produced = turn_labels(segment, labels)
-        require(produced and all(label in VALID_LABELS for label in produced),
-                f"invalid speaker labels {produced} for {segment['segment_id']}")
-
-
 # --- session ----------------------------------------------------------------
 
 
@@ -387,8 +321,6 @@ def check_session_files(
     require(originals[0].read_bytes() == original_audio.read_bytes(),
             "stored original is not byte-identical to the input")
     require(not list(audio.rglob("*.caf")), "processing CAF files remain under audio/")
-    require(not (audio / "derived").exists() or not any((audio / "derived").iterdir()),
-            "audio/derived is not empty")
     require(not (audio / "recording.flac").exists() and not (audio / ".recording.flac.partial").exists(),
             "an import must not hold recording.flac")
     require((session / "processing_metadata.json").is_file(), "missing processing_metadata.json")
@@ -495,7 +427,6 @@ def run_acceptance(
     session = find_session_directory(sessions_root, session_id)
     segments = read_segments(import_output)
     check_segments(segments, duration_ms)
-    check_speakers(segments, duration_ms)
     cer = evaluate_cer(evaluator, reference, transcript_text(segments), duration_ms, work / "cer")
     require(cer <= MAX_NORMALIZED_CER, f"normalized CER {cer:.4f} exceeds {MAX_NORMALIZED_CER}")
     check_session(session, fixture, session_id, samples, segments, expected_model, THREADS)

@@ -41,6 +41,5 @@ func engineProvenanceNamesTheResolvedDependencyPins() throws {
 
     let models = try MacModelStore(paths: paths)
     #expect(NativeQwen3ASREngine(models: models).provenance.version == "speech-swift@\(speechSwift)")
-    #expect(FluidOfflineDiarizationEngine(models: models).provenance.version == "FluidAudio@\(fluidAudio)")
     #expect(FluidFinalTranscriptVADSegmenter(models: models).provenance.version == "FluidAudio@\(fluidAudio)")
 }

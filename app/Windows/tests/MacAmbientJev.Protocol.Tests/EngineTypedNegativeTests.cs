@@ -17,8 +17,8 @@ public sealed class EngineTypedNegativeTests
     private const string CompletedEmpty = """{"version":1,"sequence":"1","request_id":"1","event":"completed","payload":{"command":"models.prepare","result":{}}}""";
     private const string CompletedRead = """{"version":1,"sequence":"1","request_id":"1","event":"completed","payload":{"command":"transcript.read","result":{"session_id":"s","revision":"1","rows":[],"next_cursor":null,"previous_cursor":null}}}""";
     private const string ProgressOutput = """{"version":1,"sequence":"1","request_id":null,"event":"progress","payload":{"stage":"asr","completed_units":1,"total_units":null,"session_id":null}}""";
-    private const string Row = """{"row_id":"r","start_ms":0,"end_ms":1,"text":"text","headings":[],"clause_state":null}""";
-    private const string TranscriptPage = """{"session_id":"s","revision":"1","rows":[{"row_id":"r","start_ms":0,"end_ms":1,"text":"text","headings":[],"clause_state":null}],"next_cursor":null,"previous_cursor":null}""";
+    private const string Row = """{"row_id":"r","start_ms":0,"end_ms":1,"text":"text","clause_state":null}""";
+    private const string TranscriptPage = """{"session_id":"s","revision":"1","rows":[{"row_id":"r","start_ms":0,"end_ms":1,"text":"text","clause_state":null}],"next_cursor":null,"previous_cursor":null}""";
     private const string State = """{"revision":"1","screen":"idle","setup":"ready","recovery":"completed","recording":null,"queue":[],"failures":[],"presentation":{"recording_status_text":"Idle","recording_tone":"neutral","preparation_phase":"ready","preparation_status_text":null,"recovery_status_text":null,"processing_status_text":null,"live_failure_notices":[],"silence_warning_active":false,"silence_warning_text":null,"audio_gap_count":0,"audio_gap_text":null,"processing_indicator":"idle"}}""";
     private const string ReadableMetadata = """{"kind":"readable","created_at":0,"source":{"kind":"microphone"},"audio":{"kind":"available"},"has_transcript":false}""";
 
@@ -56,7 +56,7 @@ public sealed class EngineTypedNegativeTests
             (typeof(EngineOutput), """{"version":1,"sequence":"1","request_id":"1","event":"completed","payload":{"command":"hello"}}""", WireError.MissingMember, "$.payload.result"),
             (typeof(EngineOutput), """{"version":1,"sequence":"1","request_id":"1","event":"completed","payload":{"result":{}}}""", WireError.MissingMember, "$.payload.command"),
             (typeof(EngineRequest), """{"version":1,"request_id":"1","command":"recording.start","payload":{"source":"microphone","device":{"kind":"id"}}}""", WireError.MissingMember, "$.payload.device.id"),
-            (typeof(EngineTranscriptPage), """{"session_id":"s","revision":"1","rows":[{"row_id":"r","start_ms":0,"end_ms":1,"headings":[],"clause_state":null}],"next_cursor":null,"previous_cursor":null}""", WireError.MissingMember, "$.rows[0].text"),
+            (typeof(EngineTranscriptPage), """{"session_id":"s","revision":"1","rows":[{"row_id":"r","start_ms":0,"end_ms":1,"clause_state":null}],"next_cursor":null,"previous_cursor":null}""", WireError.MissingMember, "$.rows[0].text"),
         ];
 
         foreach (var item in cases)
@@ -97,13 +97,12 @@ public sealed class EngineTypedNegativeTests
         [
             (typeof(EngineSessionPayload), """{"session_id":1}""", WireError.WrongType, "$.session_id"),
             (typeof(EngineDeviceInfo), """{"id":"d","name":"Mic","is_default":"true"}""", WireError.WrongType, "$.is_default"),
-            (typeof(EngineTranscriptRow), """{"row_id":"r","start_ms":1.5,"end_ms":2,"text":"text","headings":[],"clause_state":null}""", WireError.WrongType, "$.start_ms"),
-            (typeof(EngineTranscriptRow), """{"row_id":"r","start_ms":"1","end_ms":2,"text":"text","headings":[],"clause_state":null}""", WireError.WrongType, "$.start_ms"),
-            (typeof(EngineTranscriptRow), """{"row_id":"r","start_ms":true,"end_ms":2,"text":"text","headings":[],"clause_state":null}""", WireError.WrongType, "$.start_ms"),
+            (typeof(EngineTranscriptRow), """{"row_id":"r","start_ms":1.5,"end_ms":2,"text":"text","clause_state":null}""", WireError.WrongType, "$.start_ms"),
+            (typeof(EngineTranscriptRow), """{"row_id":"r","start_ms":"1","end_ms":2,"text":"text","clause_state":null}""", WireError.WrongType, "$.start_ms"),
+            (typeof(EngineTranscriptRow), """{"row_id":"r","start_ms":true,"end_ms":2,"text":"text","clause_state":null}""", WireError.WrongType, "$.start_ms"),
             (typeof(EngineSessionMetadata), """{"kind":"readable","created_at":"1","source":{"kind":"microphone"},"audio":{"kind":"available"},"has_transcript":false}""", WireError.WrongType, "$.created_at"),
             (typeof(EngineProgressPayload), """{"stage":"asr","completed_units":"1","total_units":null,"session_id":null}""", WireError.WrongType, "$.completed_units"),
             (typeof(EngineAcceptedPayload), """{"command":1}""", WireError.WrongType, "$.command"),
-            (typeof(EngineTranscriptRow), """{"row_id":"r","start_ms":0,"end_ms":1,"text":"text","headings":{},"clause_state":null}""", WireError.WrongType, "$.headings"),
             (typeof(EngineRecordingStartPayload), """{"source":"microphone","device":[]}""", WireError.WrongType, "$.device"),
             (typeof(EngineRecordingStartPayload), """{"source":"microphone","device":"default"}""", WireError.WrongType, "$.device"),
             (typeof(EngineDevice), """{"kind":1}""", WireError.WrongType, "$.kind"),
@@ -128,8 +127,7 @@ public sealed class EngineTypedNegativeTests
             (typeof(EngineOutput), """{"version":1,"sequence":"1","request_id":null,"event":"future.event","payload":{}}""", WireError.UnknownValue, "$.event"),
             (typeof(EngineRequest), """{"version":1,"request_id":"1","command":"recording.start","payload":{"source":"microphone","device":{"kind":"future"}}}""", WireError.UnknownValue, "$.payload.device.kind"),
             (typeof(EngineDevicesListPayload), """{"source":"future"}""", WireError.UnknownValue, "$.source"),
-            (typeof(EngineTranscriptRow), """{"row_id":"r","start_ms":0,"end_ms":1,"text":"text","headings":[],"clause_state":"future"}""", WireError.UnknownValue, "$.clause_state"),
-            (typeof(EngineTranscriptRow), """{"row_id":"r","start_ms":0,"end_ms":1,"text":"text","headings":["Speaker 8"],"clause_state":null}""", WireError.UnknownValue, "$.headings[0]"),
+            (typeof(EngineTranscriptRow), """{"row_id":"r","start_ms":0,"end_ms":1,"text":"text","clause_state":"future"}""", WireError.UnknownValue, "$.clause_state"),
         ];
 
         foreach (var item in cases)

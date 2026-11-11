@@ -1,6 +1,5 @@
 import AVFoundation
 import Foundation
-import Synchronization
 import Testing
 import MacAmbientJevPipeline
 @testable import MacAmbientJevAppleSupport
@@ -8,16 +7,9 @@ import MacAmbientJevPipeline
 @testable import MacAmbientJevRuntime
 
 private enum Outcome: CaseIterable, CustomTestStringConvertible {
-    case success, noSpeech, vadFails, diarizationFails, diarizationCancelled, asrFails, paused
+    case success, noSpeech, vadFails, asrFails, paused
 
     var testDescription: String { String(describing: self) }
-
-    var reachesDiarization: Bool {
-        switch self {
-        case .success, .diarizationFails, .diarizationCancelled, .asrFails, .paused: true
-        case .noSpeech, .vadFails: false
-        }
-    }
 
     var completes: Bool { self == .success || self == .noSpeech }
 }
@@ -35,12 +27,6 @@ private let speechSamples: [Float] =
     Array(repeating: 0.3, count: 16_000) + Array(repeating: -0.5, count: 16_000)
 private let silentSamples = [Float](repeating: 0, count: 32_000)
 
-private final class EngineObservations: Sendable {
-    private let cafSeenDuringDiarization = Mutex(false)
-    var sawDiarizationInput: Bool { cafSeenDuringDiarization.withLock { $0 } }
-    func diarizationInputSeen() { cafSeenDuringDiarization.withLock { $0 = true } }
-}
-
 private struct ProbeVAD: FinalTranscriptVADSegmenter {
     let provenance = RunProvenance(engine: "probe-vad", model: nil, version: "test", configuration: [:])
     let fails: Bool
@@ -53,39 +39,6 @@ private struct ProbeVAD: FinalTranscriptVADSegmenter {
         return [SegmentReference(
             segmentationRunID: runID, segmentID: "speech", startFrame: Int64(first), endFrame: Int64(last + 1)
         )]
-    }
-}
-
-private struct ProbeDiarizer: DiarizationEngine {
-    enum Mode: Sendable { case succeed, fail, cancel }
-
-    let provenance = RunProvenance(engine: "probe-diarizer", model: nil, version: "test", configuration: [:])
-    let mode: Mode
-    let observations: EngineObservations
-
-    func prepare() async throws {}
-    func unload() async {}
-
-    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] {
-        let file = try AVAudioFile(forReading: fileURL)
-        let buffer = try #require(AVAudioPCMBuffer(
-            pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)
-        ))
-        try file.read(into: buffer)
-        observations.diarizationInputSeen()
-        switch mode {
-        case .fail: throw ExpectedFailure()
-        case .cancel: throw CancellationError()
-        case .succeed: break
-        }
-        let samples = Array(UnsafeBufferPointer(start: try #require(buffer.floatChannelData)[0], count: Int(buffer.frameLength)))
-        return stride(from: 0, to: samples.count, by: 16_000).map { start in
-            let block = samples[start..<min(start + 16_000, samples.count)]
-            return SpeakerSpan(
-                speakerID: block.reduce(0, +) > 0 ? "S1" : "S2",
-                startFrame: Int64(start), endFrame: Int64(start + block.count), confidence: 0.9
-            )
-        }
     }
 }
 
@@ -103,13 +56,9 @@ private struct ProbeASR: ASREngine {
     }
 }
 
-private func engines(for outcome: Outcome, observations: EngineObservations) -> SessionProcessingEngines {
+private func engines(for outcome: Outcome) -> SessionProcessingEngines {
     SessionProcessingEngines(
         asr: ProbeASR(fails: outcome == .asrFails),
-        diarization: ProbeDiarizer(
-            mode: outcome == .diarizationFails ? .fail : outcome == .diarizationCancelled ? .cancel : .succeed,
-            observations: observations
-        ),
         finalTranscriptVAD: ProbeVAD(fails: outcome == .vadFails)
     )
 }
@@ -136,16 +85,11 @@ private struct Fixture {
 
     func cleanUp() {
         try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: layout.audioDirectory.path)
-        try? FileManager.default.setAttributes(
-            [.posixPermissions: 0o700], ofItemAtPath: layout.derivedDirectory.path
-        )
         try? FileManager.default.removeItem(at: root)
     }
 
-    /// The only CAF `diarize` receives, plus the import timeline, as left by a killed run.
+    /// The FLAC partial and, for imports, the stale timeline left by a killed run.
     func seedStaleTransients() throws {
-        try FileManager.default.createDirectory(at: layout.derivedDirectory, withIntermediateDirectories: true)
-        try Data("stale".utf8).write(to: layout.diarizationInputURL)
         try Data("stale".utf8).write(to: layout.recordingFLACPartialURL)
         if kind == .imported {
             try FileManager.default.createDirectory(at: layout.processingDirectory, withIntermediateDirectories: true)
@@ -216,8 +160,6 @@ private func makeFixture(_ kind: Kind, samples: [Float]) async throws -> Fixture
 private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
 
 private func expectNoTransients(_ fixture: Fixture) {
-    #expect(!exists(fixture.layout.derivedDirectory))
-    #expect(!exists(fixture.layout.diarizationInputURL))
     #expect(!exists(fixture.layout.recordingFLACPartialURL))
     if fixture.kind == .imported {
         #expect(!exists(fixture.layout.processingDirectory))
@@ -225,20 +167,18 @@ private func expectNoTransients(_ fixture: Fixture) {
 }
 
 @Test(arguments: Outcome.allCases, Kind.allCases)
-private func everyOutcomeRemovesTheDiarizationInputAndTheImportTimeline(outcome: Outcome, kind: Kind) async throws {
+private func everyOutcomeRemovesTheFLACPartialAndImportTimeline(outcome: Outcome, kind: Kind) async throws {
     let fixture = try await makeFixture(kind, samples: outcome == .noSpeech ? silentSamples : speechSamples)
     defer { fixture.cleanUp() }
     try fixture.seedStaleTransients()
-    let observations = EngineObservations()
 
     let (result, _) = try await fixture.process(
-        fixture.processor(engines(for: outcome, observations: observations)), holdReason: outcome == .paused ? .thermal : nil
+        fixture.processor(engines(for: outcome)), holdReason: outcome == .paused ? .thermal : nil
     )
 
     #expect(result.disposition == (
-        outcome.completes ? .completed : outcome == .paused || outcome == .diarizationCancelled ? .paused : .failed
+        outcome.completes ? .completed : outcome == .paused ? .paused : .failed
     ))
-    #expect(observations.sawDiarizationInput == outcome.reachesDiarization)
     expectNoTransients(fixture)
     let storage = try SessionAudioStorageStore(layout: fixture.layout).load()
     switch (kind, outcome.completes) {
@@ -278,7 +218,7 @@ func aFinalizationThatFailsToStartStillRemovesStaleTransients() async throws {
     try Data("{broken".utf8).write(to: fixture.layout.processingMetadataURL)
 
     let (result, _) = try await fixture.process(
-        fixture.processor(engines(for: .success, observations: EngineObservations()))
+        fixture.processor(engines(for: .success))
     )
 
     #expect(result.disposition == .failed)
@@ -299,7 +239,7 @@ func finishingALiveRecordingCompactsItToFLAC() async throws {
         return
     }
 
-    let result = await fixture.processor(engines(for: .success, observations: EngineObservations()))
+    let result = await fixture.processor(engines(for: .success))
         .finishLiveTranscription(
             sessionID: fixture.sessionID, checkpoint: checkpoint, finalSegments: [], pacingMode: .normal,
             shouldPause: { nil }, onPhase: { _ in }, onStatus: { _ in }, onUpdate: { _, _ in }
@@ -315,11 +255,14 @@ func finishingALiveRecordingCompactsItToFLAC() async throws {
 func aCleanupFailureAfterACompletedRunKeepsTheTranscriptAndSaysSo() async throws {
     let fixture = try await makeFixture(.recording, samples: silentSamples)
     defer { fixture.cleanUp() }
+    try SessionStorageMaintainer.run(.compactRecording, layout: fixture.layout, manifest: fixture.manifest())
     try fixture.seedStaleTransients()
-    try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: fixture.layout.derivedDirectory.path)
+    let partial = fixture.layout.recordingFLACPartialURL
+    try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: partial.path)
+    defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: partial.path) }
 
     let (result, recorder) = try await fixture.process(
-        fixture.processor(engines(for: .noSpeech, observations: EngineObservations()))
+        fixture.processor(engines(for: .noSpeech))
     )
 
     #expect(result.disposition == .failed)
@@ -335,10 +278,12 @@ func aCleanupFailureAfterAFailedRunFollowsTheRunError() async throws {
     let fixture = try await makeFixture(.recording, samples: speechSamples)
     defer { fixture.cleanUp() }
     try fixture.seedStaleTransients()
-    try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: fixture.layout.derivedDirectory.path)
+    let partial = fixture.layout.recordingFLACPartialURL
+    try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: partial.path)
+    defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: partial.path) }
 
     let (result, _) = try await fixture.process(
-        fixture.processor(engines(for: .vadFails, observations: EngineObservations()))
+        fixture.processor(engines(for: .vadFails))
     )
 
     #expect(result.disposition == .failed)
@@ -354,7 +299,7 @@ func aCompactionFailureKeepsTheTranscriptAndPCMAndLaunchMaintenanceFinishesIt() 
     try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: fixture.layout.audioDirectory.path)
 
     let (result, _) = try await fixture.process(
-        fixture.processor(engines(for: .noSpeech, observations: EngineObservations()))
+        fixture.processor(engines(for: .noSpeech))
     )
 
     #expect(result.disposition == .failed)
@@ -378,17 +323,14 @@ func aCompactionFailureKeepsTheTranscriptAndPCMAndLaunchMaintenanceFinishesIt() 
 }
 
 private func transcript(_ segments: [MaterializedTranscriptSegment]) -> [String] {
-    segments.map { segment in
-        let speakers = segment.speakers.map { "\($0.displayLabel ?? $0.id)@\($0.startMilliseconds)-\($0.endMilliseconds)" }
-        return "\(segment.startMilliseconds)-\(segment.endMilliseconds) \(segment.text) \(speakers)"
-    }
+    segments.map { "\($0.startMilliseconds)-\($0.endMilliseconds) \($0.text)" }
 }
 
 @Test
 func reprocessingAfterCompactionProducesTheSameTranscriptFromTheFLAC() async throws {
     let fixture = try await makeFixture(.recording, samples: speechSamples)
     defer { fixture.cleanUp() }
-    let processor = fixture.processor(engines(for: .success, observations: EngineObservations()))
+    let processor = fixture.processor(engines(for: .success))
 
     let (first, firstUpdates) = try await fixture.process(processor)
     let pcmRows = await firstUpdates.last
@@ -398,7 +340,6 @@ func reprocessingAfterCompactionProducesTheSameTranscriptFromTheFLAC() async thr
     #expect(pcmRows.map(\.text) == ["mean -0.100"])
     #expect(pcmRows.map(\.startMilliseconds) == [0])
     #expect(pcmRows.map(\.endMilliseconds) == [2_000])
-    #expect(pcmRows.flatMap(\.speakers).map(\.id) == ["S1", "S2"])
     guard case .recordedFLAC = try fixture.source() else {
         Issue.record("the stored recording is FLAC after finalization")
         return
@@ -420,7 +361,7 @@ func aFailedReprocessKeepsThePublishedTranscriptAndTheFLAC() async throws {
     let fixture = try await makeFixture(.recording, samples: speechSamples)
     defer { fixture.cleanUp() }
     let (first, firstUpdates) = try await fixture.process(
-        fixture.processor(engines(for: .success, observations: EngineObservations()))
+        fixture.processor(engines(for: .success))
     )
     #expect(first.disposition == .completed)
     let published = try ProcessingMetadataStore(sessionURL: fixture.layout.sessionURL).load()?.activeRuns
@@ -428,7 +369,7 @@ func aFailedReprocessKeepsThePublishedTranscriptAndTheFLAC() async throws {
     let storageBefore = try SessionAudioStorageStore(layout: fixture.layout).load()
 
     let (failed, failedUpdates) = try await fixture.process(
-        fixture.processor(engines(for: .asrFails, observations: EngineObservations()))
+        fixture.processor(engines(for: .asrFails))
     )
 
     #expect(failed.disposition == .failed)
@@ -451,7 +392,7 @@ func aCleanupFailureDuringAPauseStaysPausedAndReportsTheCleanupError() async thr
     defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: partial.path) }
 
     let (result, recorder) = try await fixture.process(
-        fixture.processor(engines(for: .paused, observations: EngineObservations())), holdReason: .thermal
+        fixture.processor(engines(for: .paused)), holdReason: .thermal
     )
 
     #expect(result.disposition == .paused)
@@ -475,7 +416,7 @@ func aSessionCompactedByMaintenanceFinalizesFromTheFLACWithoutAStaleSource() asy
     #expect(!exists(fixture.layout.processingDirectory))
 
     let (result, updates) = try await fixture.process(
-        fixture.processor(engines(for: .success, observations: EngineObservations()))
+        fixture.processor(engines(for: .success))
     )
 
     #expect(result.disposition == .completed)
@@ -483,6 +424,5 @@ func aSessionCompactedByMaintenanceFinalizesFromTheFLACWithoutAStaleSource() asy
     #expect(rows.map(\.text) == ["mean -0.100"])
     #expect(rows.map(\.startMilliseconds) == [0])
     #expect(rows.map(\.endMilliseconds) == [2_000])
-    #expect(rows.flatMap(\.speakers).map(\.id) == ["S1", "S2"])
     #expect(exists(fixture.layout.recordingFLACURL))
 }

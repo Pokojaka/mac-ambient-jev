@@ -69,7 +69,7 @@ Interactive controls must retain comfortable macOS hit regions; icon-only contro
 1. Window toolbar: import as secondary action, recording as the primary action.
 2. Compact status region: capture/processing state and any actionable warning.
 3. Transcript: dominant content area.
-4. Transcript metadata: timestamp, speaker, and semantic state shown with text plus visual styling.
+4. Transcript metadata: timestamp and semantic state shown with text plus visual styling.
 5. Diagnostics and settings are secondary destinations, not mixed into the transcript flow.
 
 ## Interaction rules

@@ -28,13 +28,6 @@ private actor CountingASR: ASREngine {
     }
 }
 
-private struct NoopDiarizer: DiarizationEngine {
-    let provenance = RunProvenance(engine: "fake-diarizer", model: nil, version: "test", configuration: [:])
-    func prepare() async throws {}
-    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] { [] }
-    func unload() async {}
-}
-
 private struct NoopVAD: FinalTranscriptVADSegmenter {
     let provenance = RunProvenance(engine: "fake-vad", model: nil, version: "test", configuration: [:])
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] { [] }
@@ -53,7 +46,7 @@ private func makeState(
     return AppState(
         paths: paths, captureEngine: AudioCaptureEngine(paths: paths), microphoneAccess: { false },
         pausesProcessing: false, userDefaults: defaults,
-        engines: SessionProcessingEngines(asr: asr, diarization: NoopDiarizer(), finalTranscriptVAD: NoopVAD()),
+        engines: SessionProcessingEngines(asr: asr, finalTranscriptVAD: NoopVAD()),
         modelProvisioning: provisioning,
         makeLiveVADSession: idleLiveVADFactory(),
         thermalMonitor: TestThermalMonitor(.nominal),

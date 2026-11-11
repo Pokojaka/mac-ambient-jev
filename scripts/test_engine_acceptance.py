@@ -658,7 +658,6 @@ def _speech_segment() -> dict[str, object]:
         "end_ms": 900,
         "text": "これは日本語です。",
         "display_text": "これは日本語です。",
-        "speakers": [{"id": "speaker-1", "start_ms": 100, "end_ms": 900, "confidence": 0.91}],
         "clause_state": "classified",
         "clause_slices": [{
             "reference": {"boundary_run_id": "boundary-uuid-a", "clause_id": "clause-a"},
@@ -828,7 +827,7 @@ class SemanticComparisonTests(unittest.TestCase):
         self.assertEqual(baseline[0]["segment_id"], host_segment["segment_id"])
         self.assertEqual(len(acceptance.EXCLUDED_LINEAGE_FIELDS), 5)
 
-    def test_text_timing_speaker_confidence_and_decision_drift_are_rejected(self) -> None:
+    def test_text_timing_and_decision_drift_are_rejected(self) -> None:
         mutations = {
             "raw text": ("text", "changed text"),
             "display text": ("display_text", "changed display"),
@@ -842,9 +841,6 @@ class SemanticComparisonTests(unittest.TestCase):
                     acceptance.compare_published_segments([_speech_segment()], [host_segment])
 
         for label, mutate in (
-            ("speaker identity", lambda segment: segment["speakers"][0].update(id="speaker-2")),
-            ("speaker timing", lambda segment: segment["speakers"][0].update(end_ms=899)),
-            ("speaker confidence", lambda segment: segment["speakers"][0].update(confidence=0.90)),
             ("decision priority", lambda segment: segment["clause_slices"][0].update(priority="low_priority")),
             ("decision state", lambda segment: segment.update(clause_state="priority_pending")),
         ):

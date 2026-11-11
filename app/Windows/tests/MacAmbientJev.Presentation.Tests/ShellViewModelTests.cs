@@ -350,48 +350,45 @@ public sealed partial class ShellStoreTests
             Assert.True(dispatcher.IsRunningCallback); Assert.NotEqual(NotifyCollectionChangedAction.Reset, change.Action);
             Assert.InRange(live.Rows.Count, 0, 200);
         };
-        EngineTranscriptRow TranscriptRow(string id, long start, string text, EngineSpeakerLabel[] headings, EngineClauseState? clause = null) =>
-            new(id, start, start, text, headings, clause);
-        var a = TranscriptRow("a", 65_000, "こんにちは🌸\n次の行", [EngineSpeakerLabel.Speaker1], EngineClauseState.AwaitingNextSegment);
-        var b = TranscriptRow("b", 125_000, "続き😊\n二行目", [EngineSpeakerLabel.Speaker1]);
-        var c = TranscriptRow("c", 190_000, "空の見出し", []);
-        var d = TranscriptRow("d", 605_000, "OTHER", [EngineSpeakerLabel.Other]);
+        EngineTranscriptRow TranscriptRow(string id, long start, string text, EngineClauseState? clause = null) =>
+            new(id, start, start, text, clause);
+        var a = TranscriptRow("a", 65_000, "こんにちは🌸\n次の行", EngineClauseState.AwaitingNextSegment);
+        var b = TranscriptRow("b", 125_000, "続き😊\n二行目");
+        var d = TranscriptRow("d", 605_000, "本文");
         await store.SelectSessionAsync("session"); var watch = await engine.NextRequestAsync();
-        watch.Complete(new EngineResult.TranscriptWatch(new EngineTranscriptPage("session", new EngineID(1), [a, b, c, d], null, null)));
+        watch.Complete(new EngineResult.TranscriptWatch(new EngineTranscriptPage("session", new EngineID(1), [a, b, d], null, null)));
         await ChangedTo(store, state => state.Transcript.Tail?.Revision == new EngineID(1));
         Assert.Empty(live.Rows); dispatcher.Run(); Assert.True(sawSnapshotBeforeRows); Assert.False(live.IsEmpty);
         Assert.Equal(new[]
         {
-            new ShellTranscriptRowViewModel("a", a.Text, "01:05", "Speaker 1", "発話文の続き待ち"),
-            new ShellTranscriptRowViewModel("b", b.Text, "02:05", "", ""),
-            new ShellTranscriptRowViewModel("c", c.Text, "03:10", "", ""),
-            new ShellTranscriptRowViewModel("d", d.Text, "10:05", "OTHER", "")
+            new ShellTranscriptRowViewModel("a", a.Text, "01:05", "発話文の続き待ち"),
+            new ShellTranscriptRowViewModel("b", b.Text, "02:05", ""),
+            new ShellTranscriptRowViewModel("d", d.Text, "10:05", "")
         }, live.Rows);
         Assert.Equal(new[]
         {
-            "01:05, Speaker 1, こんにちは🌸\n次の行",
+            "01:05, こんにちは🌸\n次の行",
             "02:05, 続き😊\n二行目",
-            "03:10, 空の見出し",
-            "10:05, OTHER, OTHER"
+            "10:05, 本文"
         }, live.Rows.Select(row => row.AccessibleName));
-        var stable = live.Rows[0]; var oldD = live.Rows[3];
+        var stable = live.Rows[0]; var oldD = live.Rows[2];
         var progress = new EngineProgressPayload(EngineStage.ValidatingModels, 1, 2, null);
         engine.EmitBatch(Rows("session", EngineRowsKind.Changes), new EngineOutput(1, new EngineID(2), null, new EngineEvent.Progress(progress)));
         await ChangedTo(store, state => state.Progress == progress);
         await clock.WaitForTimerAsync(); await clock.WaitForTimerAsync(); clock.Advance(TimeSpan.FromMilliseconds(250));
         watch = await engine.NextRequestAsync();
-        var changedD = TranscriptRow("d", 610_000, "OTHER updated", [EngineSpeakerLabel.Other]);
-        var added = TranscriptRow("e", 2_000, "追加", []);
+        var changedD = TranscriptRow("d", 610_000, "更新本文");
+        var added = TranscriptRow("e", 2_000, "追加");
         watch.Complete(new EngineResult.TranscriptWatch(new EngineTranscriptPage("session", new EngineID(2), [changedD, a, added], null, null)));
         await ChangedTo(store, state => state.Transcript.Tail?.Revision == new EngineID(2)); dispatcher.Run();
         Assert.Equal(new[]
         {
-            new ShellTranscriptRowViewModel("d", "OTHER updated", "10:10", "OTHER", ""),
-            new ShellTranscriptRowViewModel("a", a.Text, "01:05", "Speaker 1", "発話文の続き待ち"),
-            new ShellTranscriptRowViewModel("e", "追加", "00:02", "", "")
+            new ShellTranscriptRowViewModel("d", "更新本文", "10:10", ""),
+            new ShellTranscriptRowViewModel("a", a.Text, "01:05", "発話文の続き待ち"),
+            new ShellTranscriptRowViewModel("e", "追加", "00:02", "")
         }, live.Rows);
-        Assert.Equal("10:10, OTHER, OTHER updated", live.Rows[0].AccessibleName);
-        Assert.Equal("01:05, Speaker 1, こんにちは🌸\n次の行", live.Rows[1].AccessibleName);
+        Assert.Equal("10:10, 更新本文", live.Rows[0].AccessibleName);
+        Assert.Equal("01:05, こんにちは🌸\n次の行", live.Rows[1].AccessibleName);
         Assert.Equal("00:02, 追加", live.Rows[2].AccessibleName);
         Assert.Same(stable, live.Rows[1]); Assert.NotSame(oldD, live.Rows[0]);
         async Task RenderScreen(EngineScreen screen, ulong revision, string expected)

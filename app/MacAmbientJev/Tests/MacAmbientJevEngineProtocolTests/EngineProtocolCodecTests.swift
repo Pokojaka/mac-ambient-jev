@@ -143,22 +143,22 @@ struct EngineProtocolCodecTests {
     }
 
     @Test func rowLimitCountsUTF8AndJSONEscapedBytesAndFullPageLimitIsSeparate() throws {
-        let multiByte = try EngineTranscriptRow(rowID: "unicode", startMS: 0, endMS: 1, text: String(repeating: "界", count: 100), headings: [], clauseState: nil)
-        let escaped = try EngineTranscriptRow(rowID: "escaped", startMS: 0, endMS: 1, text: String(repeating: "\n", count: 100) + "x", headings: [], clauseState: nil)
+        let multiByte = try EngineTranscriptRow(rowID: "unicode", startMS: 0, endMS: 1, text: String(repeating: "界", count: 100), clauseState: nil)
+        let escaped = try EngineTranscriptRow(rowID: "escaped", startMS: 0, endMS: 1, text: String(repeating: "\n", count: 100) + "x", clauseState: nil)
         #expect(encodedRow(multiByte).count > multiByte.text.count)
         #expect(encodedRow(escaped).count > escaped.text.count)
 
-        let characterShortButByteLarge = try EngineTranscriptRow(rowID: "escaped-large", startMS: 0, endMS: 1, text: String(repeating: "\n", count: 131_100) + "x", headings: [], clauseState: nil)
+        let characterShortButByteLarge = try EngineTranscriptRow(rowID: "escaped-large", startMS: 0, endMS: 1, text: String(repeating: "\n", count: 131_100) + "x", clauseState: nil)
         #expect(characterShortButByteLarge.text.count < EngineCodec.maxRowBytes)
         #expect(protocolError { _ = try EngineCodec.encodeOutput(rowsOutput([characterShortButByteLarge])) } == .oversizedRow("escaped-large"))
 
-        let unicodeShortButByteLarge = try EngineTranscriptRow(rowID: "unicode-large", startMS: 0, endMS: 1, text: String(repeating: "界", count: 87_400), headings: [], clauseState: nil)
+        let unicodeShortButByteLarge = try EngineTranscriptRow(rowID: "unicode-large", startMS: 0, endMS: 1, text: String(repeating: "界", count: 87_400), clauseState: nil)
         #expect(unicodeShortButByteLarge.text.count < EngineCodec.maxRowBytes)
         #expect(encodedRow(unicodeShortButByteLarge).count > EngineCodec.maxRowBytes)
         #expect(protocolError { _ = try EngineCodec.encodeOutput(rowsOutput([unicodeShortButByteLarge])) } == .oversizedRow("unicode-large"))
 
         let rows = try (0..<5).map { index in
-            try EngineTranscriptRow(rowID: "large-\(index)", startMS: 0, endMS: 1, text: String(repeating: "x", count: 220_000), headings: [], clauseState: nil)
+            try EngineTranscriptRow(rowID: "large-\(index)", startMS: 0, endMS: 1, text: String(repeating: "x", count: 220_000), clauseState: nil)
         }
         #expect(rows.allSatisfy { encodedRow($0).count <= EngineCodec.maxRowBytes })
         #expect(protocolError { _ = try EngineCodec.encodeOutput(rowsOutput(rows)) } == .lineTooLong)
@@ -217,9 +217,9 @@ private func rowsOutput(_ rows: [EngineTranscriptRow]) throws -> EngineOutput {
 }
 
 private func asciiRow(exactEncodedBytes byteCount: Int) throws -> EngineTranscriptRow {
-    let oneCharacter = try EngineTranscriptRow(rowID: "limit-row", startMS: 0, endMS: 1, text: "x", headings: [], clauseState: nil)
+    let oneCharacter = try EngineTranscriptRow(rowID: "limit-row", startMS: 0, endMS: 1, text: "x", clauseState: nil)
     let overhead = encodedRow(oneCharacter).count - 1
-    return try EngineTranscriptRow(rowID: "limit-row", startMS: 0, endMS: 1, text: String(repeating: "x", count: byteCount - overhead), headings: [], clauseState: nil)
+    return try EngineTranscriptRow(rowID: "limit-row", startMS: 0, endMS: 1, text: String(repeating: "x", count: byteCount - overhead), clauseState: nil)
 }
 
 private func encodedRow(_ row: EngineTranscriptRow) -> Data {

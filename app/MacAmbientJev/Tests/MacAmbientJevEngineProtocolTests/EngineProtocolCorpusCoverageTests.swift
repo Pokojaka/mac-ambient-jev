@@ -348,7 +348,7 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
     )
     let row = try EngineTranscriptRow(
         rowID: "coverage-row", startMS: 0, endMS: 1,
-        text: "確認用", headings: [.speaker1], clauseState: .classified
+        text: "確認用", clauseState: .classified
     )
     let transcriptPage = try EngineTranscriptPage(
         sessionID: "coverage-session", revision: id, rows: [row],
@@ -361,17 +361,12 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
     let progress = try EngineProgressPayload(
         stage: .asr, completedUnits: 0, totalUnits: nil, sessionID: nil
     )
-    let speakerSpan = try EngineTranscriptSpeakerSpan(
-        speakerID: "coverage-row", displayLabel: "確認用", startMS: 0, endMS: 1
-    )
     let rowDetailsPayload = try EngineTranscriptRowDetailsPayload(
-        sessionID: "coverage-session", revision: id, rowID: "coverage-row",
-        cursor: "coverage-cursor", limit: 1
+        sessionID: "coverage-session", revision: id, rowID: "coverage-row"
     )
     let rowDetailsPage = try EngineTranscriptRowDetailsPage(
         sessionID: "coverage-session", revision: id, rowID: "coverage-row",
-        clauseState: .classified, clauseStateText: "確認用", speakers: [speakerSpan],
-        nextCursor: "coverage-cursor", previousCursor: nil
+        clauseState: .classified, clauseStateText: "確認用"
     )
     let requestUsage = try EngineDecisionRequestUsage(
         sendCount: 0, inputTokens: 0, successCount: 0, failureCount: 0
@@ -441,7 +436,6 @@ private func coverageRepresentativeValues() throws -> [any Encodable] {
         rowsPayload,
         progress,
         rowDetailsPage,
-        speakerSpan,
         requestUsage,
         usageSnapshot,
         EngineDecisionUsage.available(usageSnapshot),

@@ -142,7 +142,6 @@ public sealed class EngineHarnessTests
         Assert.Collection(page.Rows, row =>
         {
             Assert.Equal(Transcript, row.Text);
-            Assert.Equal(new[] { EngineSpeakerLabel.Speaker1 }, row.Headings);
         });
     }
     private static async Task<ExportSnapshot> ExportAsync(TestWorkspace test, EngineProcessClient client, string session, CancellationToken token) {
@@ -155,7 +154,7 @@ public sealed class EngineHarnessTests
         Assert.Equal(new[] { "audio.flac", "transcript.txt" }, names);
         var files = names.ToDictionary(name => name, name => File.ReadAllBytes(Path.Combine(destination, name)), StringComparer.Ordinal);
         Assert.NotEmpty(files["audio.flac"]);
-        Assert.Equal(Encoding.UTF8.GetBytes("[00:00] Speaker 1: " + Transcript + "\n"), files["transcript.txt"]);
+        Assert.Equal(Encoding.UTF8.GetBytes("[00:00] " + Transcript + "\n"), files["transcript.txt"]);
         return new ExportSnapshot(destination, names, files);
     }
     private static async Task ShutdownAsync(ProcessEngineChild child, EngineProcessClient client, CancellationToken token)

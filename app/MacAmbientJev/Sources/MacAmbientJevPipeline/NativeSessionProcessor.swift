@@ -99,16 +99,13 @@ public struct SessionProcessingResult: Sendable {
 /// The engines a processor runs. Tests can substitute implementations.
 public struct SessionProcessingEngines: Sendable {
     public let asr: any ASREngine
-    public let diarization: any DiarizationEngine
     public let finalTranscriptVAD: any FinalTranscriptVADSegmenter
 
     public init(
         asr: any ASREngine,
-        diarization: any DiarizationEngine,
         finalTranscriptVAD: any FinalTranscriptVADSegmenter
     ) {
         self.asr = asr
-        self.diarization = diarization
         self.finalTranscriptVAD = finalTranscriptVAD
     }
 }
@@ -148,7 +145,6 @@ public actor NativeSessionProcessor {
 
     private let sessionsRoot: URL
     private let asr: any ASREngine
-    private let diarization: any DiarizationEngine
     private let finalTranscriptVAD: any FinalTranscriptVADSegmenter
     private let audioHandling: any SessionProcessingAudioHandling
     private let contentPriority: ContentPriorityAccess
@@ -169,7 +165,6 @@ public actor NativeSessionProcessor {
     ) {
         self.sessionsRoot = paths.sessionsRoot
         self.asr = engines.asr
-        self.diarization = engines.diarization
         self.finalTranscriptVAD = engines.finalTranscriptVAD
         self.audioHandling = audioHandling
         self.contentPriority = contentPriority
@@ -183,11 +178,10 @@ public actor NativeSessionProcessor {
         try await asr.prepare(onProgress: onProgress)
     }
 
-    /// Unloads the ASR and diarization models. Call only while
+    /// Unloads the ASR model. Call only while
     /// no recording, live transcription, or finalization is running. `prepareASR` loads again.
     public func releaseIdleResources() async {
         await asr.unload()
-        await diarization.unload()
     }
 
     @discardableResult
@@ -777,9 +771,7 @@ public actor NativeSessionProcessor {
                 sessionURL: sessionLayout.sessionURL,
                 audio: audio,
                 asr: asr,
-                diarization: diarization,
                 vadSegmenter: finalTranscriptVAD,
-                audioHandling: audioHandling,
                 sleep: sleep
             ).process(
                 onStatus: onStatus,
@@ -920,7 +912,7 @@ public actor NativeSessionProcessor {
         onUpdate: UpdateHandler
     ) async throws {
         try Task.checkCancellation()
-        let localStatus = Status.message("文字起こしと話者分離が完了しました（\(final.completedCount)区間）")
+        let localStatus = Status.message("文字起こしが完了しました（\(final.completedCount)区間）")
         func complete(_ segments: [MaterializedTranscriptSegment], status: Status) async {
             await onUpdate(segments, .complete)
             await onPhase(.complete)

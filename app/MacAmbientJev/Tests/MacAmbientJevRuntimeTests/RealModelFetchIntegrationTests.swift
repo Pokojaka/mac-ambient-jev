@@ -5,8 +5,9 @@ import MacAmbientJevPipeline
 import MacAmbientJevVADFixtures
 @testable import MacAmbientJevRuntime
 
-/// Downloads all three pinned models from Hugging Face into the application-support root
-/// named by the environment (about 2.5 GB), verifies and loads them, and runs each on a short committed clip. Run it once by hand:
+/// Downloads the pinned Qwen ASR and VAD models from Hugging Face into the
+/// application-support root named by the environment, verifies and loads them,
+/// transcribes a short committed clip, and exercises VAD. Run it once by hand:
 ///
 ///     RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_TEST_APP_SUPPORT=/absolute/folder \
 ///       swift test --package-path app/MacAmbientJev --filter RealModelFetchIntegrationTests
@@ -20,12 +21,12 @@ struct RealModelFetchIntegrationTests {
     @Test(
         .enabled(
             if: realModelTestsEnabled && testApplicationSupportIsSet,
-            "RUN_MODEL_TESTS=1 と MAC_AMBIENT_JEV_TEST_APP_SUPPORT（絶対パス）があるときだけ実行する（最大約2.5 GB をダウンロードする）"
+            "RUN_MODEL_TESTS=1 と MAC_AMBIENT_JEV_TEST_APP_SUPPORT（絶対パス）があるときだけ実行する"
         ),
         .timeLimit(.minutes(10))
     )
     @MainActor
-    func fetchesVerifiesLoadsAndRunsEveryPinnedModel() async throws {
+    func fetchesVerifiesLoadsAndRunsQwenAndVADModels() async throws {
         let store = try realModelStore()
         // Bytes already on disk for the models this run has to fetch (finished files and `.partial`
         // files). They are not downloaded again, so they stay out of the throughput.
@@ -71,7 +72,6 @@ struct RealModelFetchIntegrationTests {
         #expect(!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         await asr.unload()
 
-        try await FluidOfflineDiarizationEngine(models: store).prepare()
         let vad = try await FluidVADSegmentationEngine.make(
             models: store, segmentationRunID: "seg", canonicalSampleRate: 16_000, measureMicInputLevels: false
         )

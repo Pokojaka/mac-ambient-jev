@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import MacAmbientJevAppleSupport
 import MacAmbientJevPipeline
@@ -14,16 +15,6 @@ private struct PausedImportVAD: FinalTranscriptVADSegmenter {
             startFrame: 0,
             endFrame: reader.info.committedFrames
         )]
-    }
-}
-
-private struct PausedImportDiarizer: DiarizationEngine {
-    let provenance = RunProvenance(engine: "fake-diarizer", model: nil, version: "test", configuration: [:])
-    func prepare() async throws {}
-    func unload() async {}
-
-    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] {
-        [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.9)]
     }
 }
 
@@ -61,21 +52,24 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     let processingDirectory = sessionURL
         .appending(path: "audio", directoryHint: .isDirectory)
         .appending(path: "processing", directoryHint: .isDirectory)
+    let samples = Array(repeating: Float(0.1), count: 16_000)
     let writer = try DurableAudioWriter(directory: processingDirectory, chunkDurationSeconds: 1, sessionURL: sessionURL)
-    try await writer.append(samples: Array(repeating: Float(0.1), count: 16_000))
-    let checkpoint = await writer.committedSnapshot()
+    try await writer.append(samples: samples)
     let sourceURL = sessionURL.appending(path: "audio/original.caf")
-    try MacAmbientJevCore.ProcessingTimelineAudioExporter(framesPerBuffer: 48_000).export(
-        reader: try ProcessingTimelineReader(directory: processingDirectory, checkpoint: checkpoint, sessionURL: sessionURL),
-        to: sourceURL, sessionURL: sessionURL
-    )
+    do {
+        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: CanonicalAudio.sampleRate, channels: 1))
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)))
+        buffer.frameLength = buffer.frameCapacity
+        samples.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: samples.count) }
+        let file = try AVAudioFile(forWriting: sourceURL, settings: format.settings)
+        try file.write(from: buffer)
+    }
 
     let asr = PausedImportASR()
     let processor = NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
             asr: asr,
-            diarization: PausedImportDiarizer(),
             finalTranscriptVAD: PausedImportVAD()
         ),
         audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
@@ -125,7 +119,6 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     let runs = try #require(completed.activeRuns)
     #expect(runs.segmentation != nil)
     #expect(runs.asr != nil)
-    #expect(runs.diarization != nil)
     #expect(runs.clauseBoundary == nil)
     #expect(runs.contentPriority == nil)
     let recovered = try SessionRecovery.recoverJSONL(

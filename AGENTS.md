@@ -4,7 +4,6 @@
 - 製品ルールは [docs/decisions.md](docs/decisions.md) に置く。
 - 日付付きの測定記録は [docs/records/](docs/records/) に置く。
 - 提案と未実装の作業は GitHub issues に置き、docs には書かない。
-- 話者ラベルは Speaker 1–7、OTHER、UNKNOWN を使う。
 
 ## 絶対ルール
 

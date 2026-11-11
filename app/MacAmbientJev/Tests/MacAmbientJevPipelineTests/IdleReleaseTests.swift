@@ -25,20 +25,12 @@ private actor CountingASR: ASREngine {
     }
 }
 
-private actor CountingDiarizer: DiarizationEngine {
-    nonisolated let provenance = RunProvenance(engine: "fake-diarizer", model: nil, version: "test", configuration: [:])
-    private(set) var unloadCount = 0
-    func prepare() async throws {}
-    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] { [] }
-    func unload() async { unloadCount += 1 }
-}
-
 private struct UnusedVAD: FinalTranscriptVADSegmenter {
     let provenance = RunProvenance(engine: "fake-vad", model: nil, version: "test", configuration: [:])
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] { [] }
 }
 
-private func makeProcessor(asr: CountingASR, diarizer: CountingDiarizer) -> NativeSessionProcessor {
+private func makeProcessor(asr: CountingASR) -> NativeSessionProcessor {
     let root = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
     let paths = AppPaths(
@@ -48,18 +40,17 @@ private func makeProcessor(asr: CountingASR, diarizer: CountingDiarizer) -> Nati
     )
     return NativeSessionProcessor(
         paths: paths,
-        engines: SessionProcessingEngines(asr: asr, diarization: diarizer, finalTranscriptVAD: UnusedVAD()),
+        engines: SessionProcessingEngines(asr: asr, finalTranscriptVAD: UnusedVAD()),
         audioHandling: RecordingTestAudioHandling(),
         contentPriority: .disabled,
         sleep: { _ in }
     )
 }
 
-@Test("releasing idle resources unloads both engines, and preparing again loads the model again")
+@Test("releasing idle resources unloads ASR, and preparing again loads the model again")
 func releaseThenPrepareLoadsAgain() async throws {
     let asr = CountingASR()
-    let diarizer = CountingDiarizer()
-    let processor = makeProcessor(asr: asr, diarizer: diarizer)
+    let processor = makeProcessor(asr: asr)
 
     try await processor.prepareASR { _, _ in }
     #expect(await asr.loadCount == 1)
@@ -67,7 +58,6 @@ func releaseThenPrepareLoadsAgain() async throws {
     await processor.releaseIdleResources()
     #expect(await asr.unloadCount == 1)
     #expect(await asr.isLoaded == false)
-    #expect(await diarizer.unloadCount == 1)
 
     try await processor.prepareASR { _, _ in }
     #expect(await asr.loadCount == 2)

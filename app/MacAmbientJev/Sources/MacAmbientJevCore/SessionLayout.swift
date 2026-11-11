@@ -39,15 +39,6 @@ public struct SessionLayout: Sendable, Equatable {
         audioDirectory.appending(path: "processing", directoryHint: .isDirectory)
     }
 
-    /// Exists only while a finalization runs; it holds the diarization input CAF.
-    public var derivedDirectory: URL {
-        audioDirectory.appending(path: "derived", directoryHint: .isDirectory)
-    }
-
-    public var diarizationInputURL: URL {
-        derivedDirectory.appending(path: "diarization-input.caf")
-    }
-
     public var audioStorageURL: URL {
         audioDirectory.appending(path: "storage.json")
     }

@@ -5,7 +5,7 @@ import MacAmbientJevEngineProtocol
 struct EngineProtocolCorpusTests {
     @Test func everyCorpusRecordRoundTripsByteIdentically() throws {
         let records = try wireCorpusRecords()
-        #expect(records.count == 103)
+        #expect(records.count == 102)
         for record in records {
             let root = try #require(JSONSerialization.jsonObject(with: record) as? [String: Any])
             if root["event"] != nil {
@@ -243,7 +243,6 @@ private func isNullableField(
         "folder_id", "session_id", "status", "error", "display_name", "status_text",
         "folder_path", "export_path", "can_reprocess", "can_retry_decisions", "can_export", "metadata",
     ])
-    let isTranscriptRowDetailsPage = object["clause_state_text"] != nil && object["speakers"] != nil
     let isPresentationState = has([
         "recording_status_text", "recording_tone", "preparation_phase", "preparation_status_text",
         "recovery_status_text", "processing_status_text", "live_failure_notices", "silence_warning_active",
@@ -259,7 +258,6 @@ private func isNullableField(
     if key == "cursor" {
         if root["command"] as? String == "session.list", has(["cursor", "limit"]) { return true }
         if root["command"] as? String == "transcript.read", has(["session_id", "revision", "cursor", "limit"]) { return true }
-        if root["command"] as? String == "transcript.row_details" { return true }
     }
     if key == "revision", root["command"] as? String == "transcript.read",
        has(["session_id", "revision", "cursor", "limit"]) { return true }
@@ -278,15 +276,13 @@ private func isNullableField(
     if key == "previous_cursor" {
         if has(["sessions", "next_cursor", "previous_cursor"]) { return true }
         if has(["session_id", "revision", "rows", "next_cursor", "previous_cursor"]) { return true }
-        if isTranscriptRowDetailsPage { return true }
     }
     if key == "next_cursor" {
         if has(["sessions", "next_cursor", "previous_cursor"]) { return true }
         if has(["session_id", "revision", "rows", "next_cursor", "previous_cursor"]) { return true }
         if has(["session_id", "revision", "kind", "rows", "removed_row_ids", "next_cursor"]) { return true }
-        if isTranscriptRowDetailsPage { return true }
     }
-    if key == "clause_state", has(["row_id", "start_ms", "end_ms", "text", "headings", "clause_state"]) { return true }
+    if key == "clause_state", has(["row_id", "start_ms", "end_ms", "text", "clause_state"]) { return true }
     if key == "total_units", has(["stage", "completed_units", "total_units", "session_id"]) { return true }
     return false
 }

@@ -5,11 +5,7 @@ import pathlib
 
 from common.audio import normalize_to_wav
 from common.corpus import load_manifest, prepare_resource
-from common.csj import (
-    csj_reference_text,
-    csj_speaker_reference,
-    parse_csj_transcript,
-)
+from common.csj import csj_reference_text, parse_csj_transcript
 from common.files import write_json_atomic
 
 
@@ -62,11 +58,6 @@ def prepare_fixture(
         csj_reference_text(utterances, keep_fillers=False) + "\n",
         encoding="utf-8",
     )
-    write_json_atomic(
-        fixture_dir / "speaker-reference.json",
-        csj_speaker_reference(utterances),
-    )
-
     result = {
         "schema_version": 1,
         "id": manifest["id"],
@@ -74,7 +65,6 @@ def prepare_fixture(
             "audio": "audio.wav",
             "reference_verbatim": "reference-verbatim.txt",
             "reference_content": "reference-content.txt",
-            "speaker_reference": "speaker-reference.json",
         },
     }
     write_json_atomic(fixture_dir / "fixture.json", result)

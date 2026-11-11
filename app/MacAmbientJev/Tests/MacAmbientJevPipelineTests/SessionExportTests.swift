@@ -40,7 +40,7 @@ func savedTranscriptLoaderKeepsRawFillerTextForPresentationAndExport() async thr
     #expect(rawSegments.first?.text == raw)
     #expect(try LiveTranscriptProjection().rows(for: rawSegments).first?.text == raw)
     #expect(try TranscriptTextRenderer.render(rawSegments)
-        == "[00:00] Speaker 1: \(raw)\n[01:05] Speaker 2: 今日の議題です\n")
+        == "[00:00] \(raw)\n[01:05] 今日の議題です\n")
 
     let assessedSession = try await fixture.saveFillerAssessment(session: session, rawText: raw)
     let afterResponse = try SavedTranscriptLoader.load(
@@ -55,7 +55,7 @@ func savedTranscriptLoaderKeepsRawFillerTextForPresentationAndExport() async thr
     #expect(segments.first?.text == raw)
     let rows = try LiveTranscriptProjection().rows(for: segments)
     #expect(rows.first?.text == cleaned)
-    let exportedText = "[00:00] Speaker 1: \(cleaned)\n[01:05] Speaker 2: 今日の議題です\n"
+    let exportedText = "[00:00] \(cleaned)\n[01:05] 今日の議題です\n"
     #expect(try TranscriptTextRenderer.render(segments) == exportedText)
 
     let folder = try SessionExporter().export(session: assessedSession, to: fixture.exportRoot)
@@ -113,7 +113,7 @@ func exporterWritesReadableTranscriptAndFlacAudio() async throws {
     #expect(folder.lastPathComponent == session.sessionURL.lastPathComponent)
 
     let transcript = try String(contentsOf: folder.appending(path: "transcript.txt"), encoding: .utf8)
-    #expect(transcript == "[00:00] Speaker 1: こんにちは\n[01:05] Speaker 2: 今日の議題です\n")
+    #expect(transcript == "[00:00] こんにちは\n[01:05] 今日の議題です\n")
 
     let exported = folder.appending(path: "audio.flac")
     let info = try TimelineAudioInfo(committedFrames: Int64(samples.count), gapEvents: [])
@@ -238,7 +238,7 @@ func reexportReplacesTheSameFolder() async throws {
     #expect(second.standardizedFileURL == first.standardizedFileURL)
     #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.exportRoot.path) == [first.lastPathComponent])
     #expect(try FileManager.default.contentsOfDirectory(atPath: second.path).sorted() == ["audio.flac", "transcript.txt"])
-    #expect(try String(contentsOf: second.appending(path: "transcript.txt"), encoding: .utf8).hasPrefix("[00:00] Speaker 1: こんにちは"))
+    #expect(try String(contentsOf: second.appending(path: "transcript.txt"), encoding: .utf8).hasPrefix("[00:00] こんにちは"))
 }
 
 @Test
@@ -260,7 +260,7 @@ func exporterCopiesImportedOriginalByteForByte() async throws {
     #expect(try FileManager.default.contentsOfDirectory(atPath: layout.audioDirectory.path).sorted()
         == ["original.wav", "storage.json"])
     #expect(try String(contentsOf: folder.appending(path: "transcript.txt"), encoding: .utf8)
-        == "[00:00] Speaker 1: こんにちは\n[01:05] Speaker 2: 今日の議題です\n")
+        == "[00:00] こんにちは\n[01:05] 今日の議題です\n")
 }
  
 @Test
@@ -279,7 +279,7 @@ func maximumLengthSessionFolderExportsWithFixedStagingName() async throws {
     #expect(folder.lastPathComponent.utf8.count == 255)
     #expect(try Data(contentsOf: folder.appending(path: "audio.wav")) == original)
     #expect(try String(contentsOf: folder.appending(path: "transcript.txt"), encoding: .utf8)
-        == "[00:00] Speaker 1: こんにちは\n[01:05] Speaker 2: 今日の議題です\n")
+        == "[00:00] こんにちは\n[01:05] 今日の議題です\n")
     #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.exportRoot.path)
         == [folder.lastPathComponent])
 }
@@ -315,8 +315,7 @@ func exporterRejectsIncompletePublishedTranscriptPointersAndWritesNothing() asyn
 struct ExportFixture {
     static let completeRuns = ActiveRuns(
         segmentation: "seg-run",
-        asr: "asr-run",
-        diarization: "diar-run"
+        asr: "asr-run"
     )
 
     let root: URL
@@ -404,10 +403,10 @@ struct ExportFixture {
         firstText: String = "こんにちは"
     ) async throws {
         let writer = try SessionWriter(sessionURL: session)
-        let segments: [(id: String, start: Int64, end: Int64, text: String, speaker: String)] = [
-            ("seg-1", 0, 16_000, firstText, "speaker-a"),
-            ("seg-2", 65 * 16_000, 67 * 16_000, "今日の議題です", "speaker-b"),
-            ("seg-3", 70 * 16_000, 71 * 16_000, "  ", "speaker-a"),
+        let segments: [(id: String, start: Int64, end: Int64, text: String)] = [
+            ("seg-1", 0, 16_000, firstText),
+            ("seg-2", 65 * 16_000, 67 * 16_000, "今日の議題です"),
+            ("seg-3", 70 * 16_000, 71 * 16_000, "  "),
         ]
         var pending: [SegmentTextReference] = []
         for segment in segments {
@@ -439,19 +438,6 @@ struct ExportFixture {
                     asrRunID: "asr-run", asrEventSeq: recognized.eventSeq
                 ))
             }
-            _ = try await writer.append(EventDraft(
-                eventType: "speaker.span",
-                sessionID: sessionID,
-                processingRunID: "diar-run",
-                sourceStartFrame: segment.start,
-                sourceEndFrame: segment.end,
-                payload: SpeakerSpan(
-                    speakerID: segment.speaker,
-                    startFrame: segment.start,
-                    endFrame: segment.end,
-                    confidence: 0.9
-                )
-            ))
         }
         try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
             finalizationAttempt: nil,
@@ -634,9 +620,7 @@ private func segment(
     startMilliseconds: Int64,
     text: String,
     fillerRanges: [TextUTF16Range],
-    speakers: [(id: String, start: Int64, end: Int64)] = [],
-    priority: ContentPriority? = nil,
-    isDiarized: Bool = true
+    priority: ContentPriority? = nil
 ) throws -> MaterializedTranscriptSegment {
     let end = startMilliseconds + 1_000
     var slices: [ClauseRowSlice] = []
@@ -653,13 +637,6 @@ private func segment(
         endMilliseconds: end,
         text: text,
         fillerRanges: fillerRanges,
-        speakers: speakers.map {
-            MaterializedSpeakerSpan(
-                id: $0.id, startMilliseconds: $0.start, endMilliseconds: $0.end,
-                confidence: nil, displayLabel: nil
-            )
-        },
-        isDiarized: isDiarized,
         clauseState: priority == nil ? nil : .classified,
         clauseSlices: slices
     )
@@ -668,20 +645,17 @@ private func segment(
 @Test
 func transcriptTextHasExactlyTheRowsTheScreenShows() throws {
     let segments = [
-        try segment("kept", startMilliseconds: 0, text: "残る発話", fillerRanges: [], speakers: [("A", 0, 1_000)]),
-        try segment("empty", startMilliseconds: 1_000, text: " \n", fillerRanges: [], speakers: [("A", 1_000, 2_000)]),
-        try segment(
-            "conversation", startMilliseconds: 2_000, text: "別の会話", fillerRanges: [],
-            speakers: [("A", 2_000, 3_000)]
-        ),
+        try segment("kept", startMilliseconds: 0, text: "残る発話", fillerRanges: []),
+        try segment("empty", startMilliseconds: 1_000, text: " \n", fillerRanges: []),
+        try segment("conversation", startMilliseconds: 2_000, text: "別の会話", fillerRanges: []),
         try segment(
             "low", startMilliseconds: 3_000, text: "えーと、低優先度本文",
-            fillerRanges: [try TextUTF16Range(start: 0, end: 3)], speakers: [("B", 3_000, 4_000)],
-            priority: .lowPriority
+            fillerRanges: [try TextUTF16Range(start: 0, end: 3)], priority: .lowPriority
         ),
         try segment(
             "filler-only", startMilliseconds: 4_000, text: "えー、",
-            fillerRanges: [try TextUTF16Range(start: 0, end: 2)], speakers: [("A", 4_000, 5_000)]),
+            fillerRanges: [try TextUTF16Range(start: 0, end: 2)]
+        ),
     ]
 
     let rows = try LiveTranscriptProjection().rows(for: segments)
@@ -689,7 +663,7 @@ func transcriptTextHasExactlyTheRowsTheScreenShows() throws {
 
     #expect(rows.map(\.segmentID) == ["kept", "conversation"])
     #expect(rows.map(\.text) == ["残る発話", "別の会話"])
-    #expect(lines == ["[00:00] Speaker 1: 残る発話", "[00:02] Speaker 1: 別の会話", ""])
+    #expect(lines == ["[00:00] 残る発話", "[00:02] 別の会話", ""])
 }
 
 @Test
@@ -707,49 +681,32 @@ func mixedClausePrioritiesExportOnlyTheNonLowText() throws {
         segmentID: "mixed", startMilliseconds: 0, endMilliseconds: 1_000,
         text: raw,
         fillerRanges: [try TextUTF16Range(start: 0, end: 2)],
-        speakers: [MaterializedSpeakerSpan(id: "A", startMilliseconds: 0, endMilliseconds: 1_000, confidence: nil, displayLabel: nil)],
-        isDiarized: true, clauseState: .classified, clauseSlices: slices
+        clauseState: .classified, clauseSlices: slices
     )
     let row = try #require(LiveTranscriptProjection().rows(for: [mixed]).first)
     #expect(mixed.text == raw)
     #expect(row.text == "重要。")
-    #expect(try TranscriptTextRenderer.render([mixed]) == "[00:00] Speaker 1: 重要。\n")
+    #expect(try TranscriptTextRenderer.render([mixed]) == "[00:00] 重要。\n")
 }
 
 @Test
-func transcriptTextJoinsSpeakersBelowTheEightyPercentRuleAndKeepsOneAbove() throws {
-    let mixed = try segment(
-        "mixed", startMilliseconds: 0, text: "会話", fillerRanges: [], speakers: [("A", 0, 600), ("B", 600, 1_000)]
-    )
-    let dominant = try segment(
-        "dominant", startMilliseconds: 2_000, text: "講義", fillerRanges: [], speakers: [("A", 2_000, 2_850), ("B", 2_850, 3_000)]
-    )
+func transcriptTextWritesTwoTimestampedRows() throws {
+    let segments = [
+        try segment("first", startMilliseconds: 7_000, text: "本文", fillerRanges: []),
+        try segment("second", startMilliseconds: 62_000, text: "次", fillerRanges: []),
+    ]
 
-    #expect(try TranscriptTextRenderer.render([mixed, dominant])
-        == "[00:00] Speaker 1 / Speaker 2: 会話\n[00:02] Speaker 1: 講義\n")
-}
-
-@Test
-func transcriptTextWritesUnknownForADiarizedUtteranceWithoutSpeakers() throws {
-    #expect(try TranscriptTextRenderer.render([try segment("lonely", startMilliseconds: 61_000, text: "誰か", fillerRanges: [])])
-        == "[01:01] UNKNOWN: 誰か\n")
+    #expect(try TranscriptTextRenderer.render(segments) == "[00:07] 本文\n[01:02] 次\n")
 }
 
 @Test
 func transcriptTextReplacesLineBreaksSoEachUtteranceIsOneLine() throws {
     let text = "一行目\r\n二行目\n三行目\r四行目\u{2028}五行目\u{2029}六行目"
     let rendered = try TranscriptTextRenderer.render([
-        try segment("multi", startMilliseconds: 0, text: text, fillerRanges: [], speakers: [("A", 0, 1_000)])
+        try segment("multi", startMilliseconds: 0, text: text, fillerRanges: [])
     ])
 
-    #expect(rendered == "[00:00] Speaker 1: 一行目 二行目 三行目 四行目 五行目 六行目\n")
-}
-
-@Test
-func transcriptTextRejectsAnUtteranceWithoutDiarization() {
-    #expect(throws: TranscriptTextRendererError.missingSpeakerHeading(segmentID: "live")) {
-        try TranscriptTextRenderer.render([try segment("live", startMilliseconds: 0, text: "暫定", fillerRanges: [], isDiarized: false)])
-    }
+    #expect(rendered == "[00:00] 一行目 二行目 三行目 四行目 五行目 六行目\n")
 }
 
 @Test
@@ -1010,7 +967,7 @@ func removingTheReplacedBundleFailsLoudlyAfterPublishing() async throws {
     }
 
     #expect(try String(contentsOf: prior.appending(path: "transcript.txt"), encoding: .utf8)
-        .hasPrefix("[00:00] Speaker 1: こんにちは"))
+        .hasPrefix("[00:00] こんにちは"))
     #expect(try String(contentsOf: previous.appending(path: "transcript.txt"), encoding: .utf8) == "edited")
 }
 
@@ -1044,7 +1001,7 @@ func exportRestoresABundleLeftAsideByAnInterruptedReplacement() async throws {
 
     #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.exportRoot.path) == [folder.lastPathComponent])
     #expect(try String(contentsOf: folder.appending(path: "transcript.txt"), encoding: .utf8)
-        .hasPrefix("[00:00] Speaker 1: こんにちは"))
+        .hasPrefix("[00:00] こんにちは"))
 }
 
 @Test

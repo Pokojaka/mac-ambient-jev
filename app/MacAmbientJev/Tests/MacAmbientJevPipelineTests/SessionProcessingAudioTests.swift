@@ -270,22 +270,9 @@ struct SessionProcessingAudioTests {
         #expect(originals == [originalURL])
         #expect(try SessionFileAccess.read(originalURL, relativeTo: layout.sessionURL) == originalBytes)
 
-        try audio.exportDiarizationAudio(
-            reader: reader,
-            to: layout.diarizationInputURL,
-            sessionURL: layout.sessionURL
-        )
-        // Windows cannot delete a file while the reader's handle is open.
-        do {
-            let cafReader = try CanonicalCAFReader(url: layout.diarizationInputURL, sessionURL: layout.sessionURL)
-            #expect(cafReader.sampleCount == Int64(samples.count))
-            #expect(try cafReader.readSamples(frames: 0..<Int64(samples.count)) == samples)
-        }
-
         let importedSession = SessionSource.imported(originalFilename: "original.wav")
         try SessionTransientAudio.remove(layout: layout, source: importedSession)
         #expect(!fileExists(layout.processingDirectory))
-        #expect(!fileExists(layout.derivedDirectory))
         #expect(fileExists(originalURL))
         #expect(try SessionAudioStorageStore(layout: layout).load() == .importedOriginal(reader.info))
         #expect(try SessionFileAccess.read(originalURL, relativeTo: layout.sessionURL) == originalBytes)
@@ -341,7 +328,6 @@ struct SessionProcessingAudioTests {
             source: .imported(originalFilename: "original.wav")
         )
         #expect(!fileExists(layout.processingDirectory))
-        #expect(!fileExists(layout.derivedDirectory))
         #expect(try SessionAudioStorageStore(layout: layout).load() == .importedOriginal(nil))
         #expect(fileExists(originalURL))
         #expect(try SessionFileAccess.read(originalURL, relativeTo: layout.sessionURL) == originalBytes)
@@ -377,7 +363,6 @@ struct SessionProcessingAudioTests {
             source: .imported(originalFilename: "original.wav")
         )
         #expect(!fileExists(layout.processingDirectory))
-        #expect(!fileExists(layout.derivedDirectory))
         #expect(try SessionAudioStorageStore(layout: layout).load() == .importedOriginal(nil))
         #expect(fileExists(originalURL))
         #expect(try SessionFileAccess.read(originalURL, relativeTo: layout.sessionURL) == originalBytes)
@@ -418,15 +403,6 @@ struct SessionProcessingAudioTests {
         #expect(try flacReader.readSamples(frameRange: 0..<Int64(samples.count)) == expectedSamples)
         #expect(await builder.recordedCalls().isEmpty)
         #expect(await statuses.statuses().isEmpty)
-
-        try audio.exportDiarizationAudio(
-            reader: flacReader,
-            to: layout.diarizationInputURL,
-            sessionURL: layout.sessionURL
-        )
-        let cafReader = try CanonicalCAFReader(url: layout.diarizationInputURL, sessionURL: layout.sessionURL)
-        #expect(cafReader.sampleCount == Int64(samples.count))
-        #expect(try cafReader.readSamples(frames: 0..<Int64(samples.count)) == expectedSamples)
     }
 
     @Test

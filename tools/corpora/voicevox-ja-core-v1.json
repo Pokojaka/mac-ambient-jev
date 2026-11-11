@@ -4,10 +4,6 @@
   "kind": "synthetic",
   "engine": "voicevox",
   "language": "ja",
-  "speaker_policy": {
-    "selection": "distinct_characters",
-    "minimum_distinct_speakers": 10
-  },
   "utterances": [
     {
       "id": "general-001",
@@ -48,33 +44,6 @@
     {
       "id": "proper-001",
       "text": "京都産業大学の情報理工学部でネットワーク実験を行います。"
-    }
-  ],
-  "diarization_scenarios": [
-    {
-      "id": "speakers-2",
-      "speaker_count": 2,
-      "placement_overlap_factor": 0.0
-    },
-    {
-      "id": "speakers-4",
-      "speaker_count": 4,
-      "placement_overlap_factor": 0.1
-    },
-    {
-      "id": "speakers-7",
-      "speaker_count": 7,
-      "placement_overlap_factor": 0.1
-    },
-    {
-      "id": "speakers-8",
-      "speaker_count": 8,
-      "placement_overlap_factor": 0.1
-    },
-    {
-      "id": "speakers-10",
-      "speaker_count": 10,
-      "placement_overlap_factor": 0.2
     }
   ]
 }

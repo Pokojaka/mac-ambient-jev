@@ -5,7 +5,7 @@
 - [architecture.md](architecture.md): ターゲット、モジュール、データフロー、portable Core の規則。
 - [storage.md](storage.md): セッション配置、JSON、イベント、音声 timeline、run の来歴。
 - [live.md](live.md): ライブ認識、表示、熱制御、遅延指標。
-- [final.md](final.md): 確定処理、復旧、再処理、一時停止、失敗、話者見出し。
+- [final.md](final.md): 確定処理、復旧、再処理、一時停止、失敗。
 - [capture.md](capture.md): マイクとシステム音声、入力音量、注意・エラー、容量判定。
 - [decision-engine.md](decision-engine.md): 発話文の境界・優先度判定、同梱モデル、エラー、利用量。
 - [export.md](export.md): テキストと音声の書き出し、保存先、自動書き出し、保存済み一覧。

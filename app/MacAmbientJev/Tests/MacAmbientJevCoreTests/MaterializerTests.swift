@@ -58,8 +58,7 @@ func liveProjectionCleansDisplayWithoutChangingMaterializedASRText() throws {
     let raw = "えー、今日は公開鍵暗号を説明します。"
     let segment = try MaterializedTranscriptSegment.fixture(
         segmentID: "raw", startMilliseconds: 0, endMilliseconds: 1_000, text: raw,
-        fillerRanges: [try TextUTF16Range(start: 0, end: 2)],
-        speakers: [], isDiarized: false
+        fillerRanges: [try TextUTF16Range(start: 0, end: 2)]
     )
     let row = try #require(LiveTranscriptProjection().rows(for: [segment]).first)
     #expect(segment.text == raw)
@@ -81,7 +80,7 @@ func lowPrioritySentencesAreRemovedFromScreenTranscriptAndDisplayText() throws {
     let segment = try MaterializedTranscriptSegment.fixture(
         segmentID: "mixed", startMilliseconds: 0, endMilliseconds: 1_000, text: raw,
         fillerRanges: [try TextUTF16Range(start: 0, end: 2)],
-        speakers: [], isDiarized: false, clauseState: .classified,
+        clauseState: .classified,
         clauseSlices: [try prioritySlice("c1_0", 0, 11, .primary), try prioritySlice("c1_1", 11, 14, .lowPriority)]
     )
     let object = try #require(
@@ -100,7 +99,7 @@ func materializerFormatsNumeralsAfterFillerAndLowPriorityRemoval() throws {
     let segment = try MaterializedTranscriptSegment.fixture(
         segmentID: "mixed", startMilliseconds: 0, endMilliseconds: 1_000, text: raw,
         fillerRanges: [try TextUTF16Range(start: 0, end: 2)],
-        speakers: [], isDiarized: false, clauseState: .classified,
+        clauseState: .classified,
         clauseSlices: [
             try prioritySlice("c1_0", 0, 13, .primary),
             try prioritySlice("c1_1", 13, 16, .lowPriority)
@@ -134,7 +133,7 @@ func numeralsOnBothSidesOfRemovedTextAreNotReadAsOneNumber() throws {
     let filler = try MaterializedTranscriptSegment.fixture(
         segmentID: "filler", startMilliseconds: 0, endMilliseconds: 1_000, text: "二えー三です。",
         fillerRanges: [try TextUTF16Range(start: 1, end: 3)],
-        speakers: [], isDiarized: false, clauseState: .classified,
+        clauseState: .classified,
         clauseSlices: [try prioritySlice("c1_0", 0, 7, .primary)]
     )
     #expect(filler.displayText == "二三です。")
@@ -142,7 +141,7 @@ func numeralsOnBothSidesOfRemovedTextAreNotReadAsOneNumber() throws {
     let lowPriority = try MaterializedTranscriptSegment.fixture(
         segmentID: "low", startMilliseconds: 0, endMilliseconds: 1_000, text: "二はい三です。",
         fillerRanges: [],
-        speakers: [], isDiarized: false, clauseState: .classified,
+        clauseState: .classified,
         clauseSlices: [
             try prioritySlice("c1_0", 0, 1, .primary),
             try prioritySlice("c1_1", 1, 3, .lowPriority),
@@ -154,7 +153,7 @@ func numeralsOnBothSidesOfRemovedTextAreNotReadAsOneNumber() throws {
     let separated = try MaterializedTranscriptSegment.fixture(
         segmentID: "separated", startMilliseconds: 0, endMilliseconds: 1_000, text: "二つえーと三つ",
         fillerRanges: [try TextUTF16Range(start: 2, end: 5)],
-        speakers: [], isDiarized: false, clauseState: .classified,
+        clauseState: .classified,
         clauseSlices: [try prioritySlice("c1_0", 0, 7, .primary)]
     )
     #expect(separated.displayText == "2つ3つ")
@@ -164,12 +163,12 @@ func numeralsOnBothSidesOfRemovedTextAreNotReadAsOneNumber() throws {
 func rowWhoseEverySentenceIsLowPriorityIsNotShown() throws {
     let lowOnly = try MaterializedTranscriptSegment.fixture(
         segmentID: "low", startMilliseconds: 0, endMilliseconds: 1_000, text: "はい。うん。",
-        fillerRanges: [], speakers: [], isDiarized: false, clauseState: .classified,
+        fillerRanges: [], clauseState: .classified,
         clauseSlices: [try prioritySlice("c1_0", 0, 3, .lowPriority), try prioritySlice("c1_1", 3, 6, .lowPriority)]
     )
     let primary = try MaterializedTranscriptSegment.fixture(
         segmentID: "primary", startMilliseconds: 1_000, endMilliseconds: 2_000, text: "本題です。",
-        fillerRanges: [], speakers: [], isDiarized: false, clauseState: .classified,
+        fillerRanges: [], clauseState: .classified,
         clauseSlices: [try prioritySlice("c2_0", 0, 5, .primary)]
     )
     #expect(lowOnly.text == "はい。うん。")
@@ -181,7 +180,7 @@ func rowWhoseEverySentenceIsLowPriorityIsNotShown() throws {
 func undecidedSentencesKeepTheirTextNextToRemovedLowPrioritySentences() throws {
     let segment = try MaterializedTranscriptSegment.fixture(
         segmentID: "pending", startMilliseconds: 0, endMilliseconds: 1_000, text: "はい。うん。そうです。続き",
-        fillerRanges: [], speakers: [], isDiarized: false, clauseState: .awaitingNextSegment,
+        fillerRanges: [], clauseState: .awaitingNextSegment,
         clauseSlices: [
             try prioritySlice("c1_0", 0, 3, .lowPriority),
             try prioritySlice("c1_1", 3, 6, .lowPriority, needsRetry: true),
@@ -207,7 +206,7 @@ func liveProjectionHidesEmptyTextButShowsEverythingSpoken() throws {
         try MaterializedTranscriptSegment.fixture(
             segmentID: "s\(index)", startMilliseconds: Int64(index * 1000),
             endMilliseconds: Int64((index + 1) * 1000), text: text,
-            fillerRanges: [], speakers: [], isDiarized: false
+            fillerRanges: []
         )
     }
 
@@ -217,98 +216,6 @@ func liveProjectionHidesEmptyTextButShowsEverythingSpoken() throws {
         "えー", " えー、\n", "うん"
     ])
 }
-
-@Test
-func liveProjectionUsesDominantSpeakerWhenItCoversAtLeastEightyPercent() throws {
-    let segment = try MaterializedTranscriptSegment.fixture(
-        segmentID: "dominant", startMilliseconds: 1_000, endMilliseconds: 2_000,
-        text: "発話", fillerRanges: [],
-        speakers: [
-            MaterializedSpeakerSpan(id: "A", startMilliseconds: 0, endMilliseconds: 1_800, confidence: nil, displayLabel: nil),
-            MaterializedSpeakerSpan(id: "B", startMilliseconds: 1_800, endMilliseconds: 2_100, confidence: nil, displayLabel: nil)
-        ], isDiarized: true
-    )
-
-    let row = try #require(LiveTranscriptProjection().rows(for: [segment]).first)
-    #expect(row.displaySpeakerLabels == ["Speaker 1"])
-    #expect(row.speakers.map(\.id) == ["A", "B"])
-}
-
-@Test
-func liveProjectionShowsBothSpeakersWhenNoSpeakerReachesEightyPercent() throws {
-    let segment = try MaterializedTranscriptSegment.fixture(
-        segmentID: "mixed", startMilliseconds: 0, endMilliseconds: 1_000,
-        text: "会話", fillerRanges: [],
-        speakers: [
-            MaterializedSpeakerSpan(id: "A", startMilliseconds: 0, endMilliseconds: 600, confidence: nil, displayLabel: nil),
-            MaterializedSpeakerSpan(id: "B", startMilliseconds: 400, endMilliseconds: 1_000, confidence: nil, displayLabel: nil)
-        ], isDiarized: true
-    )
-
-    let row = try #require(LiveTranscriptProjection().rows(for: [segment]).first)
-    #expect(row.displaySpeakerLabels == ["Speaker 1", "Speaker 2"])
-    #expect(row.speakers.map(\.id) == ["A", "B"])
-}
-
-@Test
-func materializerKeepsMultipleSpeakerSpans() throws {
-    let events: [TranscriptEvent] = [
-        .segmentCreated(
-            seq: 1, segmentationRunID: "seg", segmentID: "s1",
-            startFrame: 0, endFrame: 1000
-        ),
-        .asrCompleted(
-            seq: 2, runID: "asr", segmentationRunID: "seg",
-            segmentID: "s1", text: "発話",
-            detectedLanguage: nil
-        ),
-        .speakerSpan(
-            seq: 3, runID: "diar", speakerID: "speaker_1",
-            startFrame: 0, endFrame: 400, confidence: 0.8
-        ),
-        .speakerSpan(
-            seq: 4, runID: "diar", speakerID: "speaker_2",
-            startFrame: 400, endFrame: 1000, confidence: 0.7
-        )
-    ]
-    let runs = ActiveRuns(
-        segmentation: "seg", asr: "asr",
-        diarization: "diar"
-    )
-    let segment = try #require(
-        try TranscriptMaterializer(sampleRate: 1000)
-            .materialize(events: events, activeRuns: runs)
-            .first
-    )
-
-    #expect(segment.speakers == [
-        MaterializedSpeakerSpan(id: "speaker_1", startMilliseconds: 0, endMilliseconds: 400,
-                                confidence: 0.8, displayLabel: "Speaker 1"),
-        MaterializedSpeakerSpan(id: "speaker_2", startMilliseconds: 400, endMilliseconds: 1_000,
-                                confidence: 0.7, displayLabel: "Speaker 2")
-    ])
-}
-
-@Test
-func liveProjectionUsesFirstAppearanceOfRawSpansOutsideVADTurns() throws {
-    let events: [TranscriptEvent] = [
-        .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "turn", startFrame: 1_000, endFrame: 2_000),
-        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "turn", text: "発話", detectedLanguage: nil),
-        .speakerSpan(seq: 3, runID: "diar", speakerID: "in-turn", startFrame: 1_000, endFrame: 2_000, confidence: 0.9),
-        .speakerSpan(seq: 4, runID: "diar", speakerID: "outside-turn", startFrame: 0, endFrame: 900, confidence: 0.8)
-    ]
-    let activeRuns = ActiveRuns(segmentation: "seg", asr: "asr", diarization: "diar")
-    let materialized = try TranscriptMaterializer(sampleRate: 1_000).materialize(
-        events: events,
-        activeRuns: activeRuns
-    )
-
-    let row = try #require(LiveTranscriptProjection().rows(for: materialized).first)
-
-    #expect(row.speakers.map(\.id) == ["in-turn"])
-    #expect(row.displaySpeakerLabels == ["Speaker 2"])
-}
-
 
 @Test
 func materializerShowsASRBeforeEnrichment() throws {
@@ -436,7 +343,7 @@ func materializerAppliesFillerRemovalOnlyAfterSavedAssessment() throws {
     )
     #expect(Set(object.keys) == Set([
         "segment_id", "source", "start_ms", "end_ms", "text", "display_text",
-        "speakers", "clause_state", "clause_slices"
+        "clause_state", "clause_slices"
     ]))
     #expect(object["text"] as? String == raw)
     #expect(object["display_text"] as? String == "資料を配ります。")
@@ -494,26 +401,6 @@ func materializerFormatsNumeralsAfterSavedFillerAssessment() throws {
     #expect(saved.displayText == "28.4です。")
 }
 
-@Test
-func materializerMarksSegmentsDiarizedOnlyWhenADiarizationRunIsActive() throws {
-    let events: [TranscriptEvent] = [
-        .segmentCreated(seq: 1, segmentationRunID: "seg", segmentID: "s1", startFrame: 0, endFrame: 1_000),
-        .asrCompleted(seq: 2, runID: "asr", segmentationRunID: "seg", segmentID: "s1", text: "発話", detectedLanguage: nil)
-    ]
-    let live = try #require(try TranscriptMaterializer(sampleRate: 1_000).materialize(
-        events: events, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr")
-    ).first)
-    let final = try #require(try TranscriptMaterializer(sampleRate: 1_000).materialize(
-        events: events, activeRuns: ActiveRuns(segmentation: "seg", asr: "asr", diarization: "diar")
-    ).first)
-
-    #expect(!live.isDiarized)
-    #expect(final.isDiarized)
-    #expect(final.speakers.isEmpty)
-    #expect(try LiveTranscriptProjection().rows(for: [live]).map(\.displaySpeakerLabels) == [[]])
-    #expect(try LiveTranscriptProjection().rows(for: [final]).map(\.displaySpeakerLabels) == [["UNKNOWN"]])
-}
-
 private func makeTenThousandSegmentEvents() -> [TranscriptEvent] {
     let count = 10_000
     var events: [TranscriptEvent] = []
@@ -544,7 +431,7 @@ func materializerHandlesTenThousandSegmentLog() throws {
 }
 
 @Test
-func materializerProjectsOneCrossRowClauseWithoutChangingRawRowsOrSpeakerTiming() async throws {
+func materializerProjectsOneCrossRowClauseWithoutChangingRawRowsOrTiming() async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
@@ -581,7 +468,7 @@ func lowPriorityRemovalKeepsFillerRemovalAndSurrogatePairsIntact() throws {
     let segment = try MaterializedTranscriptSegment.fixture(
         segmentID: "emoji", startMilliseconds: 0, endMilliseconds: 1_000, text: "えー、低。えー、😀本文",
         fillerRanges: [try TextUTF16Range(start: 0, end: 2), try TextUTF16Range(start: 5, end: 7)],
-        speakers: [], isDiarized: false, clauseState: .classified,
+        clauseState: .classified,
         clauseSlices: [try prioritySlice("c1_0", 0, 5, .lowPriority), try prioritySlice("c1_1", 5, 12, .primary)]
     )
     #expect(segment.displayText == "😀本文")
@@ -592,7 +479,7 @@ func segmentRejectsOverlappingClauseSlices() throws {
     #expect(throws: TranscriptMaterializationError.invalidClauseSlice(segmentID: "s")) {
         _ = try MaterializedTranscriptSegment.fixture(
             segmentID: "s", startMilliseconds: 0, endMilliseconds: 100, text: "本文です",
-            fillerRanges: [], speakers: [], isDiarized: false, clauseState: .classified,
+            fillerRanges: [], clauseState: .classified,
             clauseSlices: [try prioritySlice("c1_0", 0, 2, .primary), try prioritySlice("c1_1", 1, 4, .lowPriority)]
         )
     }
@@ -604,7 +491,7 @@ func segmentRejectsAClauseSliceInsideACharacter() throws {
     #expect(throws: TextUTF16RangeError.invalidCharacterBoundary(start: 1, end: text.utf16.count)) {
         _ = try MaterializedTranscriptSegment.fixture(
             segmentID: "s", startMilliseconds: 0, endMilliseconds: 100, text: text,
-            fillerRanges: [], speakers: [], isDiarized: false, clauseState: .classified,
+            fillerRanges: [], clauseState: .classified,
             clauseSlices: [try prioritySlice("c1_0", 1, text.utf16.count, .lowPriority)]
         )
     }
