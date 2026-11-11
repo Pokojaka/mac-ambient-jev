@@ -68,7 +68,7 @@ let lowForBackchannel: ScriptedDecisionProvider.PriorityAnswer = { targets in
     return PriorityBatchResponse(decisions: decisions, inputTokens: testInputTokens)
 }
 
-let transcriptRuns = ActiveRuns(segmentation: "seg", asr: "asr", diarization: "diar")
+let transcriptRuns = ActiveRuns(segmentation: "seg", asr: "asr")
 
 func temporarySessionRoot() -> URL {
     FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -81,7 +81,7 @@ func writeTranscript(_ texts: [String?], root: URL, sessionID: UUID) async throw
     var events: [TranscriptEvent] = []
     let provenance = RunProvenance(engine: "test", model: nil, version: "1", configuration: [:])
     let localRuns: [(ProcessingStage, String)] = [
-        (.segmentation, "seg"), (.asr, "asr"), (.diarization, "diar")
+        (.segmentation, "seg"), (.asr, "asr")
     ]
     for (stage, runID) in localRuns {
         try await writer.append(EventDraft(

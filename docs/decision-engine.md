@@ -1,6 +1,6 @@
 # 発話文の境界・優先度判定
 
-境界判定と優先度判定の単位は BTSJ 発話文（以下「発話文」）です。保存形式・コード上の `clause` / `節` はこの発話文単位を識別し、別の節分割器を意味しません。境界、継続、フィラー・相槌除去範囲、優先度は app bundle に同梱したローカル Core ML モデル（clause tagger。Linux / Windows は同じ重みの ONNX モデル）だけが判定し、ネットワークを使いません。録音、VAD、ASR、話者分離、フィラー・相槌除去、発話文判定はすべてこの Mac 上で動作します。確定処理のローカル必須段階は segmentation・diarization・ASR の3段階で、判定段階は任意です。初回のライブ・確定処理で任意の判定エンジン初期化または判定呼出しが失敗した場合は対象を保留として保存し、別の方式で補いません。明示的な判定再試行と未公開判定 run の復旧では、新たに要求した判定の失敗を保留にせず処理を失敗させます。
+境界判定と優先度判定の単位は BTSJ 発話文（以下「発話文」）です。保存形式・コード上の `clause` / `節` はこの発話文単位を識別し、別の節分割器を意味しません。境界、継続、フィラー・相槌除去範囲、優先度は app bundle に同梱したローカル Core ML モデル（clause tagger。Linux / Windows は同じ重みの ONNX モデル）だけが判定し、ネットワークを使いません。録音、VAD、ASR、フィラー・相槌除去、発話文判定は端末内で動作します。確定処理のローカル必須 pipeline は VAD（segmentation）→ ASR の2段階で、判定段階は任意です。初回のライブ・確定処理で任意の判定エンジン初期化または判定呼出しが失敗した場合は対象を保留として保存し、別の方式で補いません。明示的な判定再試行と未公開判定 run の復旧では、新たに要求した判定の失敗を保留にせず処理を失敗させます。
 
 ## 処理の流れ
 
@@ -33,7 +33,7 @@ ASR gap の後に空の ASR 結果が保存された場合も、そこでテキ�
 
 ライブ・確定・再試行は [ClausePriorityBatches.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClausePriorityBatches.swift) の同じ直列 batch 処理を使います。初回のライブ・確定処理では、モデル初期化に失敗した batch は未判定の保留にし、判定呼出しが失敗した batch は部分成功にせず全対象を `request: null` の保留にして、後続の境界・優先度判定を続けます。ライブは判定する batch ごとに provider factory から coordinator を取得します。明示的・復旧の判定再試行では、新たに要求した境界または優先度の判定呼出しが失敗すると、保留 batch として続行せず fail-fast で失敗します。取り消しは保留を作らず、遅れて戻った結果を保存・表示しません。引き継ぎは優先度 batch の対象外です。
 
-処理 CLI、システム音声キャプチャ CLI、ライブ遅延計測 CLI は `ContentPriorityAccess.disabled` で境界・優先度判定を無効にします。これらの CLI は Core ML tagger をロードせず、assessment と F・B 除去範囲を作らないため、フィラー・相槌や LOW slice を除かずに表示しますが、`displayText` 最終段階の数字表記変換は適用します。segmentation・diarization・ASR の必須3段階は通常どおり実行します。
+ProcessRecording CLI は既定で `ContentPriorityAccess.disabled` を使い、`--with-decisions` を明示した場合だけ platform-local provider（Mac Core ML / Linux・Windows ONNX）で境界・優先度判定を有効にします。システム音声キャプチャ CLI とライブ遅延計測 CLI は常に `ContentPriorityAccess.disabled` です。判定無効モードは tagger をロードせず、assessment と F・B 除去範囲を作らないため、フィラー・相槌や LOW slice を除きませんが、`displayText` 最終段階の数字表記変換は適用します。VAD → ASR の必須2段階は通常どおり実行します。
 
 ## モデルの同梱と更新
 
@@ -98,7 +98,7 @@ session 作成後に graph の入出力 metadata を完全一致で検証しま�
 
 `DecisionProviderFactory` は loaded provider と identity を一度だけ cache し、`localModelIdentity()` は同じ cache の identity を返して推論を行いません。[ProcessRecording CLI](../app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/main.swift) の portable path は `PortableSessionEngineBundle` を使い、判定無効の bundle は tagger を構築しません。
 
-PortableRuntime の `PortableProcessingConfiguration.resolve` は環境変数（`MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` は判定を要求したときだけ必須）と `--threads` の値を型付きの設定にします。変数の欠落・空・相対パス・存在しないパス・不正な model size・範囲外のスレッド数は明確なエラーで、モデルは読みません。`PortableSessionEngineBundle` は設定から Silero（1スレッド）、Qwen3 ASR、話者分離、（判定要求時のみ）`DecisionProviderFactory` に包んだ `ONNXClauseTagger` を作り、`SessionProcessingEngines` と `ContentPriorityAccess` として渡します。ASR・話者分離・tagger のモデルは最初の利用時にロードされます。
+PortableRuntime の `PortableProcessingConfiguration.resolve` は環境変数（`MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` は判定を要求したときだけ必須）と `--threads` の値を型付きの設定にします。変数の欠落・空・相対パス・存在しないパス・不正な model size・範囲外のスレッド数は明確なエラーで、モデルは読みません。`PortableSessionEngineBundle` は設定から Silero VAD（1スレッド）と Qwen3 ASR を構成し、判定要求時だけ `ONNXClauseTagger` を `DecisionProviderFactory` に包んで作り、`SessionProcessingEngines` と `ContentPriorityAccess` として渡します。ASR と tagger のモデルは初回利用時にロードされます。
 
 ### 符号化と推論
 
@@ -139,7 +139,7 @@ tagger は Core ML の出力ごとに、各確率が有限の閉区間 0..1 に�
 | PRIMARY | `primary` |
 | 未分類・保留 | 本文を表示 |
 
-表示方針は [MaterializedTranscriptSegment](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift) の `displayText` 一箇所です。保存済み assessment の F・B 除去範囲で原文からフィラー・相槌を除き、その後、行内の発話文 slice ごとに `lowPriority` が保存され再試行待ちでない本文をさらに除きます。PRIMARY と LOW の混在行は PRIMARY の本文だけを表示し、表示本文が空白・改行だけになった行は表示しません。続き待ち・境界判定保留・優先度保留の部分は、保存された F・B 除去範囲がある部分を除いて本文を残します。区間をまたぐ発話文は、所属する全ての行の slice に同じ判定を適用します。話者の違いで発話文の結合を拒否しません。
+表示方針は [MaterializedTranscriptSegment](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift) の `displayText` 一箇所です。保存済み assessment の F・B 除去範囲で原文からフィラー・相槌を除き、その後、行内の発話文 slice ごとに `lowPriority` が保存され再試行待ちでない本文をさらに除きます。PRIMARY と LOW の混在行は PRIMARY の本文だけを表示し、表示本文が空白・改行だけになった行は表示しません。続き待ち・境界判定保留・優先度保留の部分は、保存された F・B 除去範囲がある部分を除いて本文を残します。区間をまたぐ発話文は、所属する全ての行の slice に同じ判定を適用します。
 
 フィラー・相槌と LOW slice の適用後、`displayText` の最終段階で、連続する漢数字 `〇零一二三四五六七八九十百千万億`（`兆` は含まない）の run を保守的に算用数字へ変換します。run の直前・直後の文字（その側に文字がなければ判定対象外）が漢字（Unicode 17 の CJK Unified Ideographs 本体・拡張 A–J、CJK Compatibility Ideographs とその Supplement に属する文字、または `々`）、ASCII／全角数字、`.`／`．` のいずれでもない場合だけ変換対象です。ひらがな・カタカナ・空白・記号などは阻害条件ではありません。適正な整数と `run点run` の小数を ASCII 数字にし、小数部は各桁を個別に読みます（`二十八点四` → `28.4`）。フィラー・相槌や LOW slice を除いた継ぎ目では run が続かず、継ぎ目の両側が漢数字なら両方とも変換しません（`二えー三` は `二三` と表示）。継ぎ目の片側だけが漢数字なら、表示本文の隣接文字で通常どおり判定します。不正形式はそのまま残し、`run分のrun` の分数は両方の run を漢数字のまま残します。除外句一覧の語句（`万が一`、`一か八か`、`千と千尋の神隠し`、`九九` など）が全文字列どおり現れる箇所では、その句中の漢数字を保持し、句の一部だけの一致では除外しません。句の端の漢数字が隣の漢数字 run の途中で切れる位置（`二百五十` の中の `二百五`）は一致とみなしません。
 
@@ -163,10 +163,10 @@ tagger は Core ML の出力ごとに、各確率が有限の閉区間 0..1 に�
 確定結果の保留は `processing_metadata.json` の `pending_clause_boundary_segments`（境界判定が未成立の区間）と `pending_content_priority_clauses`（優先度が未成立の発話文）に保存します。判定は同じ入力に同じ結果を返すため、起動時の復旧は保留を再試行しません。保留を再判定するのは利用者が設定の「保留中の判定を再試行」を押したときだけです。対象・公開済み run・引き継ぎ元を事前に検証し、不整合は明示エラーにします。
 
 - **優先度だけの再試行**: 公開済みの境界判定 run をそのまま使い、指定した発話文だけを最大40件の batch で判定します。新しい優先度 run で、その他の発話文の判定を元 run・イベント・参照付きで引き継ぎます。指定しなかった保留は保留のまま引き継ぎます。
-- **境界を含む再試行**: 新しい境界判定 run を作り、公開済みの成功判定を元 run・イベント参照付きで引き継ぎ、保留区間だけを再判定します。全区間から発話文を組み直し、新 run の assessment と公開済み run それぞれの保存 F・B 除去範囲で各本文を投影してから、UTF-8 byte 列が完全一致する発話文の優先度を元参照の検証付きで引き継ぎます。parts の同一性は本文一致の代用にせず、各 run の投影後本文だけを照合します。新しく閉じた発話文と指定した保留だけを優先度判定します。ASR・VAD・話者分離と音声処理は再実行しません。
+- **境界を含む再試行**: 新しい境界判定 run を作り、公開済みの成功判定を元 run・イベント参照付きで引き継ぎ、保留区間だけを再判定します。全区間から発話文を組み直し、新 run の assessment と公開済み run それぞれの保存 F・B 除去範囲で各本文を投影してから、UTF-8 byte 列が完全一致する発話文の優先度を元参照の検証付きで引き継ぎます。parts の同一性は本文一致の代用にせず、各 run の投影後本文だけを照合します。新しく閉じた発話文と指定した保留だけを優先度判定します。ASR・VAD は再実行しません。
 - ASR gap で必要な次区間の原文がない保留は、同じ ASR では回復できません。判定前に「次の区間に音声認識結果がないため、境界を再判定できません。録音を再処理してください」とエラーにします。
 
-明示的・復旧の判定再試行で新たに要求した境界または優先度判定が実際に失敗した場合、`NativeSessionProcessor` は元の `localizedDescription` を理由として一つの typed `SessionProcessingResult.failed` を返し、message は `発話文の判定を再試行できませんでした: <reason>` です。同じ処理内で自動再要求せず、ASR・VAD・話者分離も再実行しません。再試行対象なし（「判定の再試行対象がありません」）、無効な判定 engine（「判定エンジンが利用できません」）、provider factory の初期化失敗（「判定エンジンを初期化できませんでした: <reason>」）も、理由を明示して失敗します。factory 初期化失敗時の UI status は deferred-engine の「発話文の判定を保留しました。判定エンジンを初期化できませんでした: <reason>」のままです。`SessionFileProcessingService` は typed failed result を一度返し、書き出しを行わず、processor の idle resources を解放します。再試行失敗の `onUpdate` で `partialFailure` を通知しません。Engine は実際の失敗 message を保持した一件の background `processing_failure` event と一件の `state.failures` entry を生成し、`severity=error`、`stage=decisions`、`recovery_action=retry_decisions` を使います。失敗した再試行の新規 run は失敗完了の保存を試み、全 run の `succeeded: false` completion が durable に保存された failed end は起動時に自動再実行しません。失敗完了の保存で実 I/O error が起きた場合は元の判定失敗と保存失敗の両方を明示し、その run の durable な終了とは扱いません。未完了の run は起動時に公開済み snapshot から自動 recovery し、未公開 run の部分結果は使いません。durable failed end で残った公開済み保留の再試行は利用者の明示操作に限ります。
+明示的・復旧の判定再試行で新たに要求した境界または優先度判定が実際に失敗した場合、`NativeSessionProcessor` は元の `localizedDescription` を理由として一つの typed `SessionProcessingResult.failed` を返し、message は `発話文の判定を再試行できませんでした: <reason>` です。同じ処理内で自動再要求せず、ASR・VAD は再実行しません。再試行対象なし（「判定の再試行対象がありません」）、無効な判定 engine（「判定エンジンが利用できません」）、provider factory の初期化失敗（「判定エンジンを初期化できませんでした: <reason>」）も、理由を明示して失敗します。factory 初期化失敗時の UI status は deferred-engine の「発話文の判定を保留しました。判定エンジンを初期化できませんでした: <reason>」のままです。`SessionFileProcessingService` は typed failed result を一度返し、書き出しを行わず、processor の idle resources を解放します。再試行失敗の `onUpdate` で `partialFailure` を通知しません。Engine は実際の失敗 message を保持した一件の background `processing_failure` event と一件の `state.failures` entry を生成し、`severity=error`、`stage=decisions`、`recovery_action=retry_decisions` を使います。失敗した再試行の新規 run は失敗完了の保存を試み、全 run の `succeeded: false` completion が durable に保存された failed end は起動時に自動再実行しません。失敗完了の保存で実 I/O error が起きた場合は元の判定失敗と保存失敗の両方を明示し、その run の durable な終了とは扱いません。未完了の run は起動時に公開済み snapshot から自動 recovery し、未公開 run の部分結果は使いません。durable failed end で残った公開済み保留の再試行は利用者の明示操作に限ります。
 
 CancellationError または取り消し済み task を paused / held として扱い、cancelled warning「処理は中断されました。次回の起動時に再開できます」を通知するのは、durable outcome が成立する前で、失敗終了の cleanup を始める前に限ります。この場合は公開済みの保留を保持し、failed result、background `processing_failure` event、`state.failures` entry、失敗した run 完了イベントを作りません。成功 run の `processing.run.completed` だけでは snapshot の公開ではありません。metadata に新 snapshot が公開される前の中断は、公開済み snapshot を保ったまま保留・復旧の対象です。一方、snapshot の metadata 公開が成立した後は、その結果を completed とし、遅れて届く cancellation や設定変更・shutdown による pause で held / cancelled に戻したり `resumeHeld` で再実行したりしません。失敗終了 cleanup で全ての `succeeded: false` completion が durable に保存された場合も `.failed` を維持し、遅れて届く cancellation や設定変更・shutdown で held / cancelled に戻しません。判定失敗後の cleanup は開始直前に cancellation を一度だけ確認し、開始した後はキャンセルを再確認せず新規 run の失敗完了を保存します。保存時の実 I/O error はキャンセル状態でも失敗として伝播します。provider factory 自身は load closure が throw した CancellationError も factory の寿命中 cache して失敗として返しますが、判定再試行は上記の時点に応じて cancellation を解釈します。factory の cache 規則は変わりません。
 

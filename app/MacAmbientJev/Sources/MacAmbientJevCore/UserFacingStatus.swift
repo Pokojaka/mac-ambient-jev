@@ -11,8 +11,6 @@ public enum UserFacingStatus: Sendable, Equatable {
     case loadingASR
     case asrBacklogged
     case liveTranscriptionThermalSuspended
-    case preparingDiarization
-    case diarizing
     case classifyingContent
     case decisionDeferred
     case finalizationPausedForHeat
@@ -39,10 +37,6 @@ public enum UserFacingStatus: Sendable, Equatable {
             return "文字起こし処理が遅れています"
         case .liveTranscriptionThermalSuspended:
             return "発熱のためライブ表示を一時停止中"
-        case .preparingDiarization:
-            return "話者分離を準備しています"
-        case .diarizing:
-            return "話者を分離しています"
         case .classifyingContent:
             return "発話文の境界と優先度を判定しています"
         case .decisionDeferred:

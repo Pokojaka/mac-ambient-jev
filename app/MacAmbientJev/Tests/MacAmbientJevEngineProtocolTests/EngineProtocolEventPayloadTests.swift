@@ -102,10 +102,10 @@ struct EngineProtocolEventPayloadTests {
         #expect(throws: (any Error).self) {
             try EngineRowsPayload(sessionID: "s", revision: engineID(1), kind: .reloadRequired, rows: [], removedRowIDs: [], nextCursor: "more")
         }
-        #expect(throws: (any Error).self) { try EngineTranscriptRow(rowID: "", startMS: 0, endMS: 0, text: "x", headings: [], clauseState: nil) }
-        #expect(throws: (any Error).self) { try EngineTranscriptRow(rowID: "r", startMS: -1, endMS: 0, text: "x", headings: [], clauseState: nil) }
-        #expect(throws: (any Error).self) { try EngineTranscriptRow(rowID: "r", startMS: 2, endMS: 1, text: "x", headings: [], clauseState: nil) }
-        #expect(throws: (any Error).self) { try EngineTranscriptRow(rowID: "r", startMS: 0, endMS: 0, text: " \n\t", headings: [], clauseState: nil) }
+        #expect(throws: (any Error).self) { try EngineTranscriptRow(rowID: "", startMS: 0, endMS: 0, text: "x", clauseState: nil) }
+        #expect(throws: (any Error).self) { try EngineTranscriptRow(rowID: "r", startMS: -1, endMS: 0, text: "x", clauseState: nil) }
+        #expect(throws: (any Error).self) { try EngineTranscriptRow(rowID: "r", startMS: 2, endMS: 1, text: "x", clauseState: nil) }
+        #expect(throws: (any Error).self) { try EngineTranscriptRow(rowID: "r", startMS: 0, endMS: 0, text: " \n\t", clauseState: nil) }
         #expect(throws: (any Error).self) { try EngineTranscriptPage(sessionID: "", revision: engineID(1), rows: [], nextCursor: nil, previousCursor: nil) }
         #expect(throws: (any Error).self) { try EngineTranscriptPage(sessionID: "s", revision: engineID(1), rows: [], nextCursor: "", previousCursor: nil) }
     }
@@ -289,11 +289,11 @@ func engineTestPresentation() throws -> EnginePresentationState {
 }
 
 private func sampleRow() throws -> EngineTranscriptRow {
-    try EngineTranscriptRow(rowID: "row-1", startMS: 12, endMS: 34, text: "日本語の文字起こし", headings: [.speaker1, .other], clauseState: nil)
+    try EngineTranscriptRow(rowID: "row-1", startMS: 12, endMS: 34, text: "日本語の文字起こし", clauseState: nil)
 }
 
 private func makeRow(_ id: String) throws -> EngineTranscriptRow {
-    try EngineTranscriptRow(rowID: id, startMS: 0, endMS: 1, text: "text", headings: [], clauseState: .classified)
+    try EngineTranscriptRow(rowID: id, startMS: 0, endMS: 1, text: "text", clauseState: .classified)
 }
 
 private func engineID(_ value: UInt64) throws -> EngineID {

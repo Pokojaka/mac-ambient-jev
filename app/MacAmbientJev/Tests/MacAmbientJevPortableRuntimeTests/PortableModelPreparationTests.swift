@@ -69,13 +69,13 @@ struct PortableModelPreparationTests {
         let steps = [
             PortableModelPreparationService.Step(model: .vad, validate: {}, load: { log.record("load vad") }),
             PortableModelPreparationService.Step(model: .asr, validate: { throw failure }, load: { log.record("load asr") }),
-            PortableModelPreparationService.Step(model: .diarization, validate: { log.record("validate diarization") }, load: {}),
+            PortableModelPreparationService.Step(model: .clauseTagger, validate: { log.record("validate clause tagger") }, load: {}),
         ]
         await #expect(throws: failure) {
             try await PortableModelPreparationService.run(steps: steps, onProgress: { log.progress($0) })
         }
         #expect(!log.snapshot.events.contains("load vad"))
-        #expect(!log.snapshot.events.contains("validate diarization"))
+        #expect(!log.snapshot.events.contains("validate clause tagger"))
     }
 
     @Test func aLoadFailurePropagatesAndSkipsLaterModels() async throws {
@@ -99,9 +99,6 @@ struct PortableModelPreparationTests {
         for size in Qwen3ASRModelSize.allCases {
             #expect(layout.qwen3Directory(size: size).path == "/downloaded/qwen3-asr-\(size.rawValue)-int4-\(size.commit)")
         }
-        let diarization = try layout.diarizationDirectory()
-        #expect(diarization.deletingLastPathComponent().path == "/downloaded/community1")
-        #expect(diarization.lastPathComponent.count == 64)
         let source = try ClauseTaggerManifest.bundled().source
         #expect(source.commit == "5c0213592cf8d59fc0b665183ab7536ddde05d1f")
         #expect(try layout.clauseTaggerDirectory().path == "/bundled/clause-tagger/\(source.commit)/clause-tagger-onnx")
@@ -118,13 +115,13 @@ struct PortableModelPreparationTests {
         #expect(withDecisions.clauseTaggerModelDirectory == (try layout.clauseTaggerDirectory()))
         #expect(withDecisions.qwen3Size == .large)
         #expect(withDecisions.threads == 2)
-        #expect(try PortableModelPreparationService.steps(for: withDecisions).map(\.model) == PortableModelKind.allCases)
+        #expect(PortableModelPreparationService.steps(for: withDecisions).map(\.model) == [.vad, .asr, .clauseTagger])
 
         let without = try PortableProcessingConfiguration.installed(
             layout: layout, qwen3Size: .small, threads: 1, logicalCPUCount: 8, withDecisions: false
         )
         #expect(without.clauseTaggerModelDirectory == nil)
-        #expect(try PortableModelPreparationService.steps(for: without).map(\.model) == [.vad, .asr, .diarization])
+        #expect(PortableModelPreparationService.steps(for: without).map(\.model) == [.vad, .asr])
 
         for threads in [0, 5] {
             #expect(throws: PortableProcessingConfigurationError.self) {
@@ -148,13 +145,12 @@ struct PortableModelPreparationTests {
             sileroModelURL: root.appending(path: "silero/model.onnx"),
             qwen3ModelDirectory: root.appending(path: "qwen3", directoryHint: .isDirectory),
             qwen3Size: .small,
-            diarizationModelDirectory: root.appending(path: "diarization", directoryHint: .isDirectory),
             clauseTaggerModelDirectory: tagger,
             threads: 1,
             sileroGuidance: "s",
             clauseTaggerGuidance: "g"
         )
-        let steps = try PortableModelPreparationService.steps(for: configuration)
+        let steps = PortableModelPreparationService.steps(for: configuration)
         let step = try #require(steps.first { $0.model == .clauseTagger })
 
         do {
@@ -229,7 +225,7 @@ struct PortableModelPreparationTests {
         let log = ProgressLog()
         try await PortableModelPreparationService().prepare(configuration: configuration, onProgress: { log.progress($0) })
         let progress = log.snapshot.progress
-        let models = configuration.clauseTaggerModelDirectory == nil ? 3 : 4
+        let models = configuration.clauseTaggerModelDirectory == nil ? 2 : 3
         #expect(progress.count == 2 * (models + 1))
         #expect(progress.last == .init(stage: .loading, model: nil, completed: models, total: models))
     }

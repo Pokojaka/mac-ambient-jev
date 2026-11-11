@@ -119,7 +119,6 @@ final class DiagnosticsInferenceProvider: EngineInferenceProviding, @unchecked S
         return EngineInference(
             engines: SessionProcessingEngines(
                 asr: FakeASR(calls: calls),
-                diarization: FakeDiarizer(calls: calls),
                 finalTranscriptVAD: FakeFinalVAD()
             ),
             contentPriority: .localTagger({ try factory.makeCoordinator() }, usageCounter: usageCounter),

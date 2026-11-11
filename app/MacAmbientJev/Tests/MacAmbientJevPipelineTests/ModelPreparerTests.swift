@@ -13,7 +13,7 @@ private final class FakeProvisioning: ModelProvisioning {
         var holdFirstFetch = false
     }
     private let state = Mutex(State())
-    let sizes: [MacModel: Int64] = [.asr: 2_400, .diarization: 21, .vad: 3]
+    let sizes: [MacModel: Int64] = [.asr: 2_400, .vad: 3]
 
     init(fetched: Set<MacModel> = []) { state.withLock { $0.fetched = fetched } }
 
@@ -53,7 +53,7 @@ private struct RecordingASR: ASREngine {
 @MainActor
 @Test
 func missingModelsAreFetchedSmallestFirstThenVerified() async {
-    let provisioning = FakeProvisioning(fetched: [.diarization])
+    let provisioning = FakeProvisioning()
     let preparer = ModelPreparer(provisioning: provisioning, asr: RecordingASR())
     var phases: [ModelPreparationStatus.Phase] = []
     preparer.onChange = { phases.append($0.phase) }
@@ -64,9 +64,10 @@ func missingModelsAreFetchedSmallestFirstThenVerified() async {
     await preparer.runTask?.value
 
     #expect(provisioning.calls == [
-        "fetch:vad", "fetch:asr", "verify:vad", "verify:diarization"
+        "fetch:vad", "fetch:asr", "verify:vad"
     ])
     #expect(preparer.status.phase == .ready)
+    #expect(provisioning.isFetched(.asr) && provisioning.isFetched(.vad))
     #expect(preparer.status.bytesDone == 2_403)
     #expect(phases.contains(.loading))
     #expect(!preparer.isRunning)
@@ -88,7 +89,7 @@ func concurrentTriggersJoinTheRunningPreparation() async {
     provisioning.releaseHeldFetch()
     await preparer.runTask?.value
 
-    #expect(provisioning.calls.filter { $0.hasPrefix("fetch:") } == ["fetch:vad", "fetch:diarization", "fetch:asr"])
+    #expect(provisioning.calls.filter { $0.hasPrefix("fetch:") } == ["fetch:vad", "fetch:asr"])
     #expect(preparer.status.phase == .ready)
 }
 
@@ -96,7 +97,7 @@ func concurrentTriggersJoinTheRunningPreparation() async {
 @Test
 func aFailureStopsTheRunAndOnlyRetryStartsAnother() async {
     let provisioning = FakeProvisioning()
-    provisioning.failNextFetch(of: .diarization)
+    provisioning.failNextFetch(of: .asr)
     let preparer = ModelPreparer(provisioning: provisioning, asr: RecordingASR())
 
     preparer.ensurePrepared(after: nil)
@@ -106,20 +107,20 @@ func aFailureStopsTheRunAndOnlyRetryStartsAnother() async {
         Issue.record("the run must end in a failure: \(preparer.status.phase)")
         return
     }
-    #expect(reason.contains("話者分離") && reason.contains("切断されました"))
-    #expect(provisioning.calls == ["fetch:vad", "fetch:diarization"])
+    #expect(reason.contains("切断されました"))
+    #expect(provisioning.calls == ["fetch:vad", "fetch:asr"])
     #expect(!preparer.isRunning)
 
     preparer.ensurePrepared(after: nil)
     preparer.ensurePrepared(after: nil)
     #expect(!preparer.isRunning)
-    #expect(provisioning.calls == ["fetch:vad", "fetch:diarization"])
+    #expect(provisioning.calls == ["fetch:vad", "fetch:asr"])
 
     preparer.retry(after: nil)
     await preparer.runTask?.value
     #expect(preparer.status.phase == .ready)
     #expect(provisioning.calls.filter { $0 == "fetch:vad" }.count == 1)
-    #expect(provisioning.calls.filter { $0 == "fetch:diarization" }.count == 2)
+    #expect(provisioning.calls.filter { $0 == "fetch:asr" }.count == 2)
 }
 
 @MainActor

@@ -1,5 +1,4 @@
 import Foundation
-import MacAmbientJevDiarization
 
 /// Where `models.prepare` expects the pinned model assets, derived from the bundled manifests and pins.
 /// Nothing here reads the environment or the disk.
@@ -9,7 +8,7 @@ public struct PortableInstalledModelLayout: Sendable, Equatable {
 
     /// Read-only models shipped with the app: Silero VAD and the clause tagger.
     public let bundledRoot: URL
-    /// Models `models.prepare` downloads: Qwen3-ASR and community-1.
+    /// Models `models.prepare` downloads: Qwen3-ASR.
     public let downloadedRoot: URL
 
     public init(bundledRoot: URL, downloadedRoot: URL) {
@@ -28,13 +27,6 @@ public struct PortableInstalledModelLayout: Sendable, Equatable {
     /// `qwen3-asr-<size>-int4-<commit>`, the directory `scripts/fetch_qwen3_asr_model.py` creates under `downloadedRoot`.
     public func qwen3Directory(size: Qwen3ASRModelSize) -> URL {
         downloadedRoot.appending(path: "qwen3-asr-\(size.rawValue)-int4-\(size.commit)", directoryHint: .isDirectory)
-    }
-
-    /// `community1/<SHA-256 of the bundled manifest>`
-    public func diarizationDirectory() throws -> URL {
-        downloadedRoot
-            .appending(path: "community1", directoryHint: .isDirectory)
-            .appending(path: try Community1Assets.pinnedManifestSHA256(), directoryHint: .isDirectory)
     }
 
     /// `clause-tagger/<Hugging Face commit>/clause-tagger-onnx`
@@ -61,7 +53,6 @@ extension PortableProcessingConfiguration {
             sileroModelURL: layout.sileroModelURL,
             qwen3ModelDirectory: layout.qwen3Directory(size: qwen3Size),
             qwen3Size: qwen3Size,
-            diarizationModelDirectory: try layout.diarizationDirectory(),
             clauseTaggerModelDirectory: withDecisions ? try layout.clauseTaggerDirectory() : nil,
             threads: try validatedThreads(threads, logicalCPUCount: logicalCPUCount),
             sileroGuidance: PortableInstalledModelLayout.bundledModelGuidance,

@@ -7,7 +7,6 @@ public extension SessionProcessingEngines {
     static func production(models: MacModelStore) -> SessionProcessingEngines {
         SessionProcessingEngines(
             asr: NativeQwen3ASREngine(models: models),
-            diarization: FluidOfflineDiarizationEngine(models: models),
             finalTranscriptVAD: FluidFinalTranscriptVADSegmenter(models: models)
         )
     }

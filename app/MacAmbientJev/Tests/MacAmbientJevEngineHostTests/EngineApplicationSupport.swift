@@ -81,18 +81,6 @@ struct FakeASR: ASREngine {
     func unload() async { calls.increment("asr.unload") }
 }
 
-struct FakeDiarizer: DiarizationEngine {
-    let provenance = RunProvenance(engine: "host-test-diarizer", model: nil, version: "test", configuration: [:])
-    let calls: CallCounter
-
-    func prepare() async throws {}
-    func unload() async { calls.increment("diarization.unload") }
-    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] {
-        calls.increment("diarization")
-        return [SpeakerSpan(speakerID: "Speaker 1", startFrame: 0, endFrame: 16_000, confidence: 0.95)]
-    }
-}
-
 struct FakeFinalVAD: FinalTranscriptVADSegmenter {
     let provenance = RunProvenance(engine: "host-test-vad", model: nil, version: "test", configuration: [:])
 
@@ -173,7 +161,7 @@ final class FakeInferenceProvider: EngineInferenceProviding, @unchecked Sendable
 
     func makeInference(settings: EngineSettings) throws -> EngineInference {
         EngineInference(
-            engines: SessionProcessingEngines(asr: FakeASR(calls: calls), diarization: FakeDiarizer(calls: calls), finalTranscriptVAD: FakeFinalVAD()),
+            engines: SessionProcessingEngines(asr: FakeASR(calls: calls), finalTranscriptVAD: FakeFinalVAD()),
             contentPriority: .disabled,
             timelineBuilder: FakeTimelineBuilder(),
             makeLiveVADSession: { _, _, _, runID in FakeLiveVAD(segmentationRunID: runID) }

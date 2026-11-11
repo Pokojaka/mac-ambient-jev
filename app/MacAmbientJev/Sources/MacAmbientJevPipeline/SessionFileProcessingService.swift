@@ -448,10 +448,9 @@ public struct SessionFileProcessingService: Sendable {
             guard let metadata = try ProcessingMetadataStore(sessionURL: sessionURL).load(),
                   let runs = metadata.activeRuns,
                   runs.segmentation != nil,
-                  runs.asr != nil,
-                  runs.diarization != nil else {
+                  runs.asr != nil else {
                 throw SessionFileProcessingError.processingFailed(
-                    "export validation for session \(sessionURL.path) requires active segmentation, ASR, and diarization runs"
+                    "export validation for session \(sessionURL.path) requires active segmentation and ASR runs"
                 )
             }
             let recovered = try SessionRecovery.recoverJSONL(

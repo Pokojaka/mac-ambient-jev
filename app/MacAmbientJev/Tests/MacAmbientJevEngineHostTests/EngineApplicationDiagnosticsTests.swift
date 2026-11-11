@@ -115,7 +115,6 @@ struct EngineApplicationDiagnosticsTests {
             #expect(inference.calls.count("boundary") == 0)
             #expect(inference.calls.count("priority") == 0)
             #expect(inference.calls.count("asr") == 0)
-            #expect(inference.calls.count("diarization") == 0)
         }
     }
 
@@ -330,7 +329,6 @@ struct EngineApplicationDiagnosticsTests {
             #expect(inference.calls.count("boundary") == 1)
             #expect(inference.calls.count("priority") == 1)
             #expect(inference.calls.count("asr") == 0)
-            #expect(inference.calls.count("diarization") == 0)
         }
     }
 

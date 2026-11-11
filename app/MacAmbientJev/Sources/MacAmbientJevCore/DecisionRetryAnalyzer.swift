@@ -20,7 +20,7 @@ public struct DecisionRetryAnalyzer: Sendable {
     public func hasUnpublishedDecisionRun(lines: [Data], activeRuns: ActiveRuns) throws -> Bool {
         let decoded = try EventLogLine.decode(lines)
         let active = Set([
-            activeRuns.segmentation, activeRuns.asr, activeRuns.diarization,
+            activeRuns.segmentation, activeRuns.asr,
             activeRuns.clauseBoundary, activeRuns.contentPriority
         ].compactMap { $0 })
         let watermark = decoded.lazy.filter {
@@ -75,7 +75,7 @@ public struct DecisionRetryAnalyzer: Sendable {
             throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: "", reason: "公開された文字起こしがありません")
         }
         let log = try ClauseEventLog(lines: EventLogLine.decode(lines), selectedRuns: Set([
-            activeRuns.segmentation, activeRuns.asr, activeRuns.diarization,
+            activeRuns.segmentation, activeRuns.asr,
             activeRuns.clauseBoundary, activeRuns.contentPriority
         ].compactMap { $0 }))
         let expectedBoundary: [SegmentTextReference]

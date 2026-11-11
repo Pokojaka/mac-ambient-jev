@@ -209,7 +209,7 @@ private func testLimits(deadline: TimeInterval) -> EngineTransportLimits {
             let text = String(repeating: "あ", count: 3000)
             for id in 1...40 {
                 try await transport.send(.completed(.shutdown), requestID: EngineID(UInt64(id)))
-                let row = try EngineTranscriptRow(rowID: "r\(id)", startMS: 0, endMS: 10, text: text, headings: [], clauseState: nil)
+                let row = try EngineTranscriptRow(rowID: "r\(id)", startMS: 0, endMS: 10, text: text, clauseState: nil)
                 try transport.sendReplaceable(
                     .rows(try EngineRowsPayload(
                         sessionID: "s", revision: EngineID(UInt64(id)), kind: .changes, rows: [row], removedRowIDs: [], nextCursor: nil

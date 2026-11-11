@@ -15,8 +15,8 @@ extension EngineApplicationCore: SessionProcessingEffects {
             case .finalizationPausedForHeat, .liveTranscriptionThermalSuspended:
                 preconditionFailure("Windows engine cannot present a thermal processor status")
             case .idle, .checkingMicrophone, .startingRecording, .importingAudio, .convertingTimeline,
-                 .detectingSpeech, .preparingASR, .loadingASR, .asrBacklogged, .preparingDiarization,
-                 .diarizing, .classifyingContent, .decisionDeferred:
+                 .detectingSpeech, .preparingASR, .loadingASR, .asrBacklogged,
+                 .classifyingContent, .decisionDeferred:
                 return activity.text
             }
         case let .paused(reason):
@@ -208,7 +208,6 @@ extension EngineApplicationCore: SessionProcessingEffects {
         case UserFacingStatus.convertingTimeline.text: stage = .importing
         case UserFacingStatus.detectingSpeech.text: stage = .vad
         case UserFacingStatus.preparingASR.text, UserFacingStatus.loadingASR.text: stage = .loadingModels
-        case UserFacingStatus.preparingDiarization.text, UserFacingStatus.diarizing.text: stage = .diarization
         case UserFacingStatus.classifyingContent.text, UserFacingStatus.decisionDeferred.text: stage = .decisions
         default: stage = .finalization
         }
@@ -234,7 +233,7 @@ extension EngineApplicationCore: SessionProcessingEffects {
 // MARK: Idle release
 
 extension EngineApplicationCore {
-    /// Unloads the ASR and diarization models once the engine is idle; they load again on next use.
+    /// Unloads the ASR model once the engine is idle; it loads again on next use.
     func releaseIdleResourcesIfIdle() {
         guard isIdle, idleReleaseTask == nil, !isShuttingDown else { return }
         idleReleaseTask = Task { [self] in

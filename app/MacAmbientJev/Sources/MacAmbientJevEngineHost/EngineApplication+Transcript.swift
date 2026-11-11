@@ -32,20 +32,8 @@ extension EngineApplicationCore {
             case (nil, nil):
                 return false
             case let (old?, new?):
-                guard old.segmentID == new.segmentID,
-                      old.clauseState == new.clauseState,
-                      old.speakers.count == new.speakers.count else {
+                guard old.segmentID == new.segmentID, old.clauseState == new.clauseState else {
                     return true
-                }
-                for index in old.speakers.indices {
-                    let oldSpeaker = old.speakers[index]
-                    let newSpeaker = new.speakers[index]
-                    guard oldSpeaker.id == newSpeaker.id,
-                          oldSpeaker.startMilliseconds == newSpeaker.startMilliseconds,
-                          oldSpeaker.endMilliseconds == newSpeaker.endMilliseconds,
-                          (oldSpeaker.displayLabel ?? oldSpeaker.id) == (newSpeaker.displayLabel ?? newSpeaker.id) else {
-                        return true
-                    }
                 }
             default:
                 return true
@@ -539,7 +527,7 @@ extension EngineApplicationCore: EngineTranscriptHandling {
            snapshot.sessionID == sessionID,
            snapshot.revision == revision,
            snapshot.rowID == payload.rowID {
-            return try snapshot.page(cursor: payload.cursor, limit: payload.limit)
+            return try snapshot.page()
         }
 
         let cache: EngineTranscriptCache
@@ -574,17 +562,10 @@ extension EngineApplicationCore: EngineTranscriptHandling {
                 stage: .finalization, sessionID: sessionID, recoveryAction: .restart
             )
         }
-        guard payload.cursor == nil else {
-            throw EngineFailures.commandError(
-                .invalidCursor, "cursor に対応する文字起こし行の詳細 snapshot がありません",
-                stage: .finalization, sessionID: sessionID
-            )
-        }
-
         let snapshot = try EngineTranscriptRowDetailsSnapshot(
-            sessionID: sessionID, revision: revision, segment: segment, limit: payload.limit
+            sessionID: sessionID, revision: revision, segment: segment
         )
-        let page = try snapshot.page(cursor: nil, limit: payload.limit)
+        let page = try snapshot.page()
         transcriptRowDetailsSnapshot = snapshot
         return page
     }

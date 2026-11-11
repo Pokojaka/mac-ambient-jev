@@ -57,14 +57,4 @@ public struct SessionProcessingAudio: SessionProcessingAudioHandling {
             onCancel: { task.cancel() }
         )
     }
-
-    public func exportDiarizationAudio(
-        reader: any TimelineAudioReading,
-        to destinationURL: URL,
-        sessionURL: URL
-    ) throws {
-        try ProcessingTimelineAudioExporter(
-            framesPerBuffer: max(1, Int64(reader.info.sampleRate.rounded()))
-        ).export(reader: reader, to: destinationURL, sessionURL: sessionURL)
-    }
 }

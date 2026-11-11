@@ -5,9 +5,7 @@ import Testing
 @testable import MacAmbientJevAppleSupport
 @testable import MacAmbientJevCore
 
-private let publishedRuns = ActiveRuns(
-    segmentation: "seg_previous", asr: "asr_previous", diarization: "diar_previous"
-)
+private let publishedRuns = ActiveRuns(segmentation: "seg_previous", asr: "asr_previous")
 
 private func makeSession(_ paths: AppPaths, source: SessionSource, second: Int) throws -> SessionLayout {
     SessionLayout(sessionURL: try SessionBootstrapper(fileManager: .default).createSession(
@@ -20,8 +18,7 @@ private func publish(_ layout: SessionLayout, attempt: FinalizationAttempt.State
     let sessionID = try layout.loadManifest().sessionID
     let writer = try SessionWriter(sessionURL: layout.sessionURL)
     let localRuns: [(ProcessingStage, String)] = [
-        (.segmentation, "seg_previous"), (.asr, "asr_previous"),
-        (.diarization, "diar_previous")
+        (.segmentation, "seg_previous"), (.asr, "asr_previous")
     ]
     for (stage, runID) in localRuns {
         try await writer.append(EventDraft(
@@ -66,10 +63,6 @@ func launchMaintenanceConvergesEverySessionAndNamesTheOneItCouldNotMaintain() as
     try await publish(recordingNow, attempt: .complete)
     let compactOnly = try await publishedRecording(paths, second: 0, attempt: .complete)
     let reprocessing = try await publishedRecording(paths, second: 1, attempt: .paused)
-    let staleInput = try await publishedRecording(paths, second: 2, attempt: .complete)
-    _ = try RecordingAudioCompactor(interrupt: nil).compact(layout: staleInput)
-    try FileManager.default.createDirectory(at: staleInput.derivedDirectory, withIntermediateDirectories: true)
-    try Data("stale".utf8).write(to: staleInput.diarizationInputURL)
     let finishedImport = try makeSession(paths, source: .imported(originalFilename: "fixture.caf"), second: 3)
     try Data("original".utf8).write(to: finishedImport.audioDirectory.appending(path: "original.caf"))
     try FileManager.default.createDirectory(at: finishedImport.processingDirectory, withIntermediateDirectories: true)
@@ -93,15 +86,14 @@ func launchMaintenanceConvergesEverySessionAndNamesTheOneItCouldNotMaintain() as
         willMaintain: { count in announced.withLock { $0 = count } }
     )
 
-    #expect(announced.withLock { $0 } == 5)
-    for layout in [compactOnly, reprocessing, staleInput] {
+    #expect(announced.withLock { $0 } == 4)
+    for layout in [compactOnly, reprocessing] {
         guard case .recordingFLAC = try SessionAudioStorageStore(layout: layout).load() else {
             Issue.record("\(layout.sessionURL.lastPathComponent) is stored as FLAC")
             continue
         }
         #expect(!exists(layout.processingDirectory))
         #expect(exists(layout.recordingFLACURL))
-        #expect(!exists(layout.derivedDirectory))
     }
     #expect(!exists(finishedImport.processingDirectory))
     #expect(exists(finishedImport.audioDirectory.appending(path: "original.caf")))

@@ -34,14 +34,12 @@ private final class ServiceTestCounter: @unchecked Sendable {
 private actor EngineCallCounter {
     private(set) var asrTranscriptions = 0
     private(set) var vadRuns = 0
-    private(set) var diarizationRuns = 0
 
     func recordASR() { asrTranscriptions += 1 }
     func recordVAD() { vadRuns += 1 }
-    func recordDiarization() { diarizationRuns += 1 }
 
-    func snapshot() -> (asr: Int, vad: Int, diarization: Int) {
-        (asrTranscriptions, vadRuns, diarizationRuns)
+    func snapshot() -> (asr: Int, vad: Int) {
+        (asrTranscriptions, vadRuns)
     }
 }
 
@@ -80,19 +78,6 @@ private actor FakeServiceASR: ASREngine {
     }
 
     func unload() async {}
-}
-
-private struct FakeServiceDiarizer: DiarizationEngine {
-    let provenance = RunProvenance(engine: "service-test-diarizer", model: nil, version: "test", configuration: [:])
-    let calls: EngineCallCounter
-
-    func prepare() async throws {}
-    func unload() async {}
-
-    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] {
-        await calls.recordDiarization()
-        return [SpeakerSpan(speakerID: "Speaker 1", startFrame: 0, endFrame: 16_000, confidence: 0.95)]
-    }
 }
 
 private struct FakeServiceVAD: FinalTranscriptVADSegmenter {
@@ -280,7 +265,6 @@ private struct ServiceTestHarness {
         let asr = FakeServiceASR(calls: engineCalls, shouldFail: asrFails)
         let engines = SessionProcessingEngines(
             asr: asr,
-            diarization: FakeServiceDiarizer(calls: engineCalls),
             finalTranscriptVAD: FakeServiceVAD(calls: engineCalls, producesSpeech: producesSpeech)
         )
         let timelineBuilder = FakeServiceTimelineBuilder(samples: Array(repeating: 0.1, count: 16_000))
@@ -322,7 +306,6 @@ private struct ServiceTestHarness {
         let asr = FakeServiceASR(calls: engineCalls, shouldFail: asrFails)
         let engines = SessionProcessingEngines(
             asr: asr,
-            diarization: FakeServiceDiarizer(calls: engineCalls),
             finalTranscriptVAD: FakeServiceVAD(calls: engineCalls, producesSpeech: producesSpeech)
         )
         let timelineBuilder = FakeServiceTimelineBuilder(samples: Array(repeating: 0.1, count: 16_000))
@@ -438,7 +421,6 @@ struct SessionFileProcessingServiceTests {
         let runs = try #require(metadata.activeRuns)
         #expect(runs.segmentation != nil)
         #expect(runs.asr != nil)
-        #expect(runs.diarization != nil)
         let rows = try materializedRows(sessionURL: created.url)
         #expect(rows.map(\.text) == ["日本語のテストです。"])
         try assertExportMatchesMaterialization(outputURL: outputURL, rows: rows)
@@ -566,7 +548,6 @@ struct SessionFileProcessingServiceTests {
         #expect(metadata.finalizationAttempt?.state == .complete)
         #expect(metadata.activeRuns?.segmentation != nil)
         #expect(metadata.activeRuns?.asr != nil)
-        #expect(metadata.activeRuns?.diarization != nil)
         #expect(try Data(contentsOf: imported.originalURL) == Data(contentsOf: audioURL))
         try assertExportMatchesMaterialization(outputURL: outputURL, rows: try materializedRows(sessionURL: sessionURL))
         #expect(await recorder.exportCount() == 1)
@@ -621,7 +602,6 @@ struct SessionFileProcessingServiceTests {
         #expect(harness.resourceFactoryCalls.snapshot() == resourceCallsBeforeResume + 1)
         #expect(await harness.engineCalls.snapshot().asr == engineCallsBefore.asr)
         #expect(await harness.engineCalls.snapshot().vad == engineCallsBefore.vad)
-        #expect(await harness.engineCalls.snapshot().diarization == engineCallsBefore.diarization)
         let metadata = try #require(try ProcessingMetadataStore(sessionURL: created.url).load())
         #expect(metadata.pendingDecisionTargets.isEmpty)
         #expect(metadata.activeRuns?.clauseBoundary != nil)
@@ -663,7 +643,6 @@ struct SessionFileProcessingServiceTests {
         #expect(metadata.finalizationAttempt?.state == .complete)
         #expect(metadata.activeRuns?.segmentation != nil)
         #expect(metadata.activeRuns?.asr != nil)
-        #expect(metadata.activeRuns?.diarization != nil)
         #expect(!metadata.pendingDecisionTargets.isEmpty)
         #expect(try materializedRows(sessionURL: created.url).map(\.text) == ["日本語のテストです。"])
         #expect(!FileManager.default.fileExists(atPath: outputURL.path))

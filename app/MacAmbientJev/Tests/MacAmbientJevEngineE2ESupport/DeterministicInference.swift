@@ -38,7 +38,6 @@ public struct DeterministicInferenceProvider: EngineInferenceProviding {
         return EngineInference(
             engines: SessionProcessingEngines(
                 asr: DeterministicASR(),
-                diarization: DeterministicDiarization(),
                 finalTranscriptVAD: DeterministicFinalTranscriptVAD()
             ),
             contentPriority: .disabled,
@@ -63,15 +62,12 @@ public struct DeterministicInferenceProvider: EngineInferenceProviding {
 
 private enum DeterministicInferenceError: Error, LocalizedError, Sendable {
     case emptyASRInput
-    case unsupportedCanonicalSampleRate(Double)
     case importedAudioUnsupported
 
     var errorDescription: String? {
         switch self {
         case .emptyASRInput:
             "Deterministic ASR requires nonempty audio input"
-        case .unsupportedCanonicalSampleRate(let rate):
-            "Deterministic diarization requires canonical audio at 16000 Hz; received \(rate) Hz"
         case .importedAudioUnsupported:
             "Deterministic inference supports recording acceptance tests only; imported audio is unsupported"
         }
@@ -88,27 +84,6 @@ private struct DeterministicASR: ASREngine {
     func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
         guard !input.samples.isEmpty else { throw DeterministicInferenceError.emptyASRInput }
         return ASRResult(text: "エンジンの受け入れテストです。", detectedLanguage: nil)
-    }
-
-    func unload() async {}
-}
-
-private struct DeterministicDiarization: DiarizationEngine {
-    let provenance = RunProvenance(
-        engine: "engine-e2e-diarization", model: nil, version: "1", configuration: [:]
-    )
-
-    func prepare() async throws {}
-
-    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] {
-        guard canonicalSampleRate == CanonicalAudio.sampleRate else {
-            throw DeterministicInferenceError.unsupportedCanonicalSampleRate(canonicalSampleRate)
-        }
-        let reader = try CanonicalCAFReader(url: fileURL, sessionURL: sessionURL)
-        guard reader.sampleCount > 0 else { return [] }
-        return [SpeakerSpan(
-            speakerID: "Speaker 1", startFrame: 0, endFrame: reader.sampleCount, confidence: 1
-        )]
     }
 
     func unload() async {}

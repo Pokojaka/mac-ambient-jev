@@ -40,7 +40,7 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
         paths: paths, captureEngine: capture, microphoneAccess: { true },
         pausesProcessing: false, userDefaults: defaults,
         engines: SessionProcessingEngines(
-            asr: asr, diarization: UnusedThermalQueueDiarizer(),
+            asr: asr,
             finalTranscriptVAD: EmptyThermalQueueFinalVAD()
         ),
         modelProvisioning: ReadyModelProvisioning(),
@@ -130,7 +130,7 @@ func coolingResumesThermallyHeldFinalization() async throws {
         paths: paths, captureEngine: capture, microphoneAccess: { true },
         pausesProcessing: false, userDefaults: defaults,
         engines: SessionProcessingEngines(
-            asr: asr, diarization: UnusedThermalQueueDiarizer(),
+            asr: asr,
             finalTranscriptVAD: EmptyThermalQueueFinalVAD()
         ),
         modelProvisioning: ReadyModelProvisioning(),
@@ -238,16 +238,4 @@ private struct EmptyThermalQueueFinalVAD: FinalTranscriptVADSegmenter {
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
         []
     }
-}
-
-private struct UnusedThermalQueueDiarizer: DiarizationEngine {
-    let provenance = RunProvenance(
-        engine: "thermal-queue-diarizer", model: nil, version: "test", configuration: [:]
-    )
-    func prepare() async throws { throw UnexpectedDiarization.called }
-    func unload() async {}
-    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] {
-        throw UnexpectedDiarization.called
-    }
-    private enum UnexpectedDiarization: Error { case called }
 }

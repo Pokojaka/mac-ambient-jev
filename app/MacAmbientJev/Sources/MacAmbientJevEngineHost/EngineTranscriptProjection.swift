@@ -3,7 +3,7 @@ import MacAmbientJevCore
 import MacAmbientJevEngineProtocol
 
 /// The rows P5 shows. Row content comes from `LiveTranscriptProjection`, the projection the Mac screen and
-/// `transcript.txt` share, so filler removal, number formatting and speaker labels are decided here once.
+/// `transcript.txt` share, so filler removal and number formatting are decided here once.
 enum EngineTranscriptProjection {
     struct RowFailure: Sendable {
         let rowID: String
@@ -35,12 +35,6 @@ enum EngineTranscriptProjection {
     }
 
     private static func row(for row: LiveTranscriptRow) throws -> EngineTranscriptRow {
-        let headings = try row.displaySpeakerLabels.map { label in
-            guard let heading = EngineSpeakerLabel(rawValue: label) else {
-                throw EngineTranscriptProjectionError.unknownSpeakerLabel(label)
-            }
-            return heading
-        }
         guard let clauseState = EngineClauseState(rawValue: row.clauseState.rawValue) else {
             throw EngineTranscriptProjectionError.unknownClauseState(row.clauseState.rawValue)
         }
@@ -49,7 +43,6 @@ enum EngineTranscriptProjection {
             startMS: row.startMilliseconds,
             endMS: row.endMilliseconds,
             text: row.text,
-            headings: headings,
             clauseState: clauseState
         )
     }
@@ -62,8 +55,6 @@ enum EngineTranscriptProjection {
         private var committedRowByID: [String: EngineTranscriptRow] = [:]
         private var dirtyIDs: Set<String> = []
         private var orderedIDs: [String] = []
-        private var speakerLabels: [String: String] = [:]
-        private var speakerContextWasUncertain = false
         private var unprojectedIDs: Set<String> = []
         private var committedOrderedIDs: [String] = []
         private var cachedRows: [EngineTranscriptRow] = []
@@ -92,7 +83,6 @@ enum EngineTranscriptProjection {
             var recordedDuplicateIDs: Set<String> = []
             var segmentsByID: [String: MaterializedTranscriptSegment] = [:]
             segmentsByID.reserveCapacity(segments.count)
-            var duplicateGroups: [String: [MaterializedTranscriptSegment]] = [:]
             for segment in segments {
                 let id = segment.segmentID
                 if seenIDs.insert(id).inserted {
@@ -101,9 +91,7 @@ enum EngineTranscriptProjection {
                 } else {
                     if recordedDuplicateIDs.insert(id).inserted {
                         duplicateIDs.append(id)
-                        duplicateGroups[id] = [segmentsByID[id]!]
                     }
-                    duplicateGroups[id, default: []].append(segment)
                 }
             }
 
@@ -121,13 +109,6 @@ enum EngineTranscriptProjection {
             }
             let deletedIDs = Set(removedIDs).union(removedBaselineIDs)
             let removedRowCandidates = deletedIDs
-            let speakerContextUncertain = duplicateIDs.contains { id in
-                duplicateGroups[id, default: []].contains { !$0.speakers.isEmpty }
-                    || sourceByID[id]?.speakers.isEmpty == false
-            }
-            let speakerContextChanged = speakerContextUncertain || changedSegments.contains { id, segment in
-                (sourceByID[id]?.speakers ?? []) != segment.speakers
-            } || removedIDs.contains { sourceByID[$0]?.speakers.isEmpty == false }
             let sourceChanged = !changedSegments.isEmpty || !removedIDs.isEmpty
             let orderChanged = nextOrderedIDs != orderedIDs
 
@@ -164,33 +145,6 @@ enum EngineTranscriptProjection {
                 unprojectedIDs.remove(id)
             }
 
-            if speakerContextUncertain {
-                speakerContextWasUncertain = true
-                let diarizedIDs = sourceByID.values.filter(\.isDiarized).map(\.segmentID)
-                dirtyIDs.formUnion(diarizedIDs)
-                unprojectedIDs.formUnion(diarizedIDs)
-            } else if speakerContextChanged || speakerContextWasUncertain {
-                let spans = nextOrderedIDs
-                    .filter { !recordedDuplicateIDs.contains($0) }
-                    .compactMap { sourceByID[$0] }
-                    .flatMap(\.speakers).map { speaker in
-                        SpeakerSpan(
-                            speakerID: speaker.id,
-                            startFrame: speaker.startMilliseconds,
-                            endFrame: speaker.endMilliseconds,
-                            confidence: speaker.confidence
-                        )
-                    }
-                let nextLabels = SpeakerDisplayMapper.makeLabels(spans: spans)
-                speakerContextWasUncertain = false
-                if nextLabels != speakerLabels {
-                    speakerLabels = nextLabels
-                    let diarizedIDs = sourceByID.values.filter(\.isDiarized).map(\.segmentID)
-                    dirtyIDs.formUnion(diarizedIDs)
-                    unprojectedIDs.formUnion(diarizedIDs)
-                }
-            }
-
             let pendingIDs = orderedIDs.filter { unprojectedIDs.contains($0) }
             var projectedRows: [(id: String, row: EngineTranscriptRow?)] = []
             projectedRows.reserveCapacity(pendingIDs.count)
@@ -200,27 +154,14 @@ enum EngineTranscriptProjection {
             }
             for id in pendingIDs {
                 guard !recordedDuplicateIDs.contains(id), let segment = sourceByID[id] else { continue }
-                if speakerContextUncertain, segment.isDiarized { continue }
                 totalProjectedSegments += 1
                 do {
                     let projectedRow: EngineTranscriptRow?
-                    if segment.isDiarized {
-                        if segment.hasRecognizedText, !ClauseTextComposer.isBlank(segment.displayText) {
-                            let liveRow = try LiveTranscriptRow(
-                                segment: segment,
-                                displaySpeakerLabels: SpeakerDisplayMapper.turnLabels(for: segment, labels: speakerLabels)
-                            )
-                            projectedRow = try EngineTranscriptProjection.row(for: liveRow)
-                        } else {
-                            projectedRow = nil
-                        }
+                    let liveRows = try LiveTranscriptProjection().rows(for: [segment])
+                    if let liveRow = liveRows.first {
+                        projectedRow = try EngineTranscriptProjection.row(for: liveRow)
                     } else {
-                        let liveRows = try LiveTranscriptProjection().rows(for: [segment])
-                        if let liveRow = liveRows.first {
-                            projectedRow = try EngineTranscriptProjection.row(for: liveRow)
-                        } else {
-                            projectedRow = nil
-                        }
+                        projectedRow = nil
                     }
                     projectedRows.append((id, projectedRow))
                     projectedIDs.insert(id)
@@ -391,13 +332,11 @@ enum EngineTranscriptProjection {
 }
 
 enum EngineTranscriptProjectionError: Error, LocalizedError {
-    case unknownSpeakerLabel(String)
     case unknownClauseState(String)
     case duplicateSegmentID(String)
 
     var errorDescription: String? {
         switch self {
-        case let .unknownSpeakerLabel(label): "話者ラベル「\(label)」はプロトコルにありません"
         case let .unknownClauseState(state): "clause の状態「\(state)」はプロトコルにありません"
         case let .duplicateSegmentID(id): "文字起こし segment ID「\(id)」が重複しています"
         }

@@ -45,8 +45,8 @@ func manifestRejectsReferenceWithoutExactlyOneSource(json: String) {
 func evaluationScoresJoinedSegmentTextAgainstReference() throws {
     let segments = try JSONDecoder().decode([ASRSessionSegment].self, from: Data("""
     [
-      {"segment_id": "seg_000001", "start_ms": 0, "end_ms": 1000, "text": "ABC", "speakers": []},
-      {"segment_id": "seg_000002", "start_ms": 1000, "end_ms": 2000, "text": "公開鍵", "speakers": []}
+      {"segment_id": "seg_000001", "start_ms": 0, "end_ms": 1000, "text": "ABC"},
+      {"segment_id": "seg_000002", "start_ms": 1000, "end_ms": 2000, "text": "公開鍵"}
     ]
     """.utf8))
 

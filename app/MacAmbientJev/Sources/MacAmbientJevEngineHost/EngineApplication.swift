@@ -88,7 +88,7 @@ final class EngineApplicationCore {
     // Settings and models
     var settingsResult: EngineSettingsResult?
     /// The engines of the current settings' profile, built when settings are loaded or the profile changes.
-    /// Building reads only the bundled Silero VAD; ASR and diarization load on first use.
+    /// Building reads only the bundled Silero VAD; ASR loads on first use.
     var inference: EngineInference?
     /// `models.prepare` (requested or automatic) succeeded for the current profile.
     var modelsPrepared = false

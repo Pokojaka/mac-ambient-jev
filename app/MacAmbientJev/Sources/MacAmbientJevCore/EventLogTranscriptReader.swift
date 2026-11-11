@@ -190,28 +190,6 @@ struct ASRCompletedBody: Decodable {
     }
 }
 
-struct SpeakerSpanBody: Decodable {
-    let span: SpeakerSpan
-
-    private enum PayloadKeys: String, CodingKey {
-        case speakerID = "speaker_id"
-        case startFrame = "start_frame"
-        case endFrame = "end_frame"
-        case confidence
-    }
-
-    init(from decoder: Decoder) throws {
-        let payload = try decoder.container(keyedBy: EventLogKeys.self)
-            .nestedContainer(keyedBy: PayloadKeys.self, forKey: .payload)
-        span = SpeakerSpan(
-            speakerID: try payload.decode(String.self, forKey: .speakerID),
-            startFrame: try payload.decode(Int64.self, forKey: .startFrame),
-            endFrame: try payload.decode(Int64.self, forKey: .endFrame),
-            confidence: try payload.decodeIfPresent(Double.self, forKey: .confidence)
-        )
-    }
-}
-
 struct PayloadBody<Payload: Decodable>: Decodable {
     let payload: Payload
 }
@@ -327,26 +305,13 @@ public struct EventLogTranscriptReader: Sendable {
                     detectedLanguage: body.detectedLanguage
                 ))
 
-            case "speaker.span":
-                let runID = try line.requiredRunID()
-                guard runID == activeRuns.diarization else { continue }
-                let span = try line.body(SpeakerSpanBody.self).span
-                events.append(.speakerSpan(
-                    seq: seq,
-                    runID: runID,
-                    speakerID: span.speakerID,
-                    startFrame: span.startFrame,
-                    endFrame: span.endFrame,
-                    confidence: span.confidence
-                ))
-
             default:
                 continue
             }
         }
 
         let log = try ClauseEventLog(lines: decoded, selectedRuns: Set([
-            activeRuns.segmentation, activeRuns.asr, activeRuns.diarization,
+            activeRuns.segmentation, activeRuns.asr,
             activeRuns.clauseBoundary, activeRuns.contentPriority
         ].compactMap { $0 }))
         if let published = try log.publishedRuns(activeRuns) {

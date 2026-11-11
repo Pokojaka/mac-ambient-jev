@@ -129,7 +129,7 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
             && !modelPreparer.isRunning
     }
 
-    /// Releases the ASR and diarization models and the MLX cache once the app is idle. Model loads, live recognition,
+    /// Releases the ASR model and the MLX cache once the app is idle. Model loads, live recognition,
     /// and finalization wait for a release in progress; the engines load their models again when next used.
     func releaseIdleResourcesIfIdle() {
         guard isIdleForRelease, idleReleaseTask == nil else { return }

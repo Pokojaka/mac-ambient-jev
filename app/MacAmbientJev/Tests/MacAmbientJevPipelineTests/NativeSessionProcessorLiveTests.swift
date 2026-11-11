@@ -7,20 +7,6 @@ private enum UnexpectedLiveTestFinalization: Error {
     case called
 }
 
-private struct UnusedLiveTestDiarizer: DiarizationEngine {
-    let provenance = RunProvenance(engine: "unused-live-test-diarizer", model: nil, version: "test", configuration: [:])
-
-    func prepare() async throws {
-        throw UnexpectedLiveTestFinalization.called
-    }
-
-    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] {
-        throw UnexpectedLiveTestFinalization.called
-    }
-
-    func unload() async {}
-}
-
 private struct UnusedLiveTestVAD: FinalTranscriptVADSegmenter {
     let provenance = RunProvenance(engine: "unused-live-test-vad", model: nil, version: "test", configuration: [:])
 
@@ -146,7 +132,6 @@ func nativeSessionProcessorStreamsLiveSegmentsWithoutRealModel() async throws {
         paths: paths,
         engines: SessionProcessingEngines(
             asr: asr,
-            diarization: UnusedLiveTestDiarizer(),
             finalTranscriptVAD: UnusedLiveTestVAD()
         ),
         audioHandling: RecordingTestAudioHandling(),
@@ -294,7 +279,6 @@ func cancelledLiveTranscriptionDoesNotPublishInFlightResult() async throws {
         paths: paths,
         engines: SessionProcessingEngines(
             asr: asr,
-            diarization: UnusedLiveTestDiarizer(),
             finalTranscriptVAD: UnusedLiveTestVAD()
         ),
         audioHandling: RecordingTestAudioHandling(),
@@ -343,15 +327,6 @@ private struct LiveProcessorFinalVAD: FinalTranscriptVADSegmenter {
     let provenance = RunProvenance(engine: "fixture-vad", model: nil, version: "test", configuration: [:])
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
         [SegmentReference(segmentationRunID: runID, segmentID: "final", startFrame: 0, endFrame: 16_000)]
-    }
-}
-
-private struct LiveProcessorFinalDiarizer: DiarizationEngine {
-    let provenance = RunProvenance(engine: "fixture-diarizer", model: nil, version: "test", configuration: [:])
-    func prepare() async throws {}
-    func unload() async {}
-    func diarize(fileURL: URL, canonicalSampleRate: Double, sessionURL: URL) async throws -> [SpeakerSpan] {
-        [SpeakerSpan(speakerID: "S1", startFrame: 0, endFrame: 16_000, confidence: 0.95)]
     }
 }
 
@@ -475,7 +450,7 @@ private struct NativeDecisionFixture {
         asr = ScriptedLiveProcessorASR(texts: texts)
         processor = NativeSessionProcessor(
             paths: paths,
-            engines: SessionProcessingEngines(asr: asr, diarization: LiveProcessorFinalDiarizer(), finalTranscriptVAD: LiveProcessorFinalVAD()),
+            engines: SessionProcessingEngines(asr: asr, finalTranscriptVAD: LiveProcessorFinalVAD()),
             audioHandling: RecordingTestAudioHandling(),
             contentPriority: .localTagger(factory, usageCounter: counter),
             sleep: { _ in }
@@ -1136,7 +1111,7 @@ func nativeRetryWithoutContentPriorityFailsAndRetainsPublishedSnapshot() async t
     let disabledProcessor = NativeSessionProcessor(
         paths: fixture.paths,
         engines: SessionProcessingEngines(
-            asr: fixture.asr, diarization: LiveProcessorFinalDiarizer(), finalTranscriptVAD: LiveProcessorFinalVAD()
+            asr: fixture.asr, finalTranscriptVAD: LiveProcessorFinalVAD()
         ),
         audioHandling: RecordingTestAudioHandling(), contentPriority: .disabled, sleep: { _ in }
     )

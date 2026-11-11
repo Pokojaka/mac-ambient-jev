@@ -1,7 +1,7 @@
 import Foundation
 import MacAmbientJevCore
 
-/// How the preparer reaches the three model directories. The Mac app implements it over its
+/// How the preparer reaches both model directories. The Mac app implements it over its
 /// model store; tests use stand-ins.
 public protocol ModelProvisioning: Sendable {
     func byteCount(_ model: MacModel) -> Int64
@@ -12,7 +12,7 @@ public protocol ModelProvisioning: Sendable {
     func verify(_ model: MacModel) async throws
 }
 
-/// Owns fetching, verifying and loading all three models. One run at a time; callers that arrive
+/// Owns fetching, verifying and loading both models. One run at a time; callers that arrive
 /// while a run is going join it.
 ///
 /// A run fetches the models that are not on disk, smallest first and one at a time, and only then

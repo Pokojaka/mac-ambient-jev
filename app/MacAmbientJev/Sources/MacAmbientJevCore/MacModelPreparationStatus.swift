@@ -3,13 +3,11 @@ import Foundation
 /// The models the Mac app downloads, pinned in `Resources/mac_models.json`.
 public enum MacModel: String, CaseIterable, Sendable {
     case asr
-    case diarization
     case vad
 
     public var displayName: String {
         switch self {
         case .asr: "音声認識"
-        case .diarization: "話者分離"
         case .vad: "発話区間検出"
         }
     }
@@ -24,7 +22,7 @@ public enum MacModelState: Equatable, Sendable {
     case failed(String)
 }
 
-/// What the Settings screen and the live and finalization gates read about the three models.
+/// What the Settings screen and the live and finalization gates read about both model directories.
 public struct ModelPreparationStatus: Equatable, Sendable {
     public enum Phase: Equatable, Sendable {
         case idle

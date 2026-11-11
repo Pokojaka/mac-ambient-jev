@@ -176,10 +176,7 @@ final class FakeEngineHandlers:
             revision: payload.revision,
             rowID: payload.rowID,
             clauseState: .classified,
-            clauseStateText: "発話文: 判定済み",
-            speakers: [],
-            nextCursor: nil,
-            previousCursor: nil
+            clauseStateText: "発話文: 判定済み"
         )
     }
 

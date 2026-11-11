@@ -129,7 +129,7 @@ public struct EngineModelProgress: Sendable, Equatable {
 /// The installed-model inference stack. The Host never imports ONNX or PortableRuntime; the Windows engine
 /// composes `PortableRuntime` behind this protocol and tests compose deterministic fakes.
 public protocol EngineInferenceProviding: Sendable {
-    /// Downloads the missing ASR and diarization files, then verifies the installed models of the settings' profile
+    /// Downloads the missing ASR files, then verifies the installed models of the settings' profile
     /// and loads each once. Throws `EngineAdapterError` with `model_missing`, `model_corrupt`, `model_failure`,
     /// `model_download` or `filesystem`.
     func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws

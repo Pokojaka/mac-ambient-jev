@@ -3,7 +3,6 @@ import Foundation
 public enum TranscriptEventKind: Sendable, Equatable {
     case segmentCreated
     case asrCompleted(ASRResult)
-    case speakerSpan(SpeakerSpan)
     case clauseBoundaryAssessed(ClauseBoundaryAssessment)
     case clauseBoundaryPending(ClauseBoundaryPendingPayload)
     case clauseClosed(ClauseUnit)
@@ -64,26 +63,6 @@ public struct TranscriptEvent: Sendable, Equatable {
         )
     }
 
-    public static func speakerSpan(
-        seq: UInt64, runID: String, speakerID: String,
-        startFrame: Int64, endFrame: Int64, confidence: Double?
-    ) -> TranscriptEvent {
-        TranscriptEvent(
-            eventSeq: seq,
-            processingRunID: runID,
-            sourceStartFrame: startFrame,
-            sourceEndFrame: endFrame,
-            kind: .speakerSpan(
-                SpeakerSpan(
-                    speakerID: speakerID,
-                    startFrame: startFrame,
-                    endFrame: endFrame,
-                    confidence: confidence
-                )
-            )
-        )
-    }
-
     /// One clause event of `runID`; clause events carry their sources in the payload.
     public static func clause(seq: UInt64, runID: String, kind: TranscriptEventKind) -> TranscriptEvent {
         TranscriptEvent(eventSeq: seq, processingRunID: runID, kind: kind)
@@ -96,40 +75,6 @@ public struct TranscriptEvent: Sendable, Equatable {
         return try SegmentTextReference(
             segmentationRunID: segmentationRunID, segmentID: segmentID, asrRunID: runID, asrEventSeq: eventSeq
         )
-    }
-}
-
-public struct MaterializedSpeakerSpan: Encodable, Sendable, Equatable {
-    public let id: String
-    public let startMilliseconds: Int64
-    public let endMilliseconds: Int64
-    public let confidence: Double?
-    public let displayLabel: String?
-
-    public init(
-        id: String, startMilliseconds: Int64, endMilliseconds: Int64,
-        confidence: Double?, displayLabel: String?
-    ) {
-        self.id = id
-        self.startMilliseconds = startMilliseconds
-        self.endMilliseconds = endMilliseconds
-        self.confidence = confidence
-        self.displayLabel = displayLabel
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case id
-        case startMilliseconds = "start_ms"
-        case endMilliseconds = "end_ms"
-        case confidence
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(id, forKey: .id)
-        try container.encode(startMilliseconds, forKey: .startMilliseconds)
-        try container.encode(endMilliseconds, forKey: .endMilliseconds)
-        try container.encodeIfPresent(confidence, forKey: .confidence)
     }
 }
 
@@ -210,8 +155,7 @@ public struct MaterializedClause: Sendable, Equatable {
     var isPriorityUnresolved: Bool { !isBlank && (priority == nil || needsRetry) }
 }
 
-/// One transcript segment of the active runs. Encoded as a `segments.json` entry;
-/// `isDiarized` is not part of that file.
+/// One transcript segment of the active runs. Encoded as a `segments.json` entry.
 public struct MaterializedTranscriptSegment: Encodable, Sendable, Equatable, Identifiable {
     public var id: String { segmentID }
     public var hasRecognizedText: Bool { ASRRecognitionOutcome(text: text) == .recognized }
@@ -224,18 +168,14 @@ public struct MaterializedTranscriptSegment: Encodable, Sendable, Equatable, Ide
     public let textProjection: CleanedTranscriptText
     /// Display-only text shown on screen and in transcript.txt, with fillers, backchannels, and saved low-priority clauses removed before numeral formatting.
     public let displayText: String
-    public let speakers: [MaterializedSpeakerSpan]
     /// Nil only when the segment has no recognized text.
     public let clauseState: TranscriptClauseState?
     public let clauseSlices: [ClauseRowSlice]
-    /// True when the result comes from a diarization run, even if no span overlaps this segment.
-    public let isDiarized: Bool
 
     public init(
         segmentID: String, source: SegmentTextReference, startMilliseconds: Int64, endMilliseconds: Int64,
         text: String, textProjection: CleanedTranscriptText,
-        speakers: [MaterializedSpeakerSpan],
-        clauseState: TranscriptClauseState?, clauseSlices: [ClauseRowSlice], isDiarized: Bool
+        clauseState: TranscriptClauseState?, clauseSlices: [ClauseRowSlice]
     ) throws {
         self.segmentID = segmentID
         self.source = source
@@ -246,10 +186,8 @@ public struct MaterializedTranscriptSegment: Encodable, Sendable, Equatable, Ide
         self.displayText = try Self.displayText(
             segmentID: segmentID, source: source, text: text, projection: textProjection, clauseSlices: clauseSlices
         )
-        self.speakers = speakers
         self.clauseState = clauseState
         self.clauseSlices = clauseSlices
-        self.isDiarized = isDiarized
     }
 
     enum CodingKeys: String, CodingKey {
@@ -259,7 +197,6 @@ public struct MaterializedTranscriptSegment: Encodable, Sendable, Equatable, Ide
         case endMilliseconds = "end_ms"
         case text
         case displayText = "display_text"
-        case speakers
         case clauseState = "clause_state"
         case clauseSlices = "clause_slices"
     }
@@ -272,7 +209,6 @@ public struct MaterializedTranscriptSegment: Encodable, Sendable, Equatable, Ide
         try c.encode(endMilliseconds, forKey: .endMilliseconds)
         try c.encode(text, forKey: .text)
         try c.encode(displayText, forKey: .displayText)
-        try c.encode(speakers, forKey: .speakers)
         try c.encode(clauseState, forKey: .clauseState)
         try c.encode(clauseSlices, forKey: .clauseSlices)
     }
@@ -388,7 +324,6 @@ public struct TranscriptMaterializer: Sendable {
             createdSeqs[segmentID] = event.eventSeq
         }
         var asrResults: [String?: [String: (result: ASRResult, source: SegmentTextReference)]] = [:]
-        var speakerSpans: [SpeakerSpan] = []
         var boundaryInputs: [(seq: UInt64, source: SegmentTextReference, state: ClauseBoundaryState)] = []
         var storedClauses: [ClauseUnit] = []
         var assignments: [ClauseReference: ClausePriorityAssignment] = [:]
@@ -401,8 +336,6 @@ public struct TranscriptMaterializer: Sendable {
                     throw TranscriptMaterializationError.missingClauseSource
                 }
                 asrResults[event.segmentationRunID, default: [:]][segmentID] = (result, source)
-            case .speakerSpan(let span) where event.processingRunID == activeRuns.diarization:
-                speakerSpans.append(span)
             case .clauseBoundaryAssessed(let assessment) where event.processingRunID == activeRuns.clauseBoundary:
                 boundaryInputs.append((event.eventSeq, assessment.source, .assessed(assessment)))
             case .clauseBoundaryPending(let pending) where event.processingRunID == activeRuns.clauseBoundary:
@@ -517,7 +450,6 @@ public struct TranscriptMaterializer: Sendable {
             throw TranscriptMaterializationError.unknownPriorityClause(clauseID: unknown.clauseID)
         }
 
-        let speakerLabels = SpeakerDisplayMapper.makeLabels(spans: speakerSpans)
         let segmentEvents = ordered.filter { event in
             guard case .segmentCreated = event.kind else { return false }
             return activeRuns.segmentation == nil
@@ -531,19 +463,6 @@ public struct TranscriptMaterializer: Sendable {
                   let endFrame = segmentEvent.sourceEndFrame,
                   let asr = asrResults[segmentEvent.segmentationRunID]?[segmentID] else {
                 continue
-            }
-
-            let speakers = speakerSpans.compactMap { span -> MaterializedSpeakerSpan? in
-                let clippedStart = max(startFrame, span.startFrame)
-                let clippedEnd = min(endFrame, span.endFrame)
-                guard clippedStart < clippedEnd else { return nil }
-                return MaterializedSpeakerSpan(
-                    id: span.speakerID,
-                    startMilliseconds: milliseconds(forFrame: clippedStart),
-                    endMilliseconds: milliseconds(forFrame: clippedEnd),
-                    confidence: span.confidence,
-                    displayLabel: speakerLabels[span.speakerID]
-                )
             }
 
             let source = asr.source
@@ -584,10 +503,8 @@ public struct TranscriptMaterializer: Sendable {
                 endMilliseconds: milliseconds(forFrame: endFrame),
                 text: asr.result.text,
                 textProjection: projection,
-                speakers: speakers,
                 clauseState: state,
-                clauseSlices: slices,
-                isDiarized: activeRuns.diarization != nil
+                clauseSlices: slices
             ))
         }
         return segments.sorted { $0.startMilliseconds < $1.startMilliseconds }
@@ -605,11 +522,9 @@ public struct LiveTranscriptRow: Sendable, Equatable, Identifiable {
     public let endMilliseconds: Int64
     /// The segment's `displayText`; never blank.
     public let text: String
-    public let speakers: [MaterializedSpeakerSpan]
-    public let displaySpeakerLabels: [String]
     public let clauseState: TranscriptClauseState
 
-    public init(segment: MaterializedTranscriptSegment, displaySpeakerLabels: [String]) throws {
+    public init(segment: MaterializedTranscriptSegment) throws {
         guard let state = segment.clauseState else {
             throw TranscriptMaterializationError.missingClauseState(segmentID: segment.segmentID)
         }
@@ -617,8 +532,6 @@ public struct LiveTranscriptRow: Sendable, Equatable, Identifiable {
         self.startMilliseconds = segment.startMilliseconds
         self.endMilliseconds = segment.endMilliseconds
         self.text = segment.displayText
-        self.speakers = segment.speakers
-        self.displaySpeakerLabels = displaySpeakerLabels
         self.clauseState = state
     }
 }
@@ -627,17 +540,10 @@ public struct LiveTranscriptRow: Sendable, Equatable, Identifiable {
 public struct LiveTranscriptProjection: Sendable {
     public init() {}
     public func rows(for segments: [MaterializedTranscriptSegment]) throws -> [LiveTranscriptRow] {
-        let allSpeakerSpans = segments.flatMap(\.speakers).map {
-            SpeakerSpan(speakerID: $0.id, startFrame: $0.startMilliseconds, endFrame: $0.endMilliseconds, confidence: $0.confidence)
-        }
-        let labels = SpeakerDisplayMapper.makeLabels(spans: allSpeakerSpans)
         var rows: [LiveTranscriptRow] = []
         for segment in segments where segment.hasRecognizedText {
             guard !ClauseTextComposer.isBlank(segment.displayText) else { continue }
-            rows.append(try LiveTranscriptRow(
-                segment: segment,
-                displaySpeakerLabels: segment.isDiarized ? SpeakerDisplayMapper.turnLabels(for: segment, labels: labels) : []
-            ))
+            rows.append(try LiveTranscriptRow(segment: segment))
         }
         return rows
     }

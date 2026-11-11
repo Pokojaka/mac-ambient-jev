@@ -22,7 +22,6 @@ private struct Fixture {
         ]
         for (key, name) in [
             (Key.qwen3DirectoryKey, "qwen3"),
-            (Key.diarizationDirectoryKey, "diarization"),
             (Key.clauseTaggerDirectoryKey, "tagger"),
         ] {
             let directory = root.appendingPathComponent(name, isDirectory: true)
@@ -66,7 +65,6 @@ struct PortableProcessingConfigurationTests {
         #expect(configuration.sileroModelURL.path == fixture.environment[Key.sileroModelKey])
         #expect(configuration.qwen3ModelDirectory.path == fixture.environment[Key.qwen3DirectoryKey])
         #expect(configuration.qwen3Size == .small)
-        #expect(configuration.diarizationModelDirectory.path == fixture.environment[Key.diarizationDirectoryKey])
         #expect(configuration.clauseTaggerModelDirectory == nil)
         #expect(configuration.threads == 2)
     }
@@ -84,7 +82,7 @@ struct PortableProcessingConfigurationTests {
 
     @Test(arguments: [
         Key.sileroModelKey, Key.qwen3DirectoryKey, Key.qwen3SizeKey,
-        Key.diarizationDirectoryKey, Key.clauseTaggerDirectoryKey,
+        Key.clauseTaggerDirectoryKey,
     ])
     func rejectsMissingEmptyRelativeAndNonexistentValues(key: String) throws {
         let fixture = try Fixture.make()

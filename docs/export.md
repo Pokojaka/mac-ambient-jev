@@ -12,23 +12,21 @@
 
 `SavedTranscriptLoader` は保存済み active run のイベントと原文から本文・行内 slice を materialize し、保存された境界評価の `filler_ranges`（F・B除去範囲）を使う。別の辞書から範囲を取得したり、読取時に判定を再実行したりしない。読み込み・書き出しは ASR イベントと原文を変更しない。CLI の `segments.json` は原文が非空の行を保持し、`text` は原文、`display_text` は上記と同じ表示本文、`source` は ASR 参照、`clause_state` と `clause_slices` は節の状態と行内範囲を表す。フィラー・相槌除去後に空になる発話・全 LOW の発話（空の `display_text`）も JSON に含むため、画面・txt と JSON の行集合は異なる。跨ぎ節の全文を各行へ複製せず、全 parts はイベントの `clauses.closed` から追跡する。GUI は JSON を書き出さず、`transcript.txt` と音声だけを書き出す。[保存形式](storage.md)を参照。
 
-処理 CLI とキャプチャ CLI は発話区間検出・音声認識・話者分離の3段階すべての公開済み run を必須とし、保存済み metadata の保留一覧とイベント参照を検証してから materialize する。必須 run の欠損、不正なログ・不完全な末尾・保留一覧の不一致は明示エラーで、読取時に発話文判定を再実行しない。キャプチャ CLI の `transcriptText` は `displayText` を行ごとに改行で連結し、原文を trim して代用しない。処理 CLI の `ContentPriorityAccess.disabled` は判定を実行せず、フィラー・相槌や LOW の除去は行わないが、表示専用の漢数字から算用数字への整形は適用する。判定再試行待ちセッションの resume も判定せず、公開済みの原文・表示本文を含む JSON を書き出す。
+処理 CLI とキャプチャ CLI は発話区間検出・音声認識の2段階すべての公開済み run を必須とし、保存済み metadata の保留一覧とイベント参照を検証してから materialize する。必須 run の欠損、不正なログ・不完全な末尾・保留一覧の不一致は明示エラーで、読取時に発話文判定を再実行しない。キャプチャ CLI の `transcriptText` は `displayText` を行ごとに改行で連結し、原文を trim して代用しない。処理 CLI の `ContentPriorityAccess.disabled` は判定を実行せず、フィラー・相槌や LOW の除去は行わないが、表示専用の漢数字から算用数字への整形は適用する。判定再試行待ちセッションの resume も判定せず、公開済みの原文・表示本文を含む JSON を書き出す。
 
 イベントログと `processing_metadata.json` は `schema_version: 3` を必須とする。欠損・未対応の version は読取エラーとして拒否し、明示的な再処理でも metadata を置換しない。
 
 ## transcript.txt
 
-`TranscriptTextRenderer`（Pipeline、Foundation のみ）が開始時刻と話者見出しを付け、UTF-8 で 1 行 1 発話を書き出す。各行末は改行。
+`TranscriptTextRenderer`（Pipeline、Foundation のみ）が開始時刻を付け、UTF-8 で `[mm:ss] <本文>\n` の形式で 1 行 1 発話を書き出す。
 
 ```text
-[00:07] Speaker 1: 本文
-[12:34] Speaker 1 / Speaker 2: 本文
-[65:00] UNKNOWN: 本文
+[00:07] 本文
+[12:34] 本文
+[65:00] 本文
 ```
 
-時刻は開始ミリ秒を秒へ切り捨てた総分数と秒数。1 時間を超えても分数を使う。話者番号は `Speaker 1`〜`Speaker 7`、それ以外は `OTHER`、割り当てがない場合は `UNKNOWN`。
-
-話者と重なる時間の合計に対して 1 人が 80% 以上ならその話者だけを見出しにする。80% 未満なら出現順に ` / ` で併記する。本文内の CRLF、LF、CR、U+2028、U+2029 は空白へ置換する。話者分離前の発話には見出しがなく、テキスト書き出しは「話者分離されていない発話（区間 ID）があるため書き出せません」で失敗する。[確定処理](final.md)を参照。
+時刻は開始ミリ秒を秒へ切り捨て、その秒数を 60 で割った商を総分数、余りを秒数とする。1 時間を超えても分数を使う。本文内の CRLF、LF、CR、U+2028、U+2029 は空白へ置換する。
 
 ## 音声とフォルダー名
 

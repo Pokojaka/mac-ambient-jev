@@ -88,8 +88,7 @@ private func saveMetadata(
 
 private let publishedRuns = ActiveRuns(
     segmentation: "seg_active",
-    asr: "asr_active",
-    diarization: "diar_active"
+    asr: "asr_active"
 )
 
 @Test
@@ -489,14 +488,14 @@ func finalizationAttemptPublishesRunsOnlyOnCompletion() throws {
         pendingClauseBoundarySegments: [oldSource],
         pendingContentPriorityClauses: []
     ))
-    try store.failFinalization(attemptID: "attempt_1", reason: "diarization failed")
+    try store.failFinalization(attemptID: "attempt_1", reason: "ASR failed")
     #expect(try store.load()?.activeRuns == oldRuns)
 
     #expect(throws: ProcessingMetadataStoreError.finalizationAttemptMismatch) {
         try store.completeFinalization(attemptID: "attempt_other", activeRuns: ActiveRuns(asr: "x"), pendingClauseBoundarySegments: [])
     }
 
-    let newRuns = ActiveRuns(segmentation: "seg_new", asr: "asr_new", diarization: "diar_new")
+    let newRuns = ActiveRuns(segmentation: "seg_new", asr: "asr_new")
     try store.beginFinalization(attemptID: "attempt_2", policy: .reject)
     let newSource = try SegmentTextReference(segmentationRunID: "seg_new", segmentID: "s", asrRunID: "asr_new", asrEventSeq: 9)
     try store.completeFinalization(attemptID: "attempt_2", activeRuns: newRuns, pendingClauseBoundarySegments: [newSource])

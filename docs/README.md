@@ -5,7 +5,7 @@
 - [architecture.md](architecture.md): ターゲット、モジュール、データフロー、portable Core の規則。
 - [storage.md](storage.md): セッション配置、JSON、イベント、音声 timeline、run の来歴。
 - [live.md](live.md): ライブ認識、表示、熱制御、遅延指標。
-- [final.md](final.md): 確定処理、復旧、再処理、一時停止、失敗、話者見出し。
+- [final.md](final.md): 確定処理、復旧、再処理、一時停止、失敗。
 - [capture.md](capture.md): マイクとシステム音声、入力音量、注意・エラー、容量判定。
 - [decision-engine.md](decision-engine.md): 発話文の境界・優先度判定、同梱モデル、エラー、利用量。
 - [export.md](export.md): テキストと音声の書き出し、保存先、自動書き出し、保存済み一覧。
@@ -19,4 +19,4 @@
 - [v1-live-latency-results-2026-09-25.md](records/v1-live-latency-results-2026-09-25.md): ライブ遅延の測定記録。
 - [continuous-speech-live-latency-2026-10-10.md](records/continuous-speech-live-latency-2026-10-10.md): 連続発話でのライブ遅延と投入ペースの測定記録。
 - [aozora-audio-fixtures-2026-09-25.md](records/aozora-audio-fixtures-2026-09-25.md): 朗読素材の取得元とハッシュ。
-- [nemotron3-diarization-test-2026-09-27.md](records/nemotron3-diarization-test-2026-09-27.md): 話者交代検出の測定記録。
+- [nemotron3-diarization-test-2026-09-27.md](records/nemotron3-diarization-test-2026-09-27.md): 検出精度の測定記録。

@@ -16,10 +16,10 @@ private func pendingDecisionRecording(paths: AppPaths) async throws -> (sessionI
     let audio = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 1, sessionURL: sessionURL)
     try await audio.append(samples: Array(repeating: 0.125, count: 16_000))
     _ = try await audio.finish()
-    let runs = ActiveRuns(segmentation: "seg", asr: "asr", diarization: "diar")
+    let runs = ActiveRuns(segmentation: "seg", asr: "asr")
     let writer = try SessionWriter(sessionURL: sessionURL)
     let provenance = RunProvenance(engine: "launch-recovery-test", model: nil, version: "1", configuration: [:])
-    let stages: [(ProcessingStage, String, Int)] = [(.segmentation, "seg", 1), (.asr, "asr", 1), (.diarization, "diar", 0)]
+    let stages: [(ProcessingStage, String, Int)] = [(.segmentation, "seg", 1), (.asr, "asr", 1)]
     for (stage, runID, _) in stages {
         _ = try await writer.append(EventDraft(
             eventType: "processing.run.started", sessionID: sessionID, processingRunID: runID,

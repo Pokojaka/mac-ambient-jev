@@ -82,7 +82,7 @@ private struct AmplePresentationCaptureDiskSpace: CaptureDiskSpaceProviding {
             state.recording == nil
                 && state.queue.isEmpty
                 && state.presentation.processingIndicator == .complete
-                && state.presentation.processingStatusText == "文字起こしと話者分離が完了しました（1区間）"
+                && state.presentation.processingStatusText == "文字起こしが完了しました（1区間）"
         }
     }
 
@@ -248,7 +248,7 @@ private struct AmplePresentationCaptureDiskSpace: CaptureDiskSpaceProviding {
 
         let finalized = try await waitForFinalizedRecording(in: h, after: beforeFinalization.revision.value)
         #expect(finalized.presentation.processingIndicator == .complete)
-        #expect(finalized.presentation.processingStatusText == "文字起こしと話者分離が完了しました（1区間）")
+        #expect(finalized.presentation.processingStatusText == "文字起こしが完了しました（1区間）")
         #expect(finalized.failures.isEmpty)
         #expect(try await h.shutdown() == .shutdownRequested)
     }

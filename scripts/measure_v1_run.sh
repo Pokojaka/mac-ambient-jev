@@ -239,19 +239,6 @@ if events and events.exists():
         fail('events.jsonl requires schema_version 3')
 else:
     reason['event_log'] = 'no session event log was found'
-session_dir = directory
-metadata = session_dir / 'processing_metadata.json' if session_dir else None
-active_runs = {}
-if metadata and metadata.exists():
-    state = read_json(metadata)
-    if type(state.get('schema_version')) is not int or state['schema_version'] != 3:
-        fail('processing_metadata.json requires schema_version 3')
-    published_runs = state['active_runs']
-    if published_runs is not None:
-        active_runs = published_runs
-completed = [e for e in event_lines if e.get('event_type') == 'processing.run.completed' and e.get('payload', {}).get('succeeded') is True]
-diarization = next((e for e in reversed(completed) if e.get('processing_run_id') == active_runs.get('diarization') and e.get('payload', {}).get('stage') == 'diarization'), None)
-if not diarization: reason['diarization_completed_at'] = 'no successful active diarization run was observed'
 for key in ('capture_dropout_count', 'decision_success_count', 'decision_failure_count', 'decision_retry_pending_count', 'crash_recovery_loss_window_seconds'):
     reason[key] = 'file import or offline session recovery cannot measure this live-session value'
 report = {
@@ -285,7 +272,6 @@ report = {
  'memory_growth_mb': growth, 'memory_verdict': memory_verdict,
  'memory_sample_count': len(asr_samples),
  'thermal_sample_count': len(thermal_samples),
- 'diarization_completed_at': diarization.get('created_at') if diarization else None,
  'capture_dropout_count': None, 'decision_success_count': None,
  'decision_failure_count': None, 'decision_retry_pending_count': None,
  'crash_recovery_loss_window_seconds': None,

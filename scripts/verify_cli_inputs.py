@@ -57,7 +57,7 @@ with tempfile.TemporaryDirectory(prefix="mac-ambient-jev-cli-") as temporary:
     }
     (session / "session.json").write_text(json.dumps(manifest))
     events = []
-    active_runs = {"segmentation": "fixture-seg", "diarization": "fixture-diar", "asr": "fixture-asr"}
+    active_runs = {"segmentation": "fixture-seg", "asr": "fixture-asr"}
     for stage, run_id in active_runs.items():
         for event_type, payload in [
             ("processing.run.started", {

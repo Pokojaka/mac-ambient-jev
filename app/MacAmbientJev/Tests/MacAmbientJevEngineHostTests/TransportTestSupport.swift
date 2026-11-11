@@ -250,7 +250,7 @@ func progressEvent(session: String, stage: EngineStage, completed: UInt64) throw
 }
 
 func sampleRow(_ id: String, text: String = "テキスト") throws -> EngineTranscriptRow {
-    try EngineTranscriptRow(rowID: id, startMS: 0, endMS: 10, text: text, headings: [], clauseState: nil)
+    try EngineTranscriptRow(rowID: id, startMS: 0, endMS: 10, text: text, clauseState: nil)
 }
 
 func rowsEvent(session: String, revision: UInt64, rowIDs: [String], text: String = "テキスト") throws -> EngineEvent {

@@ -475,7 +475,7 @@ import MacAmbientJevTestSupport
         #expect(try await h.shutdown() == .shutdownRequested)
     }
 
-    @Test func skippedDiarizedValidationRetainsEncodingFailureMarker() async throws {
+    @Test func skippedDuplicateProjectionRetainsEncodingFailureMarker() async throws {
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let h = try await prepared(root)
@@ -489,18 +489,12 @@ import MacAmbientJevTestSupport
         await h.transport.drain()
 
         let originalCache = try #require(core.transcript)
-        let oversizedID = "skipped-diarized-oversized-A"
-        let duplicateID = "skipped-diarized-duplicate-B"
+        let oversizedID = "duplicate-projection-oversized-A"
+        let duplicateID = "duplicate-projection-B"
         let oversizedText = String(repeating: "\u{0001}", count: 60_000)
-        let oversizedA = try materializedApplicationDiarizedSegment(
-            id: oversizedID, text: oversizedText, start: 0, speakerID: "speaker-a"
-        )
-        let duplicateFirst = try materializedApplicationDiarizedSegment(
-            id: duplicateID, text: "first B", start: 200, speakerID: "speaker-b"
-        )
-        let duplicateSecond = try materializedApplicationDiarizedSegment(
-            id: duplicateID, text: "second B", start: 300, speakerID: "speaker-c"
-        )
+        let oversizedA = try materializedApplicationSegment(id: oversizedID, text: oversizedText)
+        let duplicateFirst = try materializedApplicationSegment(id: duplicateID, text: "first B")
+        let duplicateSecond = try materializedApplicationSegment(id: duplicateID, text: "second B")
 
         var segments = [oversizedA]
         core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
@@ -514,16 +508,16 @@ import MacAmbientJevTestSupport
         #expect(core.transcript?.revision == originalCache.revision)
         #expect(core.transcript?.rows == originalCache.rows)
         let projection = try #require(core.transcript?.projection)
-        let projectedBeforeUncertainContext = projection.totalProjectedSegments
+        let projectedBeforeDuplicates = projection.totalProjectedSegments
 
         segments = [oversizedA, duplicateFirst, duplicateSecond]
         core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
         await drainTranscriptFailures(in: h)
-        let outputsWithUncertainLabels = try h.outputs
-        #expect(projection.totalProjectedSegments == projectedBeforeUncertainContext)
-        #expect(failureEvents(for: sessionID, in: outputsWithUncertainLabels)
+        let outputsWithDuplicates = try h.outputs
+        #expect(projection.totalProjectedSegments == projectedBeforeDuplicates)
+        #expect(failureEvents(for: sessionID, in: outputsWithDuplicates)
             .filter { $0.code == .rowTooLarge } == [firstOversizedFailure])
-        let duplicateFailures = failureEvents(for: sessionID, in: outputsWithUncertainLabels)
+        let duplicateFailures = failureEvents(for: sessionID, in: outputsWithDuplicates)
             .filter { $0.code == .processingFailure }
         #expect(duplicateFailures.count == 1)
         let duplicateFailure = try #require(duplicateFailures.first)
@@ -536,7 +530,7 @@ import MacAmbientJevTestSupport
         core.transcriptDidUpdate(sessionID: sessionUUID, segments: segments)
         await drainTranscriptFailures(in: h)
         let outputsAfterRepairingDuplicate = try h.outputs
-        #expect(projection.totalProjectedSegments > projectedBeforeUncertainContext)
+        #expect(projection.totalProjectedSegments > projectedBeforeDuplicates)
         #expect(failureEvents(for: sessionID, in: outputsAfterRepairingDuplicate)
             .filter { $0.code == .rowTooLarge } == [firstOversizedFailure])
         #expect(failureEvents(for: sessionID, in: outputsAfterRepairingDuplicate)
@@ -1174,24 +1168,6 @@ import MacAmbientJevTestSupport
     }
 }
 
-private func materializedApplicationDiarizedSegment(
-    id: String, text: String, start: Int64, speakerID: String
-) throws -> MaterializedTranscriptSegment {
-    let source = try SegmentTextReference(
-        segmentationRunID: "transcript-test-run", segmentID: id, asrRunID: "transcript-test-asr", asrEventSeq: 1
-    )
-    let projection = try TranscriptTextProjector().project(sourceText: text, fillerRanges: [])
-    return try MaterializedTranscriptSegment(
-        segmentID: id, source: source, startMilliseconds: start, endMilliseconds: start + 100,
-        text: text, textProjection: projection,
-        speakers: [MaterializedSpeakerSpan(
-            id: speakerID, startMilliseconds: start, endMilliseconds: start + 100,
-            confidence: 1, displayLabel: nil
-        )],
-        clauseState: .classified, clauseSlices: [], isDiarized: true
-    )
-}
-
 private func materializedApplicationSegment(id: String, text: String) throws -> MaterializedTranscriptSegment {
     let source = try SegmentTextReference(
         segmentationRunID: "transcript-test-run", segmentID: id, asrRunID: "transcript-test-asr", asrEventSeq: 1
@@ -1199,7 +1175,6 @@ private func materializedApplicationSegment(id: String, text: String) throws -> 
     let projection = try TranscriptTextProjector().project(sourceText: text, fillerRanges: [])
     return try MaterializedTranscriptSegment(
         segmentID: id, source: source, startMilliseconds: 0, endMilliseconds: 100,
-        text: text, textProjection: projection, speakers: [], clauseState: .classified,
-        clauseSlices: [], isDiarized: false
+        text: text, textProjection: projection, clauseState: .classified, clauseSlices: []
     )
 }

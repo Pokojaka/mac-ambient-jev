@@ -1,4 +1,3 @@
-import AVFoundation
 import Foundation
 import MacAmbientJevPipeline
 import Testing
@@ -64,19 +63,7 @@ private struct SecureAudioFixture {
     #expect(try Data(contentsOf: fixture.sentinel) == fixture.original)
 }
 
-@Test func derivedAudioPublicationRejectsLinkedDestination() async throws {
-    let fixture = try SecureAudioFixture()
-    defer { fixture.cleanup() }
-    let pcm = try await fixture.pcm()
-    try fixture.link(fixture.layout.diarizationInputURL)
-    #expect(throws: CocoaError.self) {
-        try MacAmbientJevCore.ProcessingTimelineAudioExporter(framesPerBuffer: 2).export(reader: pcm, to: fixture.layout.diarizationInputURL, sessionURL: fixture.layout.sessionURL)
-    }
-    #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.layout.derivedDirectory.path) == [fixture.layout.diarizationInputURL.lastPathComponent])
-    #expect(try Data(contentsOf: fixture.sentinel) == fixture.original)
-}
-
-@Test func audioReadersAndDerivedWriterRejectLinkedAudioParent() async throws {
+@Test func audioReadersRejectLinkedAudioParent() async throws {
     let fixture = try SecureAudioFixture()
     defer { fixture.cleanup() }
     let pcm = try await fixture.pcm()
@@ -86,28 +73,6 @@ private struct SecureAudioFixture {
     #expect(throws: CocoaError.self) {
         _ = try FLACTimelineReader(url: fixture.layout.recordingFLACURL, info: pcm.info, sessionURL: fixture.layout.sessionURL)
     }
-    #expect(throws: CocoaError.self) {
-        try MacAmbientJevCore.ProcessingTimelineAudioExporter(framesPerBuffer: 2).export(reader: pcm, to: fixture.layout.diarizationInputURL, sessionURL: fixture.layout.sessionURL)
-    }
     #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.outside.path) == [fixture.sentinel.lastPathComponent])
     #expect(try Data(contentsOf: fixture.sentinel) == fixture.original)
-}
-
-@Test func descriptorDecoderKeepsOpenedCAFWhenPathIsReplaced() async throws {
-    let fixture = try SecureAudioFixture()
-    defer { fixture.cleanup() }
-    let pcm = try await fixture.pcm()
-    let url = fixture.layout.diarizationInputURL
-    try MacAmbientJevCore.ProcessingTimelineAudioExporter(framesPerBuffer: 2).export(reader: pcm, to: url, sessionURL: fixture.layout.sessionURL)
-    let reader = try DescriptorAudioReader(url: url, sessionURL: fixture.layout.sessionURL)
-    let retained = fixture.layout.derivedDirectory.appending(path: "retained.caf")
-    try FileManager.default.moveItem(at: url, to: retained)
-    try fixture.link(url)
-    let buffer = try #require(AVAudioPCMBuffer(pcmFormat: reader.processingFormat, frameCapacity: 3))
-    try reader.read(into: buffer, frameCount: 3)
-    #expect(buffer.frameLength == 3)
-    let samples = try #require(buffer.floatChannelData?[0])
-    #expect(Array(UnsafeBufferPointer(start: samples, count: 3)) == [0.25, -0.5, 0.75])
-    #expect(try Data(contentsOf: fixture.sentinel) == fixture.original)
-    #expect(throws: CocoaError.self) { _ = try DescriptorAudioReader(url: url, sessionURL: fixture.layout.sessionURL) }
 }

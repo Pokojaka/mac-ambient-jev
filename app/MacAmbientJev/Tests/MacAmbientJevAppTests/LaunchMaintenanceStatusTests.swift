@@ -19,14 +19,11 @@ private func launchMaintenanceRecording(
     let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 1, sessionURL: layout.sessionURL)
     try await writer.append(samples: Array(repeating: 0.125, count: 16_000))
     _ = try await writer.finish()
-    let runs = ActiveRuns(
-        segmentation: "seg_saved", asr: "asr_saved", diarization: "diar_saved"
-    )
+    let runs = ActiveRuns(segmentation: "seg_saved", asr: "asr_saved")
     let eventWriter = try SessionWriter(sessionURL: sessionURL)
     let provenance = RunProvenance(engine: "launch-maintenance-test", model: nil, version: "test", configuration: [:])
     for (stage, runID) in [
-        (ProcessingStage.segmentation, runs.segmentation), (.asr, runs.asr),
-        (.diarization, runs.diarization)
+        (ProcessingStage.segmentation, runs.segmentation), (.asr, runs.asr)
     ] {
         _ = try await eventWriter.append(EventDraft(
             eventType: "processing.run.started", sessionID: sessionID, processingRunID: runID,

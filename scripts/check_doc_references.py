@@ -27,8 +27,7 @@ CLI_SOURCES = {
     for name in (
         "MacAmbientJevCaptureSystemAudio", "MacAmbientJevProcessRecording",
         "MacAmbientJevMeasureLiveLatency", "MacAmbientJevEvaluateSession",
-        "MacAmbientJevEvaluateASR", "MacAmbientJevEvaluateDiarization",
-        "MacAmbientJevDiarizeFile", "MacAmbientJevDiarizeFileOracle",
+        "MacAmbientJevEvaluateASR",
     )
 }
 CLI_SOURCES.update({
@@ -36,25 +35,23 @@ CLI_SOURCES.update({
     "tools/linux-audio/run_suite.py": ("tools/linux-audio/run_suite.py",),
     "tools/linux-audio/prepare_fixture.py": ("tools/linux-audio/prepare_fixture.py",),
     "asr.qwen3_asr": ("tools/linux-audio/asr/qwen3_asr.py",),
-    "diarization.nemotron3": ("tools/linux-audio/diarization/nemotron3.py",),
     "common.voicevox_cli": ("tools/linux-audio/common/voicevox_cli.py",),
     "scripts/verify_linux_audio.sh": ("tools/linux-audio/run_suite.py",),
     "scripts/measure_live_latency.sh": (
         f"{SWIFT_SOURCES}/MacAmbientJevMeasureLiveLatency/main.swift",
     ),
 })
-for module in ("asr.qwen3_asr", "diarization.nemotron3", "common.voicevox_cli"):
+for module in ("asr.qwen3_asr", "common.voicevox_cli"):
     CLI_SOURCES[CLI_SOURCES[module][0]] = CLI_SOURCES[module]
 
 # SessionLayout / DurableAudioWriter / SessionExport / ProcessRecording、
-# measure_v1_run.sh、prepare_fixture / run_suite / voicevox_suite の出力。
+# measure_v1_run.sh、prepare_fixture / run_suite の出力。
 RUNTIME_BASENAMES = frozenset({
     "session.json", "events.jsonl", "processing_metadata.json", "checkpoint.json",
     "audio-chunks.jsonl", "audio-gaps.jsonl", "transcript.txt", "segments.json",
     "audio.wav", "audio.m4a", "audio.flac", "storage.json", "recording.flac", "run.json", "engine-metrics.json",
     "memory.jsonl", "thermal.jsonl", "reference-verbatim.txt", "reference-content.txt",
-    "speaker-reference.json", "fixture.json", "scenario.json", "qwen3-asr.json",
-    "nemotron3.json", "diarization-evaluation.json", "nemotron3-current.json",
+    "fixture.json", "scenario.json", "qwen3-asr.json",
     "asr-evaluation-verbatim.json", "asr-evaluation-content.json",
     "qwen3-asr-verbatim-current.json", "qwen3-asr-content-current.json",
     "stdout.log", "stderr.log", "source-snapshot.tar.gz", "disk-usage.json",

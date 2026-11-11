@@ -6,7 +6,7 @@ import Foundation
 /// state is persisted.
 public enum SessionTransientAudio {
     public static func urls(layout: SessionLayout, source: SessionSource) -> [URL] {
-        var urls = [layout.derivedDirectory, layout.recordingFLACPartialURL]
+        var urls = [layout.recordingFLACPartialURL]
         if case .imported = source {
             urls.append(layout.processingDirectory)
         }
@@ -29,7 +29,7 @@ public enum SessionTransientAudio {
 
 /// Storage work a session needs regardless of whether its transcript needs recovery.
 public enum SessionStorageMaintenance: String, Sendable, Equatable {
-    /// Remove a stale diarization CAF, FLAC partial or import timeline.
+    /// Remove a stale FLAC partial or import timeline.
     case removeTransients
     /// Convert a finalized PCM recording to verified FLAC, or finish removing PCM after the
     /// FLAC state was persisted. Also removes transients.
