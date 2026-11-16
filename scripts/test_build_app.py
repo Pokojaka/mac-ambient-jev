@@ -25,6 +25,17 @@ class BuildAppTests(unittest.TestCase):
         self.assertFalse((root / "swift.log").exists())
         self.assertFalse((root / ".build/MacAmbientJev.app").exists())
 
+    def test_onnxruntime_fetch_failure_stops_before_swift_and_publication(self) -> None:
+        root, environment = self.make_fake_repository()
+        environment["ORT_FETCH_STATUS"] = "1"
+
+        result = self.run_build(root, environment)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("stub ONNX Runtime fetch failure", result.stderr)
+        self.assertFalse((root / "swift.log").exists())
+        self.assertFalse((root / ".build/MacAmbientJev.app").exists())
+
     def test_success_copies_fetched_model_and_license(self) -> None:
         root, environment = self.make_fake_repository()
 
@@ -42,7 +53,11 @@ class BuildAppTests(unittest.TestCase):
         self.assertTrue(
             (root / ".build/MacAmbientJev.app/Contents/Resources/clause-tagger/tokenizer.json").is_file()
         )
-        self.assertIn("-B", (root / "python.log").read_text())
+        python_calls = (root / "python.log").read_text().splitlines()
+        self.assertLess(
+            python_calls.index(f"-B {environment['EXPECTED_ORT_FETCHER']}"),
+            python_calls.index(f"-B {environment['EXPECTED_FETCHER']} --format coreml"),
+        )
         self.assertTrue((root / "swift.log").is_file())
 
     def test_invalid_fetch_results_stop_before_swift_and_publication(self) -> None:
@@ -126,6 +141,13 @@ if [[ "${1:-}" == "-c" ]]; then
   [[ "$PYTHON_VERSION_OK" == "1" ]]
   exit $?
 fi
+if [[ "${1:-}" == "-B" && "$2" == "$EXPECTED_ORT_FETCHER" ]]; then
+  if [[ "$ORT_FETCH_STATUS" != "0" ]]; then
+    echo "stub ONNX Runtime fetch failure" >&2
+    exit "$ORT_FETCH_STATUS"
+  fi
+  exit 0
+fi
 if [[ "${1:-}" == "-B" && "$2" == "$EXPECTED_FETCHER" && "$3" == "--format" && "$4" == "coreml" ]]; then
   if [[ "$FETCH_STATUS" != "0" ]]; then
     echo "stub fetch failure" >&2
@@ -167,6 +189,8 @@ exit 0
                 "PATH": f"{stub_bin}{os.pathsep}{environment['PATH']}",
                 "PYTHON_LOG": str(root / "python.log"),
                 "PYTHON_VERSION_OK": "1",
+                "EXPECTED_ORT_FETCHER": str(scripts / "fetch_onnxruntime.py"),
+                "ORT_FETCH_STATUS": "0",
                 "EXPECTED_FETCHER": str(scripts / "fetch_clause_tagger.py"),
                 "FETCH_STATUS": "0",
                 "TAGGER_DIRECTORY": str(tagger_directory),

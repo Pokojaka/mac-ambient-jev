@@ -67,7 +67,7 @@ SOFTWARE.
 
 ソース: [LICENSE](https://raw.githubusercontent.com/microsoft/onnxruntime/v1.31.0/LICENSE)
 
-Windows / Linux で ONNX Runtime C API の CPU Execution Provider を使用します。取得したアーカイブに含まれる `LICENSE` と `ThirdPartyNotices.txt` は、展開した runtime root に保持します。アーカイブの SHA-256 は [Windows / Linux の ONNX Runtime 取得手順](docs/windows.md#onnx-runtime)を参照してください。
+macOS arm64 の wrapper build / tests と Linux / Windows の製品実行では、ONNX Runtime C API の CPU Execution Provider を使います。macOS app は dylib を bundle せず、runtime ASR 経路にも使いません。SDK archive 内の `LICENSE` と `ThirdPartyNotices.txt` は展開先に保持します。各 platform の archive の SHA-256 は [ONNX Runtime 取得手順](docs/windows.md#onnx-runtime) を参照してください。
 
 ```text
 MIT License

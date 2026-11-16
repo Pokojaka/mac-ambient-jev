@@ -1,8 +1,6 @@
 // swift-tools-version: 6.0
 import PackageDescription
-#if os(Linux) || os(Windows)
 import Foundation
-#endif
 
 var products: [Product] = [
     .library(name: "MacAmbientJevCore", targets: ["MacAmbientJevCore"]),
@@ -136,7 +134,7 @@ targets.append(.testTarget(
 ))
 #endif
 
-#if os(Linux) || os(Windows)
+#if os(Linux) || os(Windows) || os(macOS)
 let onnxRuntimeVersion = "1.31.0"
 let onnxRuntimePlatform: String
 #if os(Linux)
@@ -154,6 +152,12 @@ onnxRuntimePlatform = "win-x64"
 onnxRuntimePlatform = "win-arm64"
 #else
 fatalError("ONNX Runtime \(onnxRuntimeVersion) は Windows x86_64 / arm64 のみ対応します。")
+#endif
+#elseif os(macOS)
+#if arch(arm64)
+onnxRuntimePlatform = "osx-arm64"
+#else
+fatalError("ONNX Runtime \(onnxRuntimeVersion) は macOS arm64 のみ対応します。")
 #endif
 #endif
 
@@ -175,6 +179,13 @@ let requiredONNXRuntimeFiles = [
     onnxRuntimeHeader,
     onnxRuntimeLibrary,
     onnxRuntimeLibraryDirectory.appendingPathComponent("onnxruntime.dll")
+]
+#elseif os(macOS)
+let onnxRuntimeLibrary = onnxRuntimeLibraryDirectory.appendingPathComponent("libonnxruntime.\(onnxRuntimeVersion).dylib")
+let requiredONNXRuntimeFiles = [
+    onnxRuntimeHeader,
+    onnxRuntimeLibrary,
+    onnxRuntimeLibraryDirectory.appendingPathComponent("libonnxruntime.1.dylib")
 ]
 #else
 let onnxRuntimeLibrary = onnxRuntimeLibraryDirectory.appendingPathComponent("libonnxruntime.so.\(onnxRuntimeVersion)")
@@ -216,6 +227,22 @@ let onnxRuntimeIncludeSwiftSettings: [SwiftSetting] = [
     .unsafeFlags(["-Xcc", "-I\(onnxRuntimeIncludeDirectory.path)"])
 ]
 
+products.append(.library(name: "MacAmbientJevONNX", targets: ["MacAmbientJevONNX"]))
+targets.append(.systemLibrary(name: "CONNXRuntime"))
+targets.append(.target(
+    name: "MacAmbientJevONNX",
+    dependencies: ["CONNXRuntime"],
+    // The pinned SDK is supplied as a local system library rather than a binaryTarget.
+    swiftSettings: onnxRuntimeIncludeSwiftSettings,
+    linkerSettings: [.unsafeFlags(onnxRuntimeLinkerFlags)]
+))
+targets.append(.testTarget(
+    name: "MacAmbientJevONNXTests",
+    dependencies: ["MacAmbientJevONNX", "MacAmbientJevVADFixtures"],
+    resources: [.copy("Resources")],
+    swiftSettings: onnxRuntimeIncludeSwiftSettings
+))
+
 #if os(Windows)
 products.append(.executable(
     name: "MacAmbientJevEngine",
@@ -246,7 +273,7 @@ targets.append(.testTarget(
 ))
 #endif
 
-products.append(.library(name: "MacAmbientJevONNX", targets: ["MacAmbientJevONNX"]))
+#if os(Linux) || os(Windows)
 products.append(.library(name: "MacAmbientJevPortableRuntime", targets: ["MacAmbientJevPortableRuntime"]))
 products.append(.executable(
     name: "MacAmbientJevTranscribeFile",
@@ -273,23 +300,9 @@ portableRuntimeDependencies.append("MacAmbientJevWindowsSupport")
 #elseif os(Linux)
 portableRuntimeDependencies.append("CMiniaudio")
 #endif
-targets.append(.systemLibrary(name: "CONNXRuntime"))
-targets.append(.target(
-    name: "MacAmbientJevONNX",
-    dependencies: ["CONNXRuntime"],
-    // A local pinned SDK cannot use SwiftPM's binaryTarget format on Linux or Windows.
-    swiftSettings: onnxRuntimeIncludeSwiftSettings,
-    linkerSettings: [.unsafeFlags(onnxRuntimeLinkerFlags)]
-))
 targets.append(.target(
     name: "MacAmbientJevPortableRuntime",
     dependencies: portableRuntimeDependencies,
-    resources: [.copy("Resources")],
-    swiftSettings: onnxRuntimeIncludeSwiftSettings
-))
-targets.append(.testTarget(
-    name: "MacAmbientJevONNXTests",
-    dependencies: ["MacAmbientJevONNX", "MacAmbientJevVADFixtures"],
     resources: [.copy("Resources")],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
 ))
@@ -317,8 +330,7 @@ targets.append(.testTarget(
     ],
     swiftSettings: onnxRuntimeIncludeSwiftSettings
 ))
-#else
-let onnxRuntimeIncludeSwiftSettings: [SwiftSetting] = []
+#endif
 #endif
 
 #if os(macOS)

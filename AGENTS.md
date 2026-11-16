@@ -20,7 +20,9 @@ python3 -B scripts/check_portable_core.py
 python3 scripts/check_doc_references.py
 dotnet restore app/Windows/MacAmbientJev.Portable.slnx --locked-mode
 dotnet test app/Windows/MacAmbientJev.Portable.slnx -c Release --no-restore
+python3 -B scripts/fetch_onnxruntime.py
 swift build --package-path app/MacAmbientJev
+export MAC_AMBIENT_JEV_SILERO_MODEL="$(python3 -B scripts/fetch_silero_vad.py)"
 swift test --package-path app/MacAmbientJev
 bash scripts/verify_v1.sh
 ```

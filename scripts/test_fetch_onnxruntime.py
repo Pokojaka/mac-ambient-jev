@@ -46,11 +46,13 @@ def make_tar(root: str, extra: tuple[tuple[str, str, str], ...]) -> bytes:
             item = tarfile.TarInfo(name)
             item.type = tarfile.DIRTYPE
             archive.addfile(item)
+        macos = root.startswith("onnxruntime-osx-arm64-")
+        library = f"libonnxruntime.{fetcher.VERSION}.dylib" if macos else f"libonnxruntime.so.{fetcher.VERSION}"
         files = (
             f"{root}/include/onnxruntime_c_api.h",
             f"{root}/LICENSE",
             f"{root}/ThirdPartyNotices.txt",
-            f"{root}/lib/libonnxruntime.so.{fetcher.VERSION}",
+            f"{root}/lib/{library}",
         )
         for name in files:
             data = name.encode()
@@ -67,10 +69,14 @@ def make_tar(root: str, extra: tuple[tuple[str, str, str], ...]) -> bytes:
                 data = target.encode()
                 item.size = len(data)
                 archive.addfile(item, io.BytesIO(data))
-        for name, target in (
-            (f"{root}/lib/libonnxruntime.so.{fetcher.VERSION.split('.')[0]}", f"libonnxruntime.so.{fetcher.VERSION}"),
-            (f"{root}/lib/libonnxruntime.so", f"libonnxruntime.so.{fetcher.VERSION.split('.')[0]}"),
-        ):
+        links = (
+            ((f"{root}/lib/libonnxruntime.1.dylib", library),)
+            if macos else (
+                (f"{root}/lib/libonnxruntime.so.{fetcher.VERSION.split('.')[0]}", f"libonnxruntime.so.{fetcher.VERSION}"),
+                (f"{root}/lib/libonnxruntime.so", f"libonnxruntime.so.{fetcher.VERSION.split('.')[0]}"),
+            )
+        )
+        for name, target in links:
             item = tarfile.TarInfo(name)
             item.type = tarfile.SYMTYPE
             item.linkname = target
@@ -94,15 +100,19 @@ class FetchTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(fetcher, "__file__", str(self.repository / "scripts" / "fetch_onnxruntime.py")))
             stack.enter_context(mock.patch.object(fetcher.platform, "system", return_value=system))
             stack.enter_context(mock.patch.object(fetcher.platform, "machine", return_value=machine))
+            if system.casefold() == "darwin":
+                stack.enter_context(mock.patch.object(fetcher, "MACOS_ARM64_BYTES", len(data)))
             stack.enter_context(mock.patch.dict(fetcher.ASSETS, {(system.casefold(), machine.casefold()): (root_platform, asset, digest)}))
             yield asset, cache, self.repository / ".build" / "onnxruntime" / fetcher.VERSION / f"onnxruntime-{root_platform}-{fetcher.VERSION}", data
 
     def test_valid_zip_and_tar_archives(self) -> None:
         windows_root = f"onnxruntime-win-x64-{fetcher.VERSION}"
         linux_root = f"onnxruntime-linux-x64-{fetcher.VERSION}"
+        macos_root = f"onnxruntime-osx-arm64-{fetcher.VERSION}"
         for system, machine, root_platform, suffix, data in (
             ("Windows", "AMD64", "win-x64", ".zip", make_zip(windows_root, WINDOWS_FILES, ())),
             ("Linux", "x86_64", "linux-x64", ".tgz", make_tar(linux_root, ())),
+            ("Darwin", "arm64", "osx-arm64", ".tgz", make_tar(macos_root, ())),
         ):
             with self.subTest(system=system), self.configured(system, machine, root_platform, suffix, data, hashlib.sha256(data).hexdigest()) as (_, cache, destination, _):
                 cache.mkdir(parents=True, exist_ok=True)
@@ -115,6 +125,9 @@ class FetchTests(unittest.TestCase):
                 if system == "Windows":
                     self.assertTrue((destination / "lib" / "onnxruntime.lib").is_file())
                     self.assertTrue((destination / "lib" / "onnxruntime.dll").is_file())
+                elif system == "Darwin":
+                    self.assertEqual((destination / "lib" / "libonnxruntime.1.dylib").resolve(), (destination / "lib" / f"libonnxruntime.{fetcher.VERSION}.dylib").resolve())
+                    self.assertTrue((destination / "lib" / "libonnxruntime.1.dylib").is_symlink())
                 else:
                     self.assertEqual((destination / "lib" / "libonnxruntime.so").resolve(), (destination / "lib" / f"libonnxruntime.so.{fetcher.VERSION}").resolve())
 
@@ -177,6 +190,34 @@ class FetchTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         fetcher.fetch()
                 self.assertFalse(destination.exists())
+
+    def test_macos_tree_requires_runtime_libraries(self) -> None:
+        root = self.repository / "onnxruntime-osx-arm64"
+        for name in ("include/onnxruntime_c_api.h", "LICENSE", "ThirdPartyNotices.txt"):
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("fixture")
+        library = root / "lib"
+        library.mkdir()
+        versioned = library / f"libonnxruntime.{fetcher.VERSION}.dylib"
+        versioned.write_text("fixture")
+        with self.assertRaisesRegex(ValueError, "libonnxruntime"):
+            fetcher._validate_tree(root, False, "osx-arm64")
+        soname = library / "libonnxruntime.1.dylib"
+        soname.write_text("fixture")
+        versioned.unlink()
+        with self.assertRaisesRegex(ValueError, "libonnxruntime"):
+            fetcher._validate_tree(root, False, "osx-arm64")
+
+    def test_macos_download_size_must_match_release(self) -> None:
+        root = f"onnxruntime-osx-arm64-{fetcher.VERSION}"
+        data = make_tar(root, ())
+        with self.configured("Darwin", "arm64", "osx-arm64", ".tgz", data, hashlib.sha256(data).hexdigest()) as (_, cache, destination, _):
+            with mock.patch.object(fetcher, "MACOS_ARM64_BYTES", len(data) + 1), mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))), mock.patch.object(fetcher, "_extract") as extract:
+                with self.assertRaisesRegex(ValueError, "サイズが一致しません"):
+                    fetcher.fetch()
+            extract.assert_not_called()
+            self.assertFalse(destination.exists())
 
     def test_linux_library_symlink_must_resolve_inside_root_to_file(self) -> None:
         root = f"onnxruntime-linux-x64-{fetcher.VERSION}"
@@ -346,9 +387,11 @@ class FetchTests(unittest.TestCase):
             fetch.assert_not_called()
 
     def test_supported_platform_machine_spellings(self) -> None:
-        for system, machine in (("Linux", "x86_64"), ("Linux", "aarch64"), ("Linux", "arm64"), ("Windows", "AMD64"), ("Windows", "x86_64"), ("Windows", "ARM64"), ("Windows", "aarch64")):
+        for system, machine in (("Linux", "x86_64"), ("Linux", "aarch64"), ("Linux", "arm64"), ("Windows", "AMD64"), ("Windows", "x86_64"), ("Windows", "ARM64"), ("Windows", "aarch64"), ("Darwin", "arm64")):
             with self.subTest(system=system, machine=machine):
                 self.assertEqual(len(fetcher.choose_asset(system, machine)), 3)
+        with self.assertRaisesRegex(RuntimeError, "macOS arm64"):
+            fetcher.choose_asset("Darwin", "x86_64")
 
 
 if __name__ == "__main__":

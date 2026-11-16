@@ -213,6 +213,7 @@ def _validate_onnx_asr_config(inference_config: dict) -> None:
         "inter_op_threads",
         "cpu_memory_arena",
         "segmentation",
+        "graph_optimization_level",
     }
     _require_keys(
         inference_config,
@@ -230,6 +231,7 @@ def _validate_onnx_asr_config(inference_config: dict) -> None:
             "3 when input_seconds > 15; disabled otherwise"
         ),
         "segmentation": "silero-final-transcript",
+        "graph_optimization_level": "ORT_ENABLE_ALL",
     }
     for key, expected in expected_values.items():
         if inference_config[key] != expected:

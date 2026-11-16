@@ -50,6 +50,7 @@ struct ONNXQwen3ASREngineTests {
             "no_repeat_ngram": "3 when input_seconds > 15; disabled otherwise",
             "intra_op_threads": String(intraOpThreads),
             "inter_op_threads": String(ONNXSession.interOpThreads),
+            "graph_optimization_level": "ORT_ENABLE_ALL",
             "cpu_memory_arena": String(Qwen3ASRONNXModel.cpuMemoryArenaEnabled),
         ]
     }
