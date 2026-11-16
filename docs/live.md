@@ -6,10 +6,16 @@
 
 - 保存済みの処理タイムラインだけを VAD に渡します。まだディスクに確定していない音声は対象にしません。
 - 録音中の durable chunk（確定処理の後に FLAC へ変換して削除する PCM）は 0.5 秒、アプリの checkpoint 確認間隔は 250 ms です。保存済みの 16 kHz mono float32 を直接 FluidAudio のストリーミング VAD に渡します。VAD と ASR は入力形式を検証し、処理段階の SRC・downmix は行いません。
-- 発話開始は VAD 確率 0.50 以上、発話終了は 0.35 未満で判定します（FluidAudio の streaming VAD は開始閾値から 0.15 引いた値を終了閾値に使います）。BGM の重なる発話を落とさないための値です。発話開始の前に 0.10 秒の pre-roll を含めます。無音による区間終了の設定は 0.75 秒です。確定処理も同じ設定で区間を作ります。Linux / Windows は同じ値と区間規則を Silero VAD の確率に適用します（[Windows の VAD](windows.md#silero-vad-の区間検出)）。
-- 最大区間長は 14 秒です。区間が 14 秒に達すると、区間開始から 12〜14 秒の範囲で RMS が最も小さい 20 ms frame（絶対 sample 0 に揃えた 320 sample）の中点で分割します。同じ値なら早い frame を選びます。語の途中で切って境界で語が重複するのを減らすためで、14 秒に達した時点でこの範囲の音声は処理済みなので先読みはしません。分割用のエネルギー履歴は直近 3 秒分（150 frame）だけを保持し、必要な範囲が履歴にない場合はプログラムの誤りとして停止します。
-- ASR は VAD が閉じた区間または最大 14 秒で分割した各区間を一回ずつ認識します。長い連続発話では最初の区間が閉じるまで初表示が遅れます。14 秒は表示遅延の上限ではなく、音声区間の最大長です。
-- 発話開始から始まる独立区間は、pre-roll を含めて 0.5 秒未満なら ASR に送りません。無音や雑音の短い断片から ASR が「はい。」などを生成するのを防ぐためで、0.5 秒未満の本物の相づちも送られません。分割後の端数は continuation として保持し、この最小長では捨てません。ただし Qwen3-ASR の入力が 20 ms 未満なら推論せず空本文を返すため、端数区間が残ることと文字が表示されることは別です。
+- 発話開始は VAD 確率 0.50 以上、発話終了は 0.35 未満（FluidAudio streaming VAD は開始閾値から 0.15 引く）です。発話開始前に 0.10 秒の pre-roll を含め、無音終了は 0.75 秒です。確定処理も同じ設定で区間を作り、Linux / Windows は同じ値を Silero VAD の確率に適用します（[Windows の VAD](windows.md#silero-vad-の区間検出)）。
+- `SpeechRangeAssembler` は 0.10 秒の VAD pre-roll を含む speech range を作り、独立 speech range が 0.5 秒未満なら破棄します。これは最終 ASR segment の長さ判定ではありません。VAD が利用できない録音ではライブ ASR を実行しません。
+- speech range が 14 秒に達すると、`[rangeStart+12s,rangeStart+14s)` の範囲で、絶対 sample 0 に揃えた 320 sample（20 ms）frame の RMS が最小の位置で分割します。
+  分割位置は frame の midpoint とし、同値なら最も早い frame を選びます。14 秒到達時点で対象範囲の音声は処理済みなので先読みしません。
+  RMS の rolling history は直近 3 秒（150 frame）だけ保持し、必要な範囲が履歴にない場合は error にします。分割後の continuation は speech range として保持し、独立 range の最小長判定では破棄しません。
+- ライブと確定処理は同じ `VADSegmentationState` の chunking を使います。利用可能な連続 speech ranges は、先頭 range の開始から追加対象 range の終了まで（間の gap を含めて）30秒以内なら一 segment にまとめます。1 segment は ASR 一回・transcript row 一つで、ASR は speech range 部分だけを連結し gap の音声は含めません。
+- 追加した range の終了が segment 先頭 range の開始から30秒を超えると、追加前の segment を閉じて新しい segment を開きます。release 後に報告された range は次の segment に入ります。音声末尾では `finish` が開いた segment を閉じます。
+- 4096 sample chunk ごとの `settledFrame` heuristic は、`settledFrame` の値が先頭 range 開始 + 30秒以上になった時点で開いた segment を release します。0.75秒の無音終了と2 chunk 分の余裕、および静かな分割位置を見込む実用上の判定であり、遅れて届く発話終了時刻を保証しません。
+- 長い連続発話では、最初の speech frame から segment release まで約31〜32秒を見込みますが、普遍的な保証ではありません。表示には ASR・checkpoint overhead が加わります。短い発話も蓄積または無音終了による release まで待つことがあり、残りは停止時に flush します。
+- 0.5 秒未満で独立した speech range は ASR に送りません。Qwen3-ASR は連結後の ASR 入力が 20 ms 未満なら推論せず空本文を返します。この 20 ms 条件は各 speech range ではなく、結合した ASR 入力に対するものです。
 
 ファイル replay は capture device を開かず、ファイルまたは指定した device 相当形式を原速で ingress に投入します。replay input と保存形式は別で、durable timeline とイベント frame 座標は常に 16 kHz mono です。詳細は[原速 replay のライブ遅延計測](testing.md#原速-replay-のライブ遅延計測)を参照してください。
 - 検出した区間は ASR の待ち行列に入れる前に `segment.created` として保存します。ライブ経路は `asr.pending` を書きません。このイベントは確定処理の ASR 待ち状態に使います。
@@ -120,7 +126,7 @@ VAD の失敗時は「録音は継続しています。発話検出を停止し�
 bash scripts/measure_live_latency.sh --sessions-root "$SESSIONS_ROOT" "$AUDIO_FILE"
 ```
 
-指標は「VAD 区間の終了フレームの時刻 → 最初の非空の表示データ更新」です。14 秒分割区間では分割位置が起点です。発話開始からの時間、マイク機器の入力遅延、SwiftUI の描画完了時間は測りません。また、この CLI はアプリの熱制御付きライブキューとは異なり、VAD から ASR を直接呼びます。
+指標は「segment 内の最後の speech range 終了時刻 → 最初の非空の表示データ更新」です。14 秒分割位置や最初の単語を起点にしません。マイク機器の入力遅延、SwiftUI の描画完了時間は測りません。また、この CLI はアプリの熱制御付きライブキューとは異なり、VAD から ASR を直接呼びます。
 
 音声は遅延計測と同じ時計の起点からの絶対予定で投入し、処理時間を後続の塊へ累積させません。出力 JSON は `measurement_scope`、`replay_max_feed_lag_seconds`（append 完了時刻と投入済み音声秒数の差の最大値）、`segment_count`、`updated_count`、`missing_count`、`missing_segment_ids`、個別の遅延、P50、P95、最大値を含みます。遅延の分布は非空更新を得た区間だけから計算し、更新のない区間は missing として別に報告します。更新数がゼロなら分位値は null です。この指標を「発話開始から 1〜3 秒で表示する」保証として扱いません。
 

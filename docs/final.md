@@ -7,7 +7,7 @@
 ```text
 保存音声の処理タイムライン
   → VAD
-  → VAD 区間ごとの Qwen3-ASR
+  → speech range 群を外側 span 30 秒以内にまとめた segment ごとの Qwen3-ASR
   → 必須ローカル2段階の結果と全区間の境界保留を一括公開
   → Core ML 発話文モデルによる境界判定（任意）
   → BTSJ 発話文の組み立て
@@ -21,7 +21,7 @@
 
 読み込み音声の確定処理は、毎回既存の処理タイムラインを削除し、保存済み original からゼロから作り直してから始まります。作り直した処理タイムラインの長さと欠落記録は `storage.json` に保存し、確定処理の終了時に処理タイムラインを削除します。
 
-VAD はライブと同じ `FluidVADSegmentationEngine` で区間を作ります。閾値、14 秒での分割位置、0.5 秒未満の独立区間の除外は[ライブ](live.md#vad-と-asr-の区切り)と同じです。
+ライブと確定処理は共通の `VADSegmentationState` を使い、同じ 4096-sample VAD probability stream chunking（settle・finish を含む）で区間と segment を作ります。確定処理だけの別 regrouping は行いません。VAD threshold はライブと同じです。speech range の規則もライブと同じで、pre-roll 0.10 秒、14 秒到達時の静音位置分割、0.5 秒未満の独立 speech range の除外は変更しません。
 
 エンジン入力は **16,000 Hz・mono・float32 PCM** だけを受け付けます。VAD は保存済み floats を直接読み、ASR loader は区間のサンプルを変更せず Qwen に 16000 とモデルが定義する言語指定 `language=Japanese` を渡します。20 ms 未満の ASR 入力を推論しない規則は変わりません。source frame は original や device ではなく保存タイムラインの座標です。
 
@@ -129,7 +129,7 @@ ID は manifest の完全 UUID から実フォルダー URL に解決します�
 
 ## ASR 区間
 
-ASR は VAD が作った各区間を一回ずつ認識します。最大 14 秒で静音位置を選んで分割し、分割後の短い continuation も保持します。ASR 行の開始・終了時刻は対応する VAD 区間の開始・終了時刻です。
+利用可能な speech range を、最初の range の開始から追加 range の終了までの外側 span が30秒以内なら一 segment にまとめます。1 segment は Qwen3-ASR の一回の呼び出しと transcript row 一つに対応します。ASR loader は speech range の音声だけを連結し、range 間の gap 音声は読みません。行の開始・終了時刻は segment の最初の range の開始・最後の range の終了です。
 
 画面と `transcript.txt` は同じ表示本文を使い、表示本文がある行を「[mm:ss] 本文」の一行ずつで書き出します。本文内改行は空白にし、フィラー・相槌除去と保存済み LOW 発話文の除去を反映します。ASR の原文と CLI JSON の `text` は表示用の除去で変更しません。
 

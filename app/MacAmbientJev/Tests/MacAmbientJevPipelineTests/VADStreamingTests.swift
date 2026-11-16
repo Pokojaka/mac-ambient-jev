@@ -155,16 +155,20 @@ struct VADProbabilitySegmenterTests {
     }
 
     @Test
-    func continuousSpeechIsSplitIntoSegmentsAtMostFourteenSecondsLong() {
+    func continuousSpeechGroupsFourteenSecondRangesWithinThirtySecondSegments() {
         let chunks = 20 * 16_000 / chunk
         let (segments, total) = run(probabilities: [Float](repeating: 0.9, count: chunks))
-        #expect(segments.count >= 2)
+        #expect(segments.count == 1)
         #expect(segments.first?.startFrame == 0)
         #expect(segments.last?.endFrame == total)
-        for index in segments.indices {
-            #expect(segments[index].endFrame - segments[index].startFrame <= 224_000)
+        #expect(SegmentReference.isValid(segments[0].speechRanges))
+        #expect(segments[0].endFrame - segments[0].startFrame <= 480_000)
+        let speechRanges = segments.flatMap(\.speechRanges)
+        #expect(speechRanges.count >= 2)
+        for index in speechRanges.indices {
+            #expect(speechRanges[index].upperBound - speechRanges[index].lowerBound <= 224_000)
             if index > 0 {
-                #expect(segments[index - 1].endFrame == segments[index].startFrame)
+                #expect(speechRanges[index - 1].upperBound == speechRanges[index].lowerBound)
             }
         }
     }

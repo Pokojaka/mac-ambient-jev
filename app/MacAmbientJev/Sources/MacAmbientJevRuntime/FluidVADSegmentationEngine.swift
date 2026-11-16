@@ -11,7 +11,7 @@ actor FluidVADSegmentationEngine: VADChunkSegmenting {
     static let segmentationConfig = VadSegmentationConfig(
         minSpeechDuration: 0,
         minSilenceDuration: VADSegmentationParameters.minSilenceSeconds,
-        maxSpeechDuration: VADSegmentationParameters.maxSegmentSeconds,
+        maxSpeechDuration: VADSegmentationParameters.maxSpeechRangeSeconds,
         speechPadding: 0
     )
 

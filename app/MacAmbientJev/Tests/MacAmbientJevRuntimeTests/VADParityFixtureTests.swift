@@ -6,9 +6,9 @@ import MacAmbientJevPipeline
 import MacAmbientJevVADFixtures
 @testable import MacAmbientJevRuntime
 
-/// `Tests/MacAmbientJevVADFixtures/vad_parity.json` is what FluidAudio produces for the parity
-/// cases. The Linux and Windows Silero engine is tested against it, so it must stay equal to the
-/// Mac engine's output.
+/// `Tests/MacAmbientJevVADFixtures/vad_parity.json` records FluidAudio's speech ranges for the parity
+/// cases, not grouped segment spans. The Linux and Windows Silero engine is tested against them, so
+/// they must stay equal to the Mac engine's output.
 private func fluidExpectation(
     for parityCase: VADParityCase, clip: [Float]
 ) async throws -> VADParityExpectation {
@@ -25,8 +25,8 @@ private func fluidExpectation(
         name: parityCase.name,
         sampleCount: samples.count,
         chunkProbabilities: probabilities,
-        segments: segments.map {
-            VADParityExpectation.Segment(startFrame: $0.startFrame, endFrame: $0.endFrame)
+        segments: segments.flatMap(\.speechRanges).map {
+            VADParityExpectation.Segment(startFrame: $0.lowerBound, endFrame: $0.upperBound)
         }
     )
 }
@@ -71,9 +71,9 @@ struct VADParityFixtureTests {
     }
 
     /// Isolates the port from the model: FluidAudio's own probabilities through the ported
-    /// state machine must give FluidAudio's segments.
+    /// state machine must give FluidAudio's speech ranges.
     @Test(arguments: VADParityCase.all)
-    func portedStateMachineReproducesFluidAudioSegments(parityCase: VADParityCase) throws {
+    func portedStateMachineReproducesFluidAudioSpeechRanges(parityCase: VADParityCase) throws {
         let committed = try VADParityFile.load().expectation(named: parityCase.name)
         let samples = parityCase.samples(clip: try SileroTestInputs.speechClipSamples())
         let chunkSamples = VADSegmentationParameters.chunkSamples
@@ -89,8 +89,8 @@ struct VADParityFixtureTests {
             )
         }
         segments += segmenter.finish(totalCanonicalFrames: Int64(samples.count))
-        #expect(segments.map {
-            VADParityExpectation.Segment(startFrame: $0.startFrame, endFrame: $0.endFrame)
+        #expect(segments.flatMap(\.speechRanges).map {
+            VADParityExpectation.Segment(startFrame: $0.lowerBound, endFrame: $0.upperBound)
         } == committed.segments)
     }
 }

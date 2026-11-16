@@ -119,12 +119,13 @@ struct SileroVADEngineTests {
             == "silero-vad@5cd7945676eb32225748052e2e6a0580e4686a08+onnxruntime@1.31.0")
         #expect(provenance.configuration == [
             "pre_roll_seconds": "0.1",
-            "max_segment_seconds": "14.0",
+            "max_speech_range_seconds": "14.0",
+            "max_segment_span_seconds": "30.0",
             "min_silence_seconds": "0.75",
             "vad_threshold": "0.5",
             "split_search_window_seconds": "2.0",
             "split_energy_frame_seconds": "0.02",
-            "minimum_independent_segment_seconds": "0.5",
+            "minimum_independent_speech_range_seconds": "0.5",
             "negative_vad_threshold": "0.35",
             "chunk_samples": "4096",
             "frame_samples": "512",
@@ -163,8 +164,9 @@ struct SileroVADEngineTests {
         #expect(finalCheckpoint.committedFrames == Int64(clip.count))
         #expect(segments.map(\.segmentationRunID) == Array(repeating: "live", count: segments.count))
         #expect(
-            segments.map { VADParityExpectation.Segment(startFrame: $0.startFrame, endFrame: $0.endFrame) }
-                == fixture.segments
+            segments.flatMap(\.speechRanges).map {
+                VADParityExpectation.Segment(startFrame: $0.lowerBound, endFrame: $0.upperBound)
+            } == fixture.segments
         )
     }
 }
