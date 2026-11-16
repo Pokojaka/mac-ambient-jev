@@ -29,8 +29,8 @@ private actor RecordingVAD: LiveVADProcessing {
     private var emitted = false
     func processAvailable(checkpoint: AudioCheckpoint) -> LiveVADProgress {
         let segments = emitted ? [] : [
-            SegmentReference(segmentationRunID: segmentationRunID, segmentID: "row_1", startFrame: 0, endFrame: 4_000),
-            SegmentReference(segmentationRunID: segmentationRunID, segmentID: "row_2", startFrame: 4_000, endFrame: 8_000),
+            SegmentReference(segmentationRunID: segmentationRunID, segmentID: "row_1", speechRanges: [0..<4_000]),
+            SegmentReference(segmentationRunID: segmentationRunID, segmentID: "row_2", speechRanges: [4_000..<8_000]),
         ]
         emitted = true
         return LiveVADProgress(emittedSegments: segments, totalSegmentCount: 2,

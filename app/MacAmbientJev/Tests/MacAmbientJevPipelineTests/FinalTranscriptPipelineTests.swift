@@ -60,8 +60,7 @@ private struct FakeFinalVAD: FinalTranscriptVADSegmenter {
             SegmentReference(
                 segmentationRunID: runID,
                 segmentID: $0.segmentID,
-                startFrame: $0.startFrame,
-                endFrame: $0.endFrame
+                speechRanges: $0.speechRanges
             )
         }
     }
@@ -162,7 +161,7 @@ private struct CancellationGatedFinalVAD: FinalTranscriptVADSegmenter {
 
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
         try await gate.suspendUntilCancelled()
-        return [SegmentReference(segmentationRunID: runID, segmentID: "vad", startFrame: 0, endFrame: 16_000)]
+        return [SegmentReference(segmentationRunID: runID, segmentID: "vad", speechRanges: [0..<16_000])]
     }
 }
 
@@ -314,7 +313,7 @@ private func recoveryProcessor(
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: ["再開した本文"]),
             finalTranscriptVAD: FakeFinalVAD(
-                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
                 log: log
             )
         ),
@@ -393,7 +392,7 @@ func nativeProcessorCancellationDuringASRPausesDurablyAndRecoversOnRelaunch() as
         engines: SessionProcessingEngines(
             asr: CancellationGatedFinalASR(gate: gate),
             finalTranscriptVAD: FakeFinalVAD(
-                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
                 log: log
             )
         ),
@@ -445,7 +444,7 @@ func nativeProcessorCancellationRetainsPublishedTranscriptAndRuns() async throws
         engines: SessionProcessingEngines(
             asr: CancellationGatedFinalASR(gate: gate),
             finalTranscriptVAD: FakeFinalVAD(
-                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
                 log: log
             )
         ),
@@ -516,8 +515,8 @@ func nativeProcessorCancellationDuringPacingPausesDurablyAndRecoversOnRelaunch()
             asr: FakeFinalASR(log: log, values: ["前半", "後半"]),
             finalTranscriptVAD: FakeFinalVAD(
                 segments: [
-                    SegmentReference(segmentationRunID: "ignored", segmentID: "first", startFrame: 0, endFrame: 8_000),
-                    SegmentReference(segmentationRunID: "ignored", segmentID: "second", startFrame: 8_000, endFrame: 16_000)
+                    SegmentReference(segmentationRunID: "ignored", segmentID: "first", speechRanges: [0..<8_000]),
+                    SegmentReference(segmentationRunID: "ignored", segmentID: "second", speechRanges: [8_000..<16_000])
                 ],
                 log: log
             )
@@ -584,7 +583,7 @@ func finalTranscriptPipelinePreservesVADContextForASR() async throws {
     let log = FinalizationCallLog()
     let asr = FakeFinalASR(log: log, values: ["文脈を保った発話", "予期しない再認識"])
     let vad = FakeFinalVAD(
-        segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+        segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<4_000, 8_000..<16_000])],
         log: log
     )
     let processor = NativeSessionProcessor(
@@ -624,7 +623,7 @@ func finalTranscriptPipelinePreservesVADContextForASR() async throws {
     #expect(rows.map(\.text) == ["文脈を保った発話"])
     #expect(rows.map(\.startMilliseconds) == [0])
     #expect(rows.map(\.endMilliseconds) == [1_000])
-    #expect(await asr.recordedAudioFrameCounts() == [16_000])
+    #expect(await asr.recordedAudioFrameCounts() == [12_000])
     #expect(rows.map(\.segmentID) == ["vad"])
 
     let rawEvents = try recovered.lines.compactMap { line -> [String: Any]? in
@@ -636,6 +635,14 @@ func finalTranscriptPipelinePreservesVADContextForASR() async throws {
             && ($0["payload"] as? [String: Any])?["stage"] as? String == ProcessingStage.segmentation.rawValue
     })
     #expect(created.count == 1)
+    let createdEvent = try #require(created.first)
+    let createdPayload = try #require(createdEvent["payload"] as? [String: Any])
+    let decodedPayload = try JSONDecoder().decode(
+        SegmentCreatedPayload.self,
+        from: JSONSerialization.data(withJSONObject: createdPayload)
+    )
+    #expect(decodedPayload.speechRanges == [0..<4_000, 8_000..<16_000])
+    #expect(createdPayload["speech_ranges"] as? [[Int]] == [[0, 4_000], [8_000, 16_000]])
     #expect(created.allSatisfy { ( $0["event_seq"] as? Int ?? Int.max) < (rawEvents[segmentationCompletionIndex]["event_seq"] as? Int ?? -1) })
     let completionPayload = rawEvents[segmentationCompletionIndex]["payload"] as? [String: Any]
     #expect(completionPayload?["completed_count"] as? Int == created.count)
@@ -658,7 +665,7 @@ func decisionsSkipWhitespaceOnlyFinalTranscript() async throws {
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: [" \n\t"]),
             finalTranscriptVAD: FakeFinalVAD(
-                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "seg_empty", startFrame: 0, endFrame: 16_000)],
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "seg_empty", speechRanges: [0..<16_000])],
                 log: log
             )
         ),
@@ -688,7 +695,7 @@ func finalTranscriptPipelineFailureLeavesPreviousActiveRunsUntouched() async thr
     let log = FinalizationCallLog()
     let asr = FakeFinalASR(log: log, values: ["text"], shouldFail: true)
     let vad = FakeFinalVAD(
-        segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+        segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
         log: log
     )
     let processor = NativeSessionProcessor(
@@ -728,7 +735,7 @@ func finishLiveTranscriptionEndsWithFinalizationStatus() async throws {
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: ["確定文"]),
             finalTranscriptVAD: FakeFinalVAD(
-                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
                 log: log
             )
         ),
@@ -825,7 +832,7 @@ func deferredDecisionsKeepFinalizationRunningUntilLocalTranscriptIsVisible() asy
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: ["表示する本文"]),
             finalTranscriptVAD: FakeFinalVAD(
-                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "seg_000001", startFrame: 0, endFrame: 16_000)],
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "seg_000001", speechRanges: [0..<16_000])],
                 log: log
             )
         ),
@@ -882,8 +889,8 @@ func failedModelRequestsDeferFinalizationAndRetryDecisions() async throws {
             asr: FakeFinalASR(log: log, values: ["一つ目", "二つ目"]),
             finalTranscriptVAD: FakeFinalVAD(
                 segments: [
-                    SegmentReference(segmentationRunID: "ignored", segmentID: "seg_000001", startFrame: 0, endFrame: 8_000),
-                    SegmentReference(segmentationRunID: "ignored", segmentID: "seg_000002", startFrame: 8_000, endFrame: 16_000)
+                    SegmentReference(segmentationRunID: "ignored", segmentID: "seg_000001", speechRanges: [0..<8_000]),
+                    SegmentReference(segmentationRunID: "ignored", segmentID: "seg_000002", speechRanges: [8_000..<16_000])
                 ],
                 log: log
             )
@@ -943,7 +950,7 @@ func finalTranscriptPipelineEmitsASRPhaseBeforeTranscription() async throws {
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: ["えー、本文"]),
             finalTranscriptVAD: FakeFinalVAD(
-                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
                 log: log
             )
         ),
@@ -1022,8 +1029,8 @@ func finalTranscriptPipelineRejectsPersistedLogMissingVADSegment() async throws 
         asr: SegmentLineDroppingASR(eventsURL: sessionURL.appending(path: "events.jsonl"), log: log),
         vadSegmenter: FakeFinalVAD(
             segments: [
-                SegmentReference(segmentationRunID: "ignored", segmentID: "vad_1", startFrame: 0, endFrame: 8_000),
-                SegmentReference(segmentationRunID: "ignored", segmentID: "vad_2", startFrame: 8_000, endFrame: 16_000)
+                SegmentReference(segmentationRunID: "ignored", segmentID: "vad_1", speechRanges: [0..<8_000]),
+                SegmentReference(segmentationRunID: "ignored", segmentID: "vad_2", speechRanges: [8_000..<16_000])
             ],
             log: log
         ),
@@ -1053,7 +1060,7 @@ func persistedValidationFailureKeepsPublishedRunsAndDisplayAndReturnsASRMetrics(
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: ["最初の確定"]),
             finalTranscriptVAD: FakeFinalVAD(
-                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
                 log: log
             )
         ),
@@ -1075,8 +1082,8 @@ func persistedValidationFailureKeepsPublishedRunsAndDisplayAndReturnsASRMetrics(
             asr: SegmentLineDroppingASR(eventsURL: sessionURL.appending(path: "events.jsonl"), log: log),
             finalTranscriptVAD: FakeFinalVAD(
                 segments: [
-                    SegmentReference(segmentationRunID: "ignored", segmentID: "vad_1", startFrame: 0, endFrame: 8_000),
-                    SegmentReference(segmentationRunID: "ignored", segmentID: "vad_2", startFrame: 8_000, endFrame: 16_000)
+                    SegmentReference(segmentationRunID: "ignored", segmentID: "vad_1", speechRanges: [0..<8_000]),
+                    SegmentReference(segmentationRunID: "ignored", segmentID: "vad_2", speechRanges: [8_000..<16_000])
                 ],
                 log: log
             )
@@ -1105,7 +1112,7 @@ func failedFinalizationShowsThePreviousFinalizedTranscript() async throws {
     defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
     let log = FinalizationCallLog()
     let vad = FakeFinalVAD(
-        segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+        segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
         log: log
     )
     let succeeding = NativeSessionProcessor(
@@ -1208,7 +1215,7 @@ func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: ["復旧した本文"]),
             finalTranscriptVAD: FakeFinalVAD(
-                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
                 log: log
             )
         ),
@@ -1250,7 +1257,7 @@ func everyRunRecordsItsProvenanceOnceAndReprocessingRecordsNewRuns() async throw
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: ["一回目", "二回目"]),
             finalTranscriptVAD: FakeFinalVAD(
-                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
                 log: log
             )
         ),
@@ -1305,7 +1312,7 @@ func unreadableMetadataIsReplacedOnlyByExplicitReprocessing() async throws {
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: ["再処理"]),
             finalTranscriptVAD: FakeFinalVAD(
-                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", startFrame: 0, endFrame: 16_000)],
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
                 log: log
             )
         ),
@@ -1427,7 +1434,7 @@ func finalizationClassifiesFinalClausesAndReusesOnlyByteIdenticalDurableLiveDeci
             asr: FakeFinalASR(log: log, values: [liveText, "えー", finalText]),
             finalTranscriptVAD: FakeFinalVAD(
                 segments: [SegmentReference(
-                    segmentationRunID: "ignored", segmentID: "final_row", startFrame: 0, endFrame: 16_000
+                    segmentationRunID: "ignored", segmentID: "final_row", speechRanges: [0..<16_000]
                 )],
                 log: log
             )
@@ -1443,9 +1450,9 @@ func finalizationClassifiesFinalClausesAndReusesOnlyByteIdenticalDurableLiveDeci
     _ = try await processor.processLiveSegments(
         sessionID: sessionID,
         segments: [
-            SegmentReference(segmentationRunID: "live_seg", segmentID: "live_row", startFrame: 0, endFrame: 8_000),
+            SegmentReference(segmentationRunID: "live_seg", segmentID: "live_row", speechRanges: [0..<8_000]),
             // A filler-only successor still receives boundary inference when it becomes terminal.
-            SegmentReference(segmentationRunID: "live_seg", segmentID: "live_tail", startFrame: 8_000, endFrame: 16_000),
+            SegmentReference(segmentationRunID: "live_seg", segmentID: "live_tail", speechRanges: [8_000..<16_000]),
         ],
         checkpoint: checkpoint, onStatus: nil,
         onUpdate: { segments, _ in await gate.observe(segments) }

@@ -290,7 +290,7 @@ private func makeProgress(count: Int, segments: [SegmentReference]) -> LiveVADPr
     LiveVADProgress(emittedSegments: segments, totalSegmentCount: count, committedFrames: 0, micSpeechLevels: [])
 }
 private func makeSegment(_ id: String) -> SegmentReference {
-    SegmentReference(segmentationRunID: "finish-test-segmentation", segmentID: id, startFrame: 0, endFrame: 1)
+    SegmentReference(segmentationRunID: "finish-test-segmentation", segmentID: id, speechRanges: [0..<1])
 }
 
 @MainActor

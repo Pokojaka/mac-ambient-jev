@@ -37,7 +37,7 @@ private struct ProbeVAD: FinalTranscriptVADSegmenter {
         guard let first = samples.firstIndex(where: { abs($0) > 0.05 }),
               let last = samples.lastIndex(where: { abs($0) > 0.05 }) else { return [] }
         return [SegmentReference(
-            segmentationRunID: runID, segmentID: "speech", startFrame: Int64(first), endFrame: Int64(last + 1)
+            segmentationRunID: runID, segmentID: "speech", speechRanges: [Int64(first)..<Int64(last + 1)]
         )]
     }
 }

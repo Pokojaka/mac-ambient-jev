@@ -488,11 +488,11 @@ struct TranscribeFileTests {
     func payloadsHaveExactSchemasAndUseEngineProvenanceConfiguration() throws {
         let segments = [
             FileTranscriptionSegment(
-                reference: SegmentReference(segmentationRunID: "vad-run", segmentID: "segment-1", startFrame: 1_600, endFrame: 3_200),
+                reference: SegmentReference(segmentationRunID: "vad-run", segmentID: "segment-1", speechRanges: [1_600..<3_200]),
                 text: "first"
             ),
             FileTranscriptionSegment(
-                reference: SegmentReference(segmentationRunID: "vad-run", segmentID: "segment-2", startFrame: 8_000, endFrame: 9_600),
+                reference: SegmentReference(segmentationRunID: "vad-run", segmentID: "segment-2", speechRanges: [8_000..<9_600]),
                 text: "second"
             )
         ]

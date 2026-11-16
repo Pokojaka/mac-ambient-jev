@@ -512,8 +512,7 @@ private func makeSegment(_ segmentID: String, at startFrame: Int64) -> SegmentRe
     SegmentReference(
         segmentationRunID: "seg_coordinator_test",
         segmentID: segmentID,
-        startFrame: startFrame,
-        endFrame: startFrame + 1
+        speechRanges: [startFrame..<startFrame + 1]
     )
 }
 
@@ -1373,8 +1372,7 @@ func measureLatestCheckpointRetentionDuringThermalStall() async throws {
             segments: [SegmentReference(
                 segmentationRunID: "growth",
                 segmentID: "row_\(index)",
-                startFrame: Int64(index) * 80_000,
-                endFrame: Int64(index + 1) * 80_000
+                speechRanges: [Int64(index) * 80_000..<Int64(index + 1) * 80_000]
             )],
             checkpoint: checkpoint
         )
@@ -1448,14 +1446,12 @@ func criticalHeatSuspendsLiveRecognitionUntilCooled() async throws {
         SegmentReference(
             segmentationRunID: "seg",
             segmentID: "seg_000001",
-            startFrame: 0,
-            endFrame: 8_000
+            speechRanges: [0..<8_000]
         ),
         SegmentReference(
             segmentationRunID: "seg",
             segmentID: "seg_000002",
-            startFrame: 8_000,
-            endFrame: 16_000
+            speechRanges: [8_000..<16_000]
         )
     ]
     state.enqueue(sessionID: sessionID, segments: [segments[0]], checkpoint: checkpoint)

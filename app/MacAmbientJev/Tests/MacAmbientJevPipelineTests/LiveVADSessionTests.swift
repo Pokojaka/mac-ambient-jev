@@ -24,8 +24,7 @@ private actor EmittingLiveVAD: VADChunkSegmenting {
                 SegmentReference(
                     segmentationRunID: runID,
                     segmentID: String(format: "seg_%06d", index),
-                    startFrame: Int64((index - 1) * chunkSize),
-                    endFrame: Int64((index - 1) * chunkSize + samples.count)
+                    speechRanges: [Int64((index - 1) * chunkSize)..<Int64((index - 1) * chunkSize + samples.count)]
                 )
             ],
             micLevel: nil

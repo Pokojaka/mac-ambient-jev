@@ -108,7 +108,7 @@ func recordingStopFinalizesTailAtNon16kHzDeviceRate(sampleRate: Double) async th
             let checkpoint = try await drain.committedSnapshot()
             let progress = try await processor.processLiveSegments(sessionID: sessionID,
                 segments: [SegmentReference(segmentationRunID: liveRun, segmentID: "live_split",
-                                            startFrame: speechStart, endFrame: 104 * 16_000)], checkpoint: checkpoint,
+                                            speechRanges: [speechStart..<104 * 16_000])], checkpoint: checkpoint,
                 onStatus: nil, onUpdate: nil)
             #expect(progress.materializedSegments.map(\.text) == ["末尾の発話"])
             liveSplitDelivered = true
@@ -121,7 +121,7 @@ func recordingStopFinalizesTailAtNon16kHzDeviceRate(sampleRate: Double) async th
     #expect(checkpoint.gapEvents.isEmpty)
     let result = await processor.finishLiveTranscription(sessionID: sessionID, checkpoint: checkpoint,
         finalSegments: [SegmentReference(segmentationRunID: liveRun, segmentID: "live_tail",
-                                         startFrame: 104 * 16_000, endFrame: checkpoint.committedFrames)],
+                                         speechRanges: [104 * 16_000..<checkpoint.committedFrames])],
         pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in }, onStatus: { _ in }, onUpdate: { _, _ in })
     #expect(result.disposition == .completed, "\(result.message ?? "no failure message")")
     let metadata = try #require(try ProcessingMetadataStore(sessionURL: url).load())

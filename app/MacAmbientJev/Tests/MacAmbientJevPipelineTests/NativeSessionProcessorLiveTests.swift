@@ -150,14 +150,12 @@ func nativeSessionProcessorStreamsLiveSegmentsWithoutRealModel() async throws {
         SegmentReference(
             segmentationRunID: segmentationRunID,
             segmentID: "seg_000001",
-            startFrame: 0,
-            endFrame: 4_000
+            speechRanges: [0..<4_000]
         ),
         SegmentReference(
             segmentationRunID: segmentationRunID,
             segmentID: "seg_000002",
-            startFrame: 4_000,
-            endFrame: 8_000
+            speechRanges: [4_000..<8_000]
         )
     ]
 
@@ -291,7 +289,7 @@ func cancelledLiveTranscriptionDoesNotPublishInFlightResult() async throws {
     )
     let segment = SegmentReference(
         segmentationRunID: "seg_live_test", segmentID: "seg_000001",
-        startFrame: 0, endFrame: 4_000
+        speechRanges: [0..<4_000]
     )
     let updates = UpdateCounter()
 
@@ -326,7 +324,7 @@ private actor ScriptedLiveProcessorASR: ASREngine {
 private struct LiveProcessorFinalVAD: FinalTranscriptVADSegmenter {
     let provenance = RunProvenance(engine: "fixture-vad", model: nil, version: "test", configuration: [:])
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
-        [SegmentReference(segmentationRunID: runID, segmentID: "final", startFrame: 0, endFrame: 16_000)]
+        [SegmentReference(segmentationRunID: runID, segmentID: "final", speechRanges: [0..<16_000])]
     }
 }
 
@@ -482,7 +480,7 @@ func nativeTakeoverFinishesWithoutWaitingForLiveDecisionsAndReusesOnlyFrozenDura
     let progress = try await fixture.processor.processLiveSegments(
         sessionID: fixture.sessionID,
         segments: (0..<3).map {
-            SegmentReference(segmentationRunID: "live", segmentID: "live_\($0)", startFrame: Int64($0 * 4_000), endFrame: Int64($0 * 4_000 + 3_000))
+            SegmentReference(segmentationRunID: "live", segmentID: "live_\($0)", speechRanges: [Int64($0 * 4_000)..<Int64($0 * 4_000 + 3_000)])
         },
         checkpoint: fixture.checkpoint, onStatus: nil,
         onUpdate: { rows, _ in await liveUpdates.record(rows) }
@@ -542,8 +540,8 @@ func cancellingLiveDecisionsAfterAFailedTaggerLoadClearsItsPendingKeys() async t
     _ = try await fixture.processor.processLiveSegments(
         sessionID: fixture.sessionID,
         segments: [
-            SegmentReference(segmentationRunID: "live", segmentID: "a", startFrame: 0, endFrame: 4_000),
-            SegmentReference(segmentationRunID: "live", segmentID: "b", startFrame: 4_000, endFrame: 8_000)
+            SegmentReference(segmentationRunID: "live", segmentID: "a", speechRanges: [0..<4_000]),
+            SegmentReference(segmentationRunID: "live", segmentID: "b", speechRanges: [4_000..<8_000])
         ],
         checkpoint: fixture.checkpoint, onStatus: nil, onUpdate: { rows, _ in await updates.record(rows) }
     )

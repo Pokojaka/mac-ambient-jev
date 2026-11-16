@@ -125,10 +125,10 @@ private struct MultipleSegmentLiveVAD: LiveVADProcessing {
             return LiveVADProgress(emittedSegments: [], totalSegmentCount: 0, committedFrames: 0, micSpeechLevels: [])
         }
         let segments = [
-            SegmentReference(segmentationRunID: segmentationRunID, segmentID: "live_segment_1", startFrame: 0, endFrame: midpoint),
+            SegmentReference(segmentationRunID: segmentationRunID, segmentID: "live_segment_1", speechRanges: [0..<midpoint]),
             SegmentReference(
                 segmentationRunID: segmentationRunID, segmentID: "live_segment_2",
-                startFrame: midpoint, endFrame: checkpoint.committedFrames
+                speechRanges: [midpoint..<checkpoint.committedFrames]
             ),
         ]
         return LiveVADProgress(

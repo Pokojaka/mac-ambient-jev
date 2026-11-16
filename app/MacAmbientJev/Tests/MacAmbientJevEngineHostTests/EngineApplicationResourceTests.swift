@@ -52,8 +52,8 @@ private struct ResourceGatedASR: ASREngine {
 private struct ResourceFinalVAD: FinalTranscriptVADSegmenter {
     let provenance = RunProvenance(engine: "resource-final-vad", model: nil, version: "test", configuration: [:])
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
-        [SegmentReference(segmentationRunID: runID, segmentID: "first", startFrame: 0, endFrame: 16_000),
-         SegmentReference(segmentationRunID: runID, segmentID: "second", startFrame: 16_000, endFrame: 32_000)]
+        [SegmentReference(segmentationRunID: runID, segmentID: "first", speechRanges: [0..<16_000]),
+         SegmentReference(segmentationRunID: runID, segmentID: "second", speechRanges: [16_000..<32_000])]
     }
 }
 

@@ -198,8 +198,7 @@ private actor ThermalQueueLiveVAD: LiveVADProcessing {
             SegmentReference(
                 segmentationRunID: segmentationRunID,
                 segmentID: "row_\(index)",
-                startFrame: Int64(index) * 8_000,
-                endFrame: Int64(index + 1) * 8_000
+                speechRanges: [Int64(index) * 8_000..<Int64(index + 1) * 8_000]
             )
         }
         return LiveVADProgress(

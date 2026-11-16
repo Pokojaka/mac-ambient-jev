@@ -19,8 +19,7 @@ private func segment(_ segmentID: String, at startFrame: Int64) -> SegmentRefere
     SegmentReference(
         segmentationRunID: "seg_live_test",
         segmentID: segmentID,
-        startFrame: startFrame,
-        endFrame: startFrame + 1
+        speechRanges: [startFrame..<startFrame + 1]
     )
 }
 

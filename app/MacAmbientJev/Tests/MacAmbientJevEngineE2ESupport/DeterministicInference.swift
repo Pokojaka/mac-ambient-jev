@@ -99,8 +99,7 @@ private struct DeterministicFinalTranscriptVAD: FinalTranscriptVADSegmenter {
         return [SegmentReference(
             segmentationRunID: runID,
             segmentID: "engine_e2e_final_segment",
-            startFrame: 0,
-            endFrame: reader.info.committedFrames
+            speechRanges: [0..<reader.info.committedFrames]
         )]
     }
 }

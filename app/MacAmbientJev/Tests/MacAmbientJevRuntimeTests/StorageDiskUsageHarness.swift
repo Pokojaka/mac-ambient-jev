@@ -18,7 +18,7 @@ private struct StorageHarnessVAD: FinalTranscriptVADSegmenter {
                                     sampleFormat: CanonicalAudio.sampleFormat)
         return [SegmentReference(
             segmentationRunID: runID, segmentID: "synthetic-speech",
-            startFrame: 0, endFrame: Int64(reader.info.sampleRate)
+            speechRanges: [0..<Int64(reader.info.sampleRate)]
         )]
     }
 }
