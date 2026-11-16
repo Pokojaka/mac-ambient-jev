@@ -9,6 +9,7 @@ fi
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 
+python3 -B "$repo_root/scripts/fetch_onnxruntime.py"
 exec swift run \
   --disable-sandbox \
   --package-path "$repo_root/app/MacAmbientJev" \

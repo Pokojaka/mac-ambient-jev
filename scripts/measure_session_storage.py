@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 
@@ -39,6 +40,8 @@ def main() -> None:
     environment["STORAGE_HARNESS_ROOT"] = str(run)
     environment["STORAGE_HARNESS_SECONDS"] = str(options.seconds)
     repository = Path(__file__).resolve().parent.parent
+    subprocess.run([sys.executable, "-B", str(repository / "scripts/fetch_onnxruntime.py")],
+                   cwd=repository, check=True)
     subprocess.run([
         "swift", "test", "--package-path", "app/MacAmbientJev",
         "--filter", "storageDiskUsageHarness",

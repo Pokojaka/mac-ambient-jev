@@ -30,6 +30,7 @@ jobs:
           python3 -B scripts/test_export_clause_tagger_onnx.py
           python3 -B scripts/test_build_app.py
           python3 -B scripts/test_fetch_mac_vad_model.py
+          python3 -B scripts/test_fetch_onnxruntime.py
       - name: Swift toolchain fingerprint
         id: toolchain
         run: |
@@ -62,8 +63,38 @@ jobs:
         with:
           path: .build/mac-test-models
           key: mac-vad-model-${{ hashFiles('app/MacAmbientJev/Sources/MacAmbientJevRuntime/Resources/mac_models.json') }}
+      - name: Select the pinned ONNX Runtime SDK
+        id: onnxruntime
+        run: |
+          python3 - <<'PY'
+          import os
+          import platform
+          import sys
+          sys.path.insert(0, 'scripts')
+          import fetch_onnxruntime as ort
+
+          chosen = ort.choose_asset(platform.system(), platform.machine())
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'version={ort.VERSION}\n')
+              output.write(f'platform={chosen[0]}\n')
+              output.write(f'sha256={chosen[2]}\n')
+          PY
+      - name: Restore ONNX Runtime SDK cache
+        id: onnxruntime-sdk
+        uses: actions/cache/restore@v4
+        with:
+          path: .build/onnxruntime/${{ steps.onnxruntime.outputs.version }}
+          key: onnxruntime-${{ steps.onnxruntime.outputs.version }}-${{ steps.onnxruntime.outputs.platform }}-${{ steps.onnxruntime.outputs.sha256 }}
+      - name: Fetch ONNX Runtime SDK
+        run: python3 -B scripts/fetch_onnxruntime.py
       - name: Verify V1 tests
         run: bash scripts/verify_v1_tests.sh
+      - name: Save ONNX Runtime SDK cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.onnxruntime-sdk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .build/onnxruntime/${{ steps.onnxruntime.outputs.version }}
+          key: ${{ steps.onnxruntime-sdk.outputs.cache-primary-key }}
       - name: Save the pinned VAD model
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.vad-model.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -146,8 +177,38 @@ jobs:
             app/MacAmbientJev/.build/artifacts
             app/MacAmbientJev/.build/workspace-state.json
           key: swiftpm-sources-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('app/MacAmbientJev/Package.resolved') }}-${{ hashFiles('app/MacAmbientJev/Package.swift') }}
+      - name: Select the pinned ONNX Runtime SDK
+        id: onnxruntime
+        run: |
+          python3 - <<'PY'
+          import os
+          import platform
+          import sys
+          sys.path.insert(0, 'scripts')
+          import fetch_onnxruntime as ort
+
+          chosen = ort.choose_asset(platform.system(), platform.machine())
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'version={ort.VERSION}\n')
+              output.write(f'platform={chosen[0]}\n')
+              output.write(f'sha256={chosen[2]}\n')
+          PY
+      - name: Restore ONNX Runtime SDK cache
+        id: onnxruntime-sdk
+        uses: actions/cache/restore@v4
+        with:
+          path: .build/onnxruntime/${{ steps.onnxruntime.outputs.version }}
+          key: onnxruntime-${{ steps.onnxruntime.outputs.version }}-${{ steps.onnxruntime.outputs.platform }}-${{ steps.onnxruntime.outputs.sha256 }}
+      - name: Fetch ONNX Runtime SDK
+        run: python3 -B scripts/fetch_onnxruntime.py
       - name: Verify V1 app
         run: bash scripts/verify_v1_app.sh
+      - name: Save ONNX Runtime SDK cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.onnxruntime-sdk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .build/onnxruntime/${{ steps.onnxruntime.outputs.version }}
+          key: ${{ steps.onnxruntime-sdk.outputs.cache-primary-key }}
       - name: Save SwiftPM sources
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.swiftpm-sources.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4

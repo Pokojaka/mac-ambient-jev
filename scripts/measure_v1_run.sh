@@ -34,6 +34,7 @@ if (( available_bytes < 4 * 1024 * 1024 * 1024 )); then
   echo "at least 4 GiB of free disk space is required for a measured run" >&2
   exit 1
 fi
+python3 -B "$repo/scripts/fetch_onnxruntime.py"
 bin_dir="$(swift build --package-path "$repo/app/MacAmbientJev" -c release --show-bin-path)"
 bin="$bin_dir/MacAmbientJevProcessRecording"
 [[ -x "$bin" ]] || { echo "build the release CLI before measuring" >&2; exit 2; }

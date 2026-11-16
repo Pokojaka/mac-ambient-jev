@@ -131,6 +131,7 @@ struct SileroVADEngineTests {
             "frame_samples": "512",
             "frame_aggregation": "noisy-or",
             "model_sha256": "7ed98ddbad84ccac4cd0aeb3099049280713df825c610a8ed34543318f1b2c49",
+            "graph_optimization_level": "ORT_ENABLE_ALL",
             "intra_op_threads": "3",
         ])
     }

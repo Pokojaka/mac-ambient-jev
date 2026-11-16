@@ -9,11 +9,13 @@ public struct ONNXRuntimeError: Error, LocalizedError, Sendable {
 
 public enum ONNXTensor: Sendable, Equatable {
     case float32(shape: [Int64], values: [Float])
+    case int32(shape: [Int64], values: [Int32])
     case int64(shape: [Int64], values: [Int64])
 }
 
 public enum ONNXTensorElementType: Sendable, Equatable {
     case float32
+    case int32
     case int64
 }
 
@@ -102,11 +104,12 @@ public final class ONNXEnvironment: @unchecked Sendable {
 
 public final class ONNXSession {
     public static let interOpThreads: Int32 = 1
+    public static let graphOptimizationLevel = "ORT_ENABLE_ALL"
 
     private let environment: ONNXEnvironment
     private let session: OpaquePointer
 
-    /// Explicitly selects ONNX Runtime's CPU allocator arena without changing memory patterns or other session tuning.
+    /// Enables all ONNX Runtime graph optimizations and explicitly selects its CPU allocator arena without changing memory patterns.
     public init(
         environment: ONNXEnvironment,
         modelURL: URL,
@@ -142,6 +145,11 @@ public final class ONNXSession {
             runtimeAPI.pointee.SetInterOpNumThreads!(options, Self.interOpThreads),
             api: runtimeAPI,
             context: "ONNX Runtimeの並列スレッド数設定に失敗しました"
+        )
+        try checkStatus(
+            runtimeAPI.pointee.SetSessionGraphOptimizationLevel!(options, ORT_ENABLE_ALL),
+            api: runtimeAPI,
+            context: "ONNX Runtimeのグラフ最適化レベル設定に失敗しました"
         )
         let cpuMemoryArenaStatus = cpuMemoryArenaEnabled
             ? runtimeAPI.pointee.EnableCpuMemArena!(options)
@@ -305,6 +313,8 @@ public final class ONNXSession {
             switch nativeElementType {
             case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
                 elementType = .float32
+            case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:
+                elementType = .int32
             case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
                 elementType = .int64
             default:

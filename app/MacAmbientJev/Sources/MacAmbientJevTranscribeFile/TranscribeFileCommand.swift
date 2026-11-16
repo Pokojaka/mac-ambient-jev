@@ -339,6 +339,7 @@ internal enum TranscribeFileCommand {
             "max_new_tokens": try requiredIntConfiguration("max_new_tokens", from: configuration),
             "no_repeat_ngram": try requiredConfiguration("no_repeat_ngram", from: configuration),
             "intra_op_threads": try requiredIntConfiguration("intra_op_threads", from: configuration),
+            "graph_optimization_level": try requiredConfiguration("graph_optimization_level", from: configuration),
             "inter_op_threads": try requiredIntConfiguration("inter_op_threads", from: configuration),
             "cpu_memory_arena": try requiredBoolConfiguration("cpu_memory_arena", from: configuration),
             "segmentation": "silero-final-transcript"

@@ -42,12 +42,7 @@ private func validateTensor(
     return try checkedByteCount(elementCount: elementCount, elementStride: elementStride, context: context)
 }
 
-private enum ONNXValueElementType {
-    case float32
-    case int64
-}
-
-/// An owning handle to a float32 or int64 `OrtValue` that stays inside ONNX Runtime.
+/// An owning handle to a float32, int32, or int64 `OrtValue` that stays inside ONNX Runtime.
 ///
 /// Create one from an `ONNXTensor` (one copy in), or receive one from `ONNXSession.runValues`.
 /// Pass it as an input of a later run to reuse a model output without copying it through Swift.
@@ -58,12 +53,12 @@ public final class ONNXValue: @unchecked Sendable {
 
     let environment: ONNXEnvironment
     let handle: OpaquePointer
-    private let elementType: ONNXValueElementType
+    private let elementType: ONNXTensorElementType
 
     public init(environment: ONNXEnvironment, tensor: ONNXTensor) throws {
         let api = environment.api
         let byteCount: Int
-        let elementType: ONNXValueElementType
+        let elementType: ONNXTensorElementType
         let shape: [Int64]
         switch tensor {
         case let .float32(tensorShape, values):
@@ -74,6 +69,15 @@ public final class ONNXValue: @unchecked Sendable {
                 context: "入力テンソル"
             )
             elementType = .float32
+            shape = tensorShape
+        case let .int32(tensorShape, values):
+            byteCount = try validateTensor(
+                shape: tensorShape,
+                valueCount: values.count,
+                elementStride: MemoryLayout<Int32>.stride,
+                context: "入力テンソル"
+            )
+            elementType = .int32
             shape = tensorShape
         case let .int64(tensorShape, values):
             byteCount = try validateTensor(
@@ -96,15 +100,22 @@ public final class ONNXValue: @unchecked Sendable {
             throw ONNXRuntimeError(message: "ONNX Runtimeアロケーターが返されませんでした。")
         }
 
+        var nativeElementType = ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED
+        switch elementType {
+        case .float32:
+            nativeElementType = ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
+        case .int32:
+            nativeElementType = ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32
+        case .int64:
+            nativeElementType = ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64
+        }
         var createdValue: OpaquePointer?
         let createStatus = shape.withUnsafeBufferPointer { dimensions in
             api.pointee.CreateTensorAsOrtValue!(
                 allocator,
                 dimensions.baseAddress,
                 dimensions.count,
-                elementType == .float32
-                    ? ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
-                    : ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64,
+                nativeElementType,
                 &createdValue
             )
         }
@@ -120,6 +131,8 @@ public final class ONNXValue: @unchecked Sendable {
 
         switch tensor {
         case let .float32(_, values):
+            try writeInputValues(values, byteCount: byteCount, to: valueHandle, api: api)
+        case let .int32(_, values):
             try writeInputValues(values, byteCount: byteCount, to: valueHandle, api: api)
         case let .int64(_, values):
             try writeInputValues(values, byteCount: byteCount, to: valueHandle, api: api)
@@ -163,10 +176,12 @@ public final class ONNXValue: @unchecked Sendable {
             api: api,
             context: "出力テンソル型の取得に失敗しました"
         )
-        let elementType: ONNXValueElementType
+        let elementType: ONNXTensorElementType
         switch nativeElementType {
         case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
             elementType = .float32
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:
+            elementType = .int32
         case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
             elementType = .int64
         default:
@@ -205,6 +220,8 @@ public final class ONNXValue: @unchecked Sendable {
         switch elementType {
         case .float32:
             return .float32(shape: shape, values: try copyOutputValues(data, count: elementCount, as: Float.self))
+        case .int32:
+            return .int32(shape: shape, values: try copyOutputValues(data, count: elementCount, as: Int32.self))
         case .int64:
             return .int64(shape: shape, values: try copyOutputValues(data, count: elementCount, as: Int64.self))
         }

@@ -236,7 +236,7 @@ file CLI の評価 artifact も厳密な schema v2 です。ONNX artifact のト
 | `0.6b` | [andrewleech/qwen3-asr-0.6b-onnx](https://huggingface.co/andrewleech/qwen3-asr-0.6b-onnx/tree/4fc24a1402e74db89c4d2ef256875e71680128c4) | `4fc24a1402e74db89c4d2ef256875e71680128c4` |
 | `1.7b` | [andrewleech/qwen3-asr-1.7b-onnx](https://huggingface.co/andrewleech/qwen3-asr-1.7b-onnx/tree/df916193ac67e59347769891a21e10d81d12acdd) | `df916193ac67e59347769891a21e10d81d12acdd` |
 
-`inference_config` は次の10キーのみです。validator は余分なキーを拒否します。
+`inference_config` は次の11キーのみです。validator は余分なキーを拒否します。
 
 | key | fixed value |
 | --- | --- |
@@ -249,9 +249,10 @@ file CLI の評価 artifact も厳密な schema v2 です。ONNX artifact のト
 | `intra_op_threads` | CLI の `--threads` 値（正の Int32） |
 | `inter_op_threads` | `1` |
 | `cpu_memory_arena` | `false` |
+| `graph_optimization_level` | `ORT_ENABLE_ALL` ([ONNX Runtime graph optimizations](https://onnxruntime.ai/docs/performance/model-optimizations/graph-optimizations.html)) |
 | `segmentation` | `silero-final-transcript` |
 
-`asr.configuration` と `engine.inference_config` の `intra_op_threads`、`inter_op_threads`、`cpu_memory_arena` は ASR の3 ONNX session で実際に使う設定です（CLI の `--threads` 値、`1`、`false`）。`engine.inference_config` のこれらの値は ASR session のみを表します。Silero session は `--threads` の値を intra-op に使い、CPU memory arena を有効にします。
+`asr.configuration` と `engine.inference_config` の `intra_op_threads`、`inter_op_threads`、`cpu_memory_arena`、`graph_optimization_level` は ASR の3 ONNX session で実際に使う設定です（CLI の `--threads` 値、`1`、`false`、`ORT_ENABLE_ALL`）。`engine.inference_config` のこれらの値は ASR session のみを表します。Silero session は `--threads` の値を intra-op に使い、CPU memory arena を有効にし、graph optimization level は `ORT_ENABLE_ALL` です。
 
 `segments` は一要素だけです。`start_ms` は整数 `0`、`end_ms` は `round(audio_seconds * 1000)`、`text` は VAD 区間の認識 text を順に改行文字 `\n` で結合した文字列、`language` は設定された `ja` です。結合規則は Mac の `ASRSessionEvaluator` と同じです。これは CER の全音声 envelope であり、区間ごとの実時刻は表しません。`MacAmbientJevEvaluateASR` はこの artifact を参照文と別途評価します。
 

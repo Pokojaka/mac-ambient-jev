@@ -551,6 +551,7 @@ struct TranscribeFileTests {
             "intra_op_threads": 7,
             "inter_op_threads": 1,
             "cpu_memory_arena": false,
+            "graph_optimization_level": "ORT_ENABLE_ALL",
             "segmentation": "silero-final-transcript"
         ]
         let expectedEngine: [String: Any] = [
@@ -609,7 +610,7 @@ struct TranscribeFileTests {
 
     @Test
     func payloadRejectsMissingOrMalformedNewEngineConfiguration() {
-        let requiredKeys = ["intra_op_threads", "inter_op_threads", "cpu_memory_arena"]
+        let requiredKeys = ["intra_op_threads", "inter_op_threads", "cpu_memory_arena", "graph_optimization_level"]
         for key in requiredKeys {
             var configuration = validASRConfiguration()
             configuration.removeValue(forKey: key)
@@ -649,7 +650,8 @@ struct TranscribeFileTests {
             "no_repeat_ngram": "3 when input_seconds > 15; disabled otherwise",
             "intra_op_threads": "7",
             "inter_op_threads": "1",
-            "cpu_memory_arena": "false"
+            "cpu_memory_arena": "false",
+            "graph_optimization_level": "ORT_ENABLE_ALL"
         ]
     }
 

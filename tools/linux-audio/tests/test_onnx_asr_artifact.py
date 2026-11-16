@@ -26,6 +26,7 @@ ONNX_CONFIG = {
     "inter_op_threads": 1,
     "cpu_memory_arena": False,
     "segmentation": "silero-final-transcript",
+    "graph_optimization_level": "ORT_ENABLE_ALL",
 }
 ONNX_PACKAGES = {"onnxruntime": "1.31.0", "numpy": "2.2.0"}
 
@@ -114,6 +115,7 @@ def test_valid_cpu_onnx_artifact_and_builder(audio_seconds: float):
         (lambda c: c.update(cpu_memory_arena=0), "cpu_memory_arena"),
         (lambda c: c.update(cpu_memory_arena=True), "cpu_memory_arena"),
         (lambda c: c.update(segmentation="other"), "segmentation"),
+        (lambda c: c.update(graph_optimization_level="ORT_DISABLE_ALL"), "graph_optimization_level"),
     ],
 )
 def test_onnx_config_requires_exact_keys_and_values(mutate, message):

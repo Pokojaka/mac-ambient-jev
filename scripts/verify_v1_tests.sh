@@ -21,13 +21,15 @@ if [[ "${RUN_MODEL_TESTS:-0}" == "1" ]]; then
   export RUN_MODEL_TESTS ASR_SMOKE_AUDIO
 fi
 
+python3 -B "$ROOT/scripts/fetch_onnxruntime.py"
 swift package --package-path "$PACKAGE" resolve
 swift build --package-path "$PACKAGE" --build-tests
-# The VAD parity test reads the pinned VAD model from this root; the other model tests stay off.
+# The ONNX tests use pinned Silero; the Mac VAD parity test uses the pinned FluidAudio model.
+SILERO_TEST_MODEL="$(python3 -B "$ROOT/scripts/fetch_silero_vad.py")"
 VAD_TEST_ROOT="$(python3 -B "$ROOT/scripts/fetch_mac_vad_model.py")"
 EVENT_PATH="$ROOT/.build/test-events/macos-$(python3 -c 'import uuid; print(uuid.uuid4())').jsonl"
 printf 'Swift test event stream: %s\n' "$EVENT_PATH"
-env -u RUN_MODEL_TESTS MAC_AMBIENT_JEV_TEST_APP_SUPPORT="$VAD_TEST_ROOT" python3 -B "$ROOT/scripts/run_swift_tests.py" \
+env -u RUN_MODEL_TESTS MAC_AMBIENT_JEV_TEST_APP_SUPPORT="$VAD_TEST_ROOT" MAC_AMBIENT_JEV_SILERO_MODEL="$SILERO_TEST_MODEL" python3 -B "$ROOT/scripts/run_swift_tests.py" \
   --package-path "$PACKAGE" \
   --skip-build \
   --event-stream-output-path "$EVENT_PATH"

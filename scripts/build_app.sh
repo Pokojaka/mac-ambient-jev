@@ -19,14 +19,15 @@ if [[ ! -r "$ICON_SOURCE" ]]; then
 fi
 
 if ! command -v python3 >/dev/null 2>&1; then
-  echo "Python 3.12 or newer (python3) is required to fetch the clause tagger." >&2
+  echo "Python 3.12 or newer (python3) is required to fetch ONNX Runtime and the clause tagger." >&2
   exit 1
 fi
 if ! python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 12))'; then
-  echo "Python 3.12 or newer is required to fetch the clause tagger." >&2
+  echo "Python 3.12 or newer is required to fetch ONNX Runtime and the clause tagger." >&2
   exit 1
 fi
 
+python3 -B "$ROOT/scripts/fetch_onnxruntime.py"
 CLAUSE_TAGGER_DIRECTORY="$(python3 -B "$ROOT/scripts/fetch_clause_tagger.py" --format coreml)"
 if [[ "$CLAUSE_TAGGER_DIRECTORY" != /* || ! -d "$CLAUSE_TAGGER_DIRECTORY" ]]; then
   echo "Clause tagger fetcher did not return an absolute existing directory: $CLAUSE_TAGGER_DIRECTORY" >&2

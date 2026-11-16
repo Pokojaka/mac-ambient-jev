@@ -18,10 +18,13 @@ LINUX_X64 = ("linux-x64", f"onnxruntime-linux-x64-{VERSION}.tgz", "cc5c72baf5ae5
 LINUX_ARM64 = ("linux-aarch64", f"onnxruntime-linux-aarch64-{VERSION}.tgz", "c5b8b3cca31f3d643a3b313b8f42e2d0f16a4fcefd02cda343d97bd5306afaab")
 WINDOWS_X64 = ("win-x64", f"onnxruntime-win-x64-{VERSION}.zip", "3958d8a44984160692c1b4ffd0de3cb48f8c39f9d34bb31e433db06e30b82195")
 WINDOWS_ARM64 = ("win-arm64", f"onnxruntime-win-arm64-{VERSION}.zip", "ef6206fa8d6975878d93a97035d280240ce5764c126a7430e5427e18923316d5")
+MACOS_ARM64 = ("osx-arm64", f"onnxruntime-osx-arm64-{VERSION}.tgz", "1031b36dd3bdaa8d976a6130d9cf2a05e9be320b93ae804f8427b91dc3432afc")
+MACOS_ARM64_BYTES = 36549009
 ASSETS = {
     ("linux", "x86_64"): LINUX_X64, ("linux", "aarch64"): LINUX_ARM64, ("linux", "arm64"): LINUX_ARM64,
     ("windows", "amd64"): WINDOWS_X64, ("windows", "x86_64"): WINDOWS_X64,
     ("windows", "arm64"): WINDOWS_ARM64, ("windows", "aarch64"): WINDOWS_ARM64,
+    ("darwin", "arm64"): MACOS_ARM64,
 }
 
 
@@ -31,7 +34,7 @@ def choose_asset(system: str, machine: str) -> tuple[str, str, str]:
     except KeyError as error:
         raise RuntimeError(
             f"未対応の実行環境です: platform.system()={system!r}, platform.machine()={machine!r}。"
-            "Linux x86_64/aarch64/arm64、Windows AMD64/x86_64/ARM64/aarch64 のみ対応します。"
+            "Linux x86_64/aarch64/arm64、Windows AMD64/x86_64/ARM64/aarch64、macOS arm64 のみ対応します。"
         ) from error
 
 
@@ -70,7 +73,7 @@ def _require_file(path: Path, root: Path, allow_symlink: bool) -> None:
     raise ValueError(f"必要な ONNX Runtime ファイルが通常ファイルではありません: {path}")
 
 
-def _validate_tree(root: Path, is_zip: bool) -> None:
+def _validate_tree(root: Path, is_zip: bool, platform_name: str) -> None:
     for directory in (root, root / "include", root / "lib"):
         _require_directory(directory)
     if not is_zip:
@@ -80,13 +83,15 @@ def _validate_tree(root: Path, is_zip: bool) -> None:
     required = [root / "LICENSE", root / "ThirdPartyNotices.txt", root / "include" / "onnxruntime_c_api.h"]
     if is_zip:
         required.extend((root / "lib" / "onnxruntime.lib", root / "lib" / "onnxruntime.dll"))
+    elif platform_name == "osx-arm64":
+        required.extend((root / "lib" / f"libonnxruntime.{VERSION}.dylib", root / "lib" / "libonnxruntime.1.dylib"))
     else:
         required.extend(root / "lib" / f"libonnxruntime.so{suffix}" for suffix in (f".{VERSION}", ".1", ""))
     for path in required:
         _require_file(path, root, not is_zip and path.parent == root / "lib")
 
 
-def _extract(archive: Path, staging: Path, root_name: str, is_zip: bool) -> None:
+def _extract(archive: Path, staging: Path, root_name: str, is_zip: bool, platform_name: str) -> None:
     if is_zip:
         with zipfile.ZipFile(archive) as source:
             for member in source.infolist():
@@ -101,7 +106,7 @@ def _extract(archive: Path, staging: Path, root_name: str, is_zip: bool) -> None
     entries = list(staging.iterdir())
     if len(entries) != 1 or entries[0].name != root_name:
         raise ValueError(f"アーカイブのルートディレクトリが不正です: {root_name}")
-    _validate_tree(staging / root_name, is_zip)
+    _validate_tree(staging / root_name, is_zip, platform_name)
 
 
 def fetch() -> Path:
@@ -113,7 +118,7 @@ def fetch() -> Path:
     is_zip = asset_name.endswith(".zip")
     if os.path.lexists(destination):
         try:
-            _validate_tree(destination, is_zip)
+            _validate_tree(destination, is_zip, platform_name)
         except Exception as error:
             raise RuntimeError(f"展開先ディレクトリを削除してください: {destination}。理由: {error}") from error
         return destination.resolve()
@@ -127,10 +132,12 @@ def fetch() -> Path:
             temporary.unlink()
 
     archive = pinned_download.download_verified(f"{RELEASE_URL}/{asset_name}", expected, cache / asset_name)
+    if platform_name == "osx-arm64" and archive.stat().st_size != MACOS_ARM64_BYTES:
+        raise ValueError(f"macOS arm64 アーカイブのサイズが一致しません: {archive.stat().st_size} bytes")
     staging = Path(tempfile.mkdtemp(prefix=".extract-", dir=cache))
     try:
         _assert_within(cache, staging)
-        _extract(archive, staging, root_name, is_zip)
+        _extract(archive, staging, root_name, is_zip, platform_name)
         if os.path.lexists(destination):
             raise RuntimeError(f"展開先ディレクトリが既に存在します: {destination}")
         os.replace(staging / root_name, destination)

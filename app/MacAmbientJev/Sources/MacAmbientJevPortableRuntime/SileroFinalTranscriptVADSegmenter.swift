@@ -26,6 +26,7 @@ public struct SileroFinalTranscriptVADSegmenter: FinalTranscriptVADSegmenter {
                 "frame_aggregation": "noisy-or",
                 "model_sha256": SileroVADModel.sha256,
                 "intra_op_threads": String(intraOpThreads),
+                "graph_optimization_level": ONNXSession.graphOptimizationLevel,
             ]) { _, _ in preconditionFailure("Silero provenance keys must not repeat shared VAD keys") }
         )
     }

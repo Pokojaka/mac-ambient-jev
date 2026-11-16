@@ -58,6 +58,14 @@ struct ONNXValueTests {
     }
 
     @Test
+    func int32TensorRoundTripsThroughRuntime() throws {
+        let tensor = ONNXTensor.int32(shape: [2, 2], values: [Int32.min, -1, 0, Int32.max])
+        let value = try ONNXValue(environment: environment, tensor: tensor)
+        #expect(value.shape == [2, 2])
+        #expect(try value.tensor() == tensor)
+    }
+
+    @Test
     func lastRowEqualsTheLastRowOfTheFullReadout() throws {
         let session = try makeCacheSession()
         let past = try ONNXValue(
@@ -87,7 +95,7 @@ struct ONNXValueTests {
         let int64Value = try ONNXValue(environment: environment, tensor: .int64(shape: [1, 1, 2], values: [1, 2]))
         #expect(onnxErrorMessage { _ = try int64Value.float32LastRow() } == "最終行の読み出しにはfloat32テンソルが必要です。")
 
-        for shape: [Int64] in [[2, 2], [2, 1, 2], [1, 0, 2]] {
+        for shape: [Int64] in [[2, 2], [2, 1, 2], [1, 0, 2], [1, 1, 1, 2]] {
             let count = shape.reduce(1, *)
             let value = try ONNXValue(
                 environment: environment,
