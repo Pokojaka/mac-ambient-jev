@@ -15,9 +15,11 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import json
+import random
 import sys
 from pathlib import Path
 
+import sentencepiece as spm
 import soundfile as sf
 
 REQUIRED_PACKAGES = {
@@ -28,10 +30,13 @@ REQUIRED_PACKAGES = {
     "sentencepiece": "0.2.1",
 }
 REFERENCE_SHA256 = "b709d2f6279275a04ae50c7991249566a8b8591af9fcbc754bfb363d9bd57177"
+TOKENIZER_SHA256 = "9bd7bcdff62e43200001cd4c258d22e475b7b3b1e0f64f8be8e6e046f402f38c"
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate the Haas log-mel golden fixture.")
+    parser = argparse.ArgumentParser(
+        description="Generate the Haas log-mel and SentencePiece golden fixtures."
+    )
     parser.add_argument("--reference-dir", type=Path, required=True)
     args = parser.parse_args()
 
@@ -49,6 +54,15 @@ def main() -> None:
             f"Unexpected haas_ort.py SHA-256: expected {REFERENCE_SHA256}, "
             f"found {actual_hash}."
         )
+
+    tokenizer_path = args.reference_dir / "tokenizer.model"
+    actual_hash = hashlib.sha256(tokenizer_path.read_bytes()).hexdigest()
+    if actual_hash != TOKENIZER_SHA256:
+        raise ValueError(
+            f"Unexpected tokenizer.model SHA-256: expected {TOKENIZER_SHA256}, "
+            f"found {actual_hash}."
+        )
+    tokenizer = spm.SentencePieceProcessor(model_file=str(tokenizer_path))
 
     sys.dont_write_bytecode = True
     spec = importlib.util.spec_from_file_location("haas_reference", reference_path)
@@ -86,6 +100,30 @@ def main() -> None:
         encoding="utf-8",
     )
     print(output_path)
+
+    cases = [
+        {"ids": [token_id], "expected": tokenizer.decode([token_id])}
+        for token_id in range(3072)
+    ]
+    for ids in ([0], [33, 66], [227, 151, 130]):
+        cases.append({"ids": ids, "expected": tokenizer.decode(ids)})
+    # Python 3.12 random.Random uses the Mersenne Twister generator.
+    rng = random.Random(146005)
+    for _ in range(500):
+        ids = [rng.randrange(3072) for _ in range(rng.randint(1, 40))]
+        cases.append({"ids": ids, "expected": tokenizer.decode(ids)})
+    tokenizer_output_path = (
+        repository_root
+        / "app/MacAmbientJev/Tests/MacAmbientJevHaasASRTests/Resources/"
+        "haas_spm_golden.json"
+    )
+    tokenizer_output_path.parent.mkdir(parents=True, exist_ok=True)
+    tokenizer_output_path.write_text(
+        json.dumps({"cases": cases}, separators=(",", ":"), allow_nan=False)
+        + "\n",
+        encoding="utf-8",
+    )
+    print(tokenizer_output_path)
 
 
 if __name__ == "__main__":
