@@ -117,7 +117,7 @@ PLaMo 3 Translate 0.8B（MLX 4bit）を 2B と同じ手順で 6 本にかけた�
 - Qwen：11-14 の製品の実行結果（VAD 区間）。
 - Haas-ja：`Sanami/haas-ja-onnx` @354baedfd9612b00e74cc1ae87dff7f2c558db6f の int8dyn。
   - 実行：ONNX Runtime 1.31.0、CPU 4 スレッド。
-  - 区切り方：11-14 の VAD 区間を、最初の区間の始まりから最後の区間の終わりまでが 30 秒以下になる範囲でまとめた（間の音声も含む）。
+  - 区切り方：11-14 の VAD 区間を、最初の区間の始まりから最後の区間の終わりまでが 30 秒以下になる範囲でまとめた。渡したのは VAD 区間の音声だけを連結したもので、間の音声は渡していない（11-14 の記録の「つなぐ」）。
   - 処理時間：30 分あたり 21〜34 秒。
   - ピークメモリ：1.7〜2.0 GB。
 - CER：製品の `MacAmbientJevEvaluateASR`（[decisions](../decisions.md)）。
