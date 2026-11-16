@@ -302,9 +302,9 @@ struct VADSegmentationStateTests {
 
     @Test
     func liveAndFinalTimelineDrainingMatchForSyntheticMixedProbabilities() async throws {
-        let probabilities = [Float](repeating: 0.9, count: 16) + [Float](repeating: 0.1, count: 64)
-            + [Float](repeating: 0.9, count: 16) + [0.1] + [Float](repeating: 0.4, count: 28)
-            + [0.1] + [Float](repeating: 0.9, count: 160) + [Float](repeating: 0.1, count: 10)
+        var probabilities = delayedSpeechEndProbabilities()
+        probabilities += [Float](repeating: 0.9, count: 160)
+        probabilities += [Float](repeating: 0.1, count: 10)
         let totalFrames = Int64(probabilities.count * 4_096 - 123)
         let finalReader = SyntheticVADTimeline(info: try TimelineAudioInfo(committedFrames: totalFrames, gapEvents: []))
         let finalProcessor = VADTimelineProcessor(engine: ProbabilityVADChunkEngine(probabilities: probabilities, segmentationRunID: "mixed"))
@@ -325,8 +325,7 @@ struct VADSegmentationStateTests {
 
     @Test
     func delayedSpeechEndReleasesEarlierGroupBeforeClosingLaterRange() {
-        let probabilities = [Float](repeating: 0.9, count: 16) + [Float](repeating: 0.1, count: 64)
-            + [Float](repeating: 0.9, count: 16) + [0.1] + [Float](repeating: 0.4, count: 28) + [0.1]
+        let probabilities = delayedSpeechEndProbabilities()
         var segmenter = VADProbabilitySegmenter(segmentationRunID: "delayed", canonicalSampleRate: 16_000)
         var beforeDelayedEnd: [SegmentReference] = []
         for (index, probability) in probabilities.enumerated() {
@@ -346,4 +345,16 @@ struct VADSegmentationStateTests {
         #expect(SegmentReference.isValid(finished[0].speechRanges))
         #expect(first.endFrame <= finished[0].startFrame)
     }
+}
+
+/// Speech, a long silence, speech again, then a dip into the hysteresis band that delays the speech end.
+private func delayedSpeechEndProbabilities() -> [Float] {
+    var probabilities: [Float] = []
+    probabilities += [Float](repeating: 0.9, count: 16)
+    probabilities += [Float](repeating: 0.1, count: 64)
+    probabilities += [Float](repeating: 0.9, count: 16)
+    probabilities.append(0.1)
+    probabilities += [Float](repeating: 0.4, count: 28)
+    probabilities.append(0.1)
+    return probabilities
 }
