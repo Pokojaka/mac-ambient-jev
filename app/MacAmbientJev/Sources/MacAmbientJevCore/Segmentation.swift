@@ -110,29 +110,25 @@ public struct RollingFrameEnergyHistory: Sendable {
     }
 }
 
-public struct SegmentationAssembler: Sendable {
-    public let segmentationRunID: String
+public struct SpeechRangeAssembler: Sendable {
     public let preRollFrames: Int64
-    public let maxSegmentFrames: Int64
-    public let minimumIndependentSegmentFrames: Int64
+    public let maxSpeechRangeFrames: Int64
+    public let minimumIndependentSpeechRangeFrames: Int64
+    public private(set) var activeStartFrame: Int64?
 
-    private var activeStartFrame: Int64?
     private var activeIsContinuation = false
-    private var nextSegmentIndex: UInt64 = 1
 
     public init(
-        segmentationRunID: String,
         preRollFrames: Int64,
-        maxSegmentFrames: Int64,
-        minimumIndependentSegmentFrames: Int64
+        maxSpeechRangeFrames: Int64,
+        minimumIndependentSpeechRangeFrames: Int64
     ) {
         precondition(preRollFrames >= 0, "preRollFrames must not be negative")
-        precondition(maxSegmentFrames > 0, "maxSegmentFrames must be positive")
-        precondition(minimumIndependentSegmentFrames >= 0, "minimumIndependentSegmentFrames must not be negative")
-        self.segmentationRunID = segmentationRunID
+        precondition(maxSpeechRangeFrames > 0, "maxSpeechRangeFrames must be positive")
+        precondition(minimumIndependentSpeechRangeFrames >= 0, "minimumIndependentSpeechRangeFrames must not be negative")
         self.preRollFrames = preRollFrames
-        self.maxSegmentFrames = maxSegmentFrames
-        self.minimumIndependentSegmentFrames = minimumIndependentSegmentFrames
+        self.maxSpeechRangeFrames = maxSpeechRangeFrames
+        self.minimumIndependentSpeechRangeFrames = minimumIndependentSpeechRangeFrames
     }
 
     public mutating func speechStarted(atFrame frame: Int64) {
@@ -141,7 +137,7 @@ public struct SegmentationAssembler: Sendable {
         activeIsContinuation = false
     }
 
-    public mutating func speechEnded(atFrame frame: Int64) -> [SegmentReference] {
+    public mutating func speechEnded(atFrame frame: Int64) -> Range<Int64>? {
         precondition(
             splitStartFrameIfNeeded(atFrame: frame) == nil,
             "最大区間長に達した場合は、選択した cutFrame で先に split(atFrame:) を呼び出してください"
@@ -152,23 +148,23 @@ public struct SegmentationAssembler: Sendable {
         activeStartFrame = nil
         activeIsContinuation = false
         guard let start, frame > start,
-              isContinuation || frame - start >= minimumIndependentSegmentFrames else {
-            return []
+              isContinuation || frame - start >= minimumIndependentSpeechRangeFrames else {
+            return nil
         }
-        return [makeSegment(startFrame: start, endFrame: frame)]
+        return start..<frame
     }
 
     public func splitStartFrameIfNeeded(atFrame frame: Int64) -> Int64? {
         guard let start = activeStartFrame, frame >= start else { return nil }
         let elapsed = frame.subtractingReportingOverflow(start)
-        return elapsed.overflow || elapsed.partialValue >= maxSegmentFrames ? start : nil
+        return elapsed.overflow || elapsed.partialValue >= maxSpeechRangeFrames ? start : nil
     }
 
-    public mutating func split(atFrame cutFrame: Int64) -> SegmentReference {
+    public mutating func split(atFrame cutFrame: Int64) -> Range<Int64> {
         guard let start = activeStartFrame else {
             preconditionFailure("split(atFrame:) には有効な音声区間が必要です")
         }
-        let maximumEnd = start.addingReportingOverflow(maxSegmentFrames)
+        let maximumEnd = start.addingReportingOverflow(maxSpeechRangeFrames)
         precondition(
             start < cutFrame && (maximumEnd.overflow || cutFrame <= maximumEnd.partialValue),
             "cutFrame は現在の開始位置より後で最大区間長以内でなければなりません"
@@ -176,16 +172,53 @@ public struct SegmentationAssembler: Sendable {
 
         activeStartFrame = cutFrame
         activeIsContinuation = true
-        return makeSegment(startFrame: start, endFrame: cutFrame)
+        return start..<cutFrame
+    }
+}
+
+/// Groups currently available speech ranges into bounded-span segments. `settle(atFrame:)` releases a group heuristically, without promising anything about future range ends; ranges appended after a close begin a new segment.
+public struct SegmentGrouper: Sendable {
+    public let segmentationRunID: String
+    public let maximumSpanFrames: Int64
+    private var open: [Range<Int64>] = []
+    private var nextSegmentIndex: UInt64 = 1
+
+    public init(segmentationRunID: String, maximumSpanFrames: Int64) {
+        precondition(maximumSpanFrames > 0, "maximumSpanFrames must be positive")
+        precondition(maximumSpanFrames <= Int64(ASRAudioInput.maximumDurationSeconds * CanonicalAudio.sampleRate), "maximumSpanFrames must not exceed the maximum duration")
+        self.segmentationRunID = segmentationRunID
+        self.maximumSpanFrames = maximumSpanFrames
     }
 
-    private mutating func makeSegment(startFrame: Int64, endFrame: Int64) -> SegmentReference {
-        defer { nextSegmentIndex &+= 1 }
+    public mutating func append(_ range: Range<Int64>) -> SegmentReference? {
+        precondition(range.lowerBound >= 0 && range.lowerBound < range.upperBound, "range must be nonnegative and nonempty")
+        precondition(range.upperBound - range.lowerBound <= maximumSpanFrames, "range must not exceed maximumSpanFrames")
+        if let first = open.first, range.upperBound - first.lowerBound > maximumSpanFrames {
+            let segment = close()
+            open = [range]
+            return segment
+        }
+        open.append(range)
+        return nil
+    }
 
-        return SegmentReference(
+    public mutating func settle(atFrame frame: Int64) -> SegmentReference? {
+        guard let first = open.first, frame >= first.lowerBound,
+              frame - first.lowerBound >= maximumSpanFrames else { return nil }
+        return close()
+    }
+
+    public mutating func finish() -> SegmentReference? { close() }
+
+    private mutating func close() -> SegmentReference? {
+        guard !open.isEmpty else { return nil }
+        let segment = SegmentReference(
             segmentationRunID: segmentationRunID,
             segmentID: String(format: "seg_%06llu", nextSegmentIndex),
-            speechRanges: [startFrame..<endFrame]
+            speechRanges: open
         )
+        open = []
+        nextSegmentIndex &+= 1
+        return segment
     }
 }

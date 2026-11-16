@@ -220,7 +220,7 @@ def read_segments(path: Path) -> list[dict[str, Any]]:
 
 
 def check_segments(segments: list[dict[str, Any]], duration_ms: int) -> None:
-    require(len(segments) >= 2, "the long fixture must produce multiple segments")
+    require(len(segments) >= 1, "the long fixture must produce at least one segment")
     previous_end = 0
     for segment in segments:
         require(isinstance(segment, dict) and set(segment) == SEGMENT_KEYS,

@@ -59,7 +59,7 @@ struct SileroVADParityTests {
     }
 
     @Test(arguments: VADParityCase.all)
-    func segmentsMatchFluidAudioExactly(parityCase: VADParityCase) async throws {
+    func speechRangesMatchFluidAudioExactly(parityCase: VADParityCase) async throws {
         let expectation = try fixture.expectation(named: parityCase.name)
         let segmenter = SileroFinalTranscriptVADSegmenter(
             environment: environment, modelURL: modelURL, intraOpThreads: 1
@@ -68,8 +68,8 @@ struct SileroVADParityTests {
             reader: VADParityTimeline(samples: parityCase.samples(clip: clip)),
             runID: "parity"
         )
-        let actual = segments.map {
-            VADParityExpectation.Segment(startFrame: $0.startFrame, endFrame: $0.endFrame)
+        let actual = segments.flatMap(\.speechRanges).map {
+            VADParityExpectation.Segment(startFrame: $0.lowerBound, endFrame: $0.upperBound)
         }
         #expect(actual == expectation.segments)
         #expect(segments.map(\.segmentID) == segments.indices.map { String(format: "seg_%06d", $0 + 1) })

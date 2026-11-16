@@ -4,8 +4,8 @@ import Testing
 @Test
 func rollingHistorySelectsQuietestFrameForChosenMaximumLengthSplit() {
     let frameSampleCount = 320
-    let maxSegmentFrames: Int64 = 224_000
-    var samples = [Float](repeating: 1, count: Int(maxSegmentFrames))
+    let maxSpeechRangeFrames: Int64 = 224_000
+    var samples = [Float](repeating: 1, count: Int(maxSpeechRangeFrames))
     for sampleIndex in 208_000..<208_320 {
         samples[sampleIndex] = 0
     }
@@ -20,27 +20,26 @@ func rollingHistorySelectsQuietestFrameForChosenMaximumLengthSplit() {
         offset = end
     }
 
-    #expect(history.processedSamples == maxSegmentFrames)
+    #expect(history.processedSamples == maxSpeechRangeFrames)
     #expect(history.storedFrameCount == 150)
     #expect(history.quietestFrame(in: 192_000..<224_000) == 208_160)
 
-    var assembler = SegmentationAssembler(
-        segmentationRunID: "seg_run_01",
+    var assembler = SpeechRangeAssembler(
         preRollFrames: 0,
-        maxSegmentFrames: maxSegmentFrames,
-        minimumIndependentSegmentFrames: 8_000
+        maxSpeechRangeFrames: maxSpeechRangeFrames,
+        minimumIndependentSpeechRangeFrames: 8_000
     )
     assembler.speechStarted(atFrame: 0)
     #expect(assembler.splitStartFrameIfNeeded(atFrame: 223_999) == nil)
-    #expect(assembler.splitStartFrameIfNeeded(atFrame: maxSegmentFrames) == 0)
+    #expect(assembler.splitStartFrameIfNeeded(atFrame: maxSpeechRangeFrames) == 0)
 
-    let first = assembler.split(atFrame: history.quietestFrame(in: 192_000..<224_000))
-    let continuation = assembler.speechEnded(atFrame: maxSegmentFrames).first
-    #expect(first.startFrame == 0)
-    #expect(first.endFrame == 208_160)
-    #expect(continuation?.startFrame == first.endFrame)
-    #expect(continuation?.endFrame == maxSegmentFrames)
-    #expect(first.endFrame == continuation?.startFrame)
+    let firstRange = assembler.split(atFrame: history.quietestFrame(in: 192_000..<224_000))
+    let continuationRange = assembler.speechEnded(atFrame: maxSpeechRangeFrames)
+    #expect(firstRange.lowerBound == 0)
+    #expect(firstRange.upperBound == 208_160)
+    #expect(continuationRange?.lowerBound == firstRange.upperBound)
+    #expect(continuationRange?.upperBound == maxSpeechRangeFrames)
+    #expect(firstRange.upperBound == continuationRange?.lowerBound)
 }
 
 @Test
@@ -73,88 +72,83 @@ func rollingHistoryCombinesPartialSamplesAndKeepsEarliestEnergyTie() {
 }
 
 @Test
-func independentSegmentsApplyMinimumWithoutAdvancingIDsForDroppedSpeech() {
-    var assembler = SegmentationAssembler(
-        segmentationRunID: "seg_run_01",
+func independentSpeechRangesApplyMinimumAndDropShortSpeech() {
+    var assembler = SpeechRangeAssembler(
         preRollFrames: 0,
-        maxSegmentFrames: 224_000,
-        minimumIndependentSegmentFrames: 8_000
+        maxSpeechRangeFrames: 224_000,
+        minimumIndependentSpeechRangeFrames: 8_000
     )
 
     assembler.speechStarted(atFrame: 0)
-    #expect(assembler.speechEnded(atFrame: 7_840).isEmpty)
+    #expect(assembler.speechEnded(atFrame: 7_840) == nil)
     assembler.speechStarted(atFrame: 10_000)
-    let emitted = assembler.speechEnded(atFrame: 18_000).first
+    let emittedRange = assembler.speechEnded(atFrame: 18_000)
 
-    #expect(emitted?.segmentID == "seg_000001")
-    #expect(emitted?.startFrame == 10_000)
-    #expect(emitted?.endFrame == 18_000)
+    #expect(emittedRange?.lowerBound == 10_000)
+    #expect(emittedRange?.upperBound == 18_000)
 }
 
 @Test
-func preRollClampsAtZeroAndCountsTowardIndependentMinimum() {
-    var assembler = SegmentationAssembler(
-        segmentationRunID: "seg_run_01",
+func preRollClampsAtZeroAndCountsTowardIndependentSpeechRangeMinimum() {
+    var assembler = SpeechRangeAssembler(
         preRollFrames: 100,
-        maxSegmentFrames: 224_000,
-        minimumIndependentSegmentFrames: 8_000
+        maxSpeechRangeFrames: 224_000,
+        minimumIndependentSpeechRangeFrames: 8_000
     )
 
     assembler.speechStarted(atFrame: 30)
     assembler.speechStarted(atFrame: 1_000)
-    #expect(assembler.speechEnded(atFrame: 7_999).isEmpty)
+    #expect(assembler.speechEnded(atFrame: 7_999) == nil)
 
     assembler.speechStarted(atFrame: 200)
-    let segment = assembler.speechEnded(atFrame: 8_100).first
-    #expect(segment?.segmentID == "seg_000001")
-    #expect(segment?.startFrame == 100)
-    #expect(segment?.endFrame == 8_100)
+    let speechRange = assembler.speechEnded(atFrame: 8_100)
+    #expect(speechRange?.lowerBound == 100)
+    #expect(speechRange?.upperBound == 8_100)
 }
 
 @Test
 func repeatedSpeechEndsEmitNothingAfterClosingAndWithoutActiveSpeech() {
-    var assembler = SegmentationAssembler(
-        segmentationRunID: "seg_run_01",
+    var assembler = SpeechRangeAssembler(
         preRollFrames: 0,
-        maxSegmentFrames: 224_000,
-        minimumIndependentSegmentFrames: 8_000
+        maxSpeechRangeFrames: 224_000,
+        minimumIndependentSpeechRangeFrames: 8_000
     )
 
-    #expect(assembler.speechEnded(atFrame: 1_000).isEmpty)
+    #expect(assembler.speechEnded(atFrame: 1_000) == nil)
     assembler.speechStarted(atFrame: 0)
-    #expect(assembler.speechEnded(atFrame: 8_000).count == 1)
-    #expect(assembler.speechEnded(atFrame: 8_000).isEmpty)
+    #expect(assembler.speechEnded(atFrame: 8_000) != nil)
+    #expect(assembler.speechEnded(atFrame: 8_000) == nil)
 }
 
 @Test
 func prolongedSpeechRequiresExplicitMaximumLengthCutsWithoutGaps() {
-    let maxSegmentFrames: Int64 = 224_000
-    var assembler = SegmentationAssembler(
-        segmentationRunID: "seg_run_01",
+    let maxSpeechRangeFrames: Int64 = 224_000
+    var assembler = SpeechRangeAssembler(
         preRollFrames: 0,
-        maxSegmentFrames: maxSegmentFrames,
-        minimumIndependentSegmentFrames: 8_000
+        maxSpeechRangeFrames: maxSpeechRangeFrames,
+        minimumIndependentSpeechRangeFrames: 8_000
     )
     assembler.speechStarted(atFrame: 0)
 
-    var segments: [SegmentReference] = []
+    var ranges: [Range<Int64>] = []
     var activeStart: Int64 = 0
     for _ in 0..<3 {
-        let cutFrame = activeStart + maxSegmentFrames
+        let cutFrame = activeStart + maxSpeechRangeFrames
         #expect(assembler.splitStartFrameIfNeeded(atFrame: cutFrame - 1) == nil)
         #expect(assembler.splitStartFrameIfNeeded(atFrame: cutFrame) == activeStart)
-        segments.append(assembler.split(atFrame: cutFrame))
+        ranges.append(assembler.split(atFrame: cutFrame))
         activeStart = cutFrame
     }
-    segments.append(contentsOf: assembler.speechEnded(atFrame: activeStart + 123))
+    let continuationRange = assembler.speechEnded(atFrame: activeStart + 123)
 
-    #expect(segments.count == 4)
-    #expect(segments.first?.startFrame == 0)
-    #expect(segments.last?.endFrame == activeStart + 123)
-    for index in segments.indices {
-        #expect(segments[index].endFrame - segments[index].startFrame <= maxSegmentFrames)
+    #expect(ranges.count == 3)
+    #expect(ranges.first?.lowerBound == 0)
+    #expect(continuationRange?.upperBound == activeStart + 123)
+    #expect(ranges.last?.upperBound == continuationRange?.lowerBound)
+    for index in ranges.indices {
+        #expect(ranges[index].upperBound - ranges[index].lowerBound <= maxSpeechRangeFrames)
         if index > 0 {
-            #expect(segments[index - 1].endFrame == segments[index].startFrame)
+            #expect(ranges[index - 1].upperBound == ranges[index].lowerBound)
         }
     }
 }

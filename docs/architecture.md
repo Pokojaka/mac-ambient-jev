@@ -124,7 +124,7 @@ Mac Runtime は Core の `ASREngine` を実装し、FluidAudio VAD と Qwen3-ASR
 
 入力 callback と保存側はリングで分離します。保存処理はライブ ASR の完了を待ちません。タイムスタンプ上の欠落は gap として記録し、無音で埋めるため、保存音声と後段の時刻座標が一致します。
 
-ライブ VAD は閉じた発話区間を渡し、連続発話は最大 14 秒で分割します。分割の端数 continuation も保持します。長い発話は区間が閉じるまで初表示が遅れ、結果は暫定です。
+ライブ / 確定処理は共有の `VADSegmentationState` を使い、発話範囲を最大14秒（必要時は静かな位置で分割）にし、span 最大30秒の外側 segment にまとめます。1 segment が1 ASR・1 transcript row の単位で、ASR はその `speechRanges` だけを順に連結して処理します。segment の最初の speech frame からの release 待ちは約31–32秒というケース依存の目安で、一般的な遅延上限ではありません。
 
 `LiveASRSession` はセッション内で materialized 行の配列を保持します。`segment.created` の保存と ID による重複登録排除だけでは認識済み行を再構築しません。待ち件数は durable 登録済み ID 数から ASR 完了・失敗が durable になった ID 数を引き、集合差を作らずに求めます。`process` は同じ登録処理を使いますが、登録だけの中間 progress は作りません。行は `asr.completed` / `asr.failed` の保存後、または durable な発話文イベント適用時に `TranscriptMaterializer` で更新します。ASR 完了後は判定応答を待たず原文を表示し、境界 assessment が未保存・保留・失敗なら原文のままです。ライブの境界判定 run と優先度 run はライブセッションの開始時に決まり、そのセッションの active run として扱います。snapshot と completion もこの配列を使い、保存に失敗したイベントは行・件数に反映しません。オフラインの materialization とアプリのライブキュー所有はこのキャッシュとは独立です。
 

@@ -117,7 +117,7 @@ swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
 
 `MacAmbientJevTranscribeFile` は [`FileTranscriptionPipeline`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FileTranscriptionPipeline.swift) を使い、Silero VAD→ASR で区間別 transcript、primary JSON、評価用 artifact を出力します。この CLI に thermal 制御や pacing wait はありません。
 
-確定処理の区間規則は [Silero VAD の区間検出](windows.md#silero-vad-の区間検出) と同じです。4,096 sample / 256 ms chunk、開始閾値 0.50・終了閾値 0.35、pre-roll 0.10 秒、最大区間 14 秒、無音 0.75 秒、分割探索 2.0 秒、energy frame 0.02 秒、独立区間の最短 0.5 秒を使います。
+確定処理の区間規則は [Silero VAD の区間検出](windows.md#silero-vad-の区間検出) と同じです。4,096 sample / 256 ms chunk、開始閾値 0.50・終了閾値 0.35、pre-roll 0.10 秒、最大 speech range 14 秒、外側 segment span 30 秒、無音 0.75 秒、分割探索 2.0 秒、energy frame 0.02 秒、独立 speech range の最短 0.5 秒を使います。
 
 ```text
 MacAmbientJevTranscribeFile <audio-file> --silero-model <path> --asr-model-directory <dir> --asr-model-size <0.6b|1.7b> --threads <n> --output <file.json> --artifact-output <artifact.json>
