@@ -1,0 +1,16 @@
+Haas-ja-v1.0 ONNX
+Copyright 2026 Sanami
+
+This repository contains:
+
+1. Model weights (fp32/, fp16/, int8dyn_mm/, int8dyn/, int8wo/, int4/, tokenizer.model)
+   Derived from Haas-ja-v1.0 by Third Intelligence
+   (https://huggingface.co/third-intelligence/Haas-ja-v1.0), licensed under Apache-2.0.
+   Modifications by Sanami: exported from .nemo to ONNX and quantized
+   (fp16 / INT8 / INT4). See TECHNICAL.md for the method.
+   This is an unofficial conversion, not created or endorsed by Third Intelligence.
+
+2. Code (haas_ort.py, rust/, scripts/)
+   Copyright 2026 Sanami, licensed under Apache-2.0.
+
+Both are distributed under the Apache License, Version 2.0 (see LICENSE).
