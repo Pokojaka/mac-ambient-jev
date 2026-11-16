@@ -31,8 +31,7 @@ private struct FakeFinalVAD: FinalTranscriptVADSegmenter {
             SegmentReference(
                 segmentationRunID: runID,
                 segmentID: $0.segmentID,
-                startFrame: $0.startFrame,
-                endFrame: $0.endFrame
+                speechRanges: [$0.startFrame..<$0.endFrame]
             )
         }
     }
@@ -122,8 +121,8 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
             asr: FakeFinalASR(log: log, values: ["前半", "後半"]),
             finalTranscriptVAD: FakeFinalVAD(
                 segments: [
-                    SegmentReference(segmentationRunID: "ignored", segmentID: "vad_1", startFrame: 0, endFrame: 8_000),
-                    SegmentReference(segmentationRunID: "ignored", segmentID: "vad_2", startFrame: 8_000, endFrame: 16_000)
+                    SegmentReference(segmentationRunID: "ignored", segmentID: "vad_1", speechRanges: [0..<8_000]),
+                    SegmentReference(segmentationRunID: "ignored", segmentID: "vad_2", speechRanges: [8_000..<16_000])
                 ],
                 log: log
             )

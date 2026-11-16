@@ -97,7 +97,7 @@ private func makeCoordinator(
 }
 
 private func segments(_ ranges: [(String, Int64, Int64)]) -> [SegmentReference] {
-    ranges.map { SegmentReference(segmentationRunID: "seg", segmentID: $0.0, startFrame: $0.1, endFrame: $0.2) }
+    ranges.map { SegmentReference(segmentationRunID: "seg", segmentID: $0.0, speechRanges: [$0.1..<$0.2]) }
 }
 
 private func pendingNow(_ segments: [SegmentReference]) -> [String: Date] {

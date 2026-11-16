@@ -91,8 +91,7 @@ private struct FakeServiceVAD: FinalTranscriptVADSegmenter {
         return [SegmentReference(
             segmentationRunID: runID,
             segmentID: "service_test_segment",
-            startFrame: 0,
-            endFrame: reader.info.committedFrames
+            speechRanges: [0..<reader.info.committedFrames]
         )]
     }
 }

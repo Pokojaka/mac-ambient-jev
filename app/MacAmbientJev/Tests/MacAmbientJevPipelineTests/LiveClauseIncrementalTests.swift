@@ -329,7 +329,7 @@ func incrementalLiveFixture(count: Int) async throws -> (root: URL, session: Liv
     let segments = (0..<count).map { (index: Int) -> SegmentReference in
         let startFrame = Int64(index) * 4
         return SegmentReference(segmentationRunID: incrementalSegmentationRun,
-            segmentID: "segment_\(index)", startFrame: startFrame, endFrame: startFrame + 4)
+            segmentID: "segment_\(index)", speechRanges: [startFrame..<startFrame + 4])
     }
     _ = try await session.process(segments: segments, checkpoint: checkpoint)
     return (root, session)

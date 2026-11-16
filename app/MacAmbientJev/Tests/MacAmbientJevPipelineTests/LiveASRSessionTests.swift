@@ -206,14 +206,12 @@ func liveASRPreparesOnceAndDoesNotDuplicateSegments() async throws {
     let firstSegment = SegmentReference(
         segmentationRunID: "seg_live_test",
         segmentID: "seg_000001",
-        startFrame: 0,
-        endFrame: 4_000
+        speechRanges: [0..<4_000]
     )
     let secondSegment = SegmentReference(
         segmentationRunID: "seg_live_test",
         segmentID: "seg_000002",
-        startFrame: 4_000,
-        endFrame: 8_000
+        speechRanges: [4_000..<8_000]
     )
 
     let first = try await fixture.session.process(
@@ -251,11 +249,11 @@ func liveASRProgressPreservesRowsAcrossRegistrationAndShowsOnlySavedClauseEvents
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let first = SegmentReference(
         segmentationRunID: "seg_live_test", segmentID: "seg_000001",
-        startFrame: 0, endFrame: 4_000
+        speechRanges: [0..<4_000]
     )
     let second = SegmentReference(
         segmentationRunID: "seg_live_test", segmentID: "seg_000002",
-        startFrame: 4_000, endFrame: 8_000
+        speechRanges: [4_000..<8_000]
     )
     let finished = Locked<[LiveASRSegmentStatus]>([])
     let recognized = try await fixture.session.process(
@@ -351,11 +349,11 @@ func liveASRAppendFailurePreservesVisibleRowsAndCounts(completing: Bool) async t
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let first = SegmentReference(
         segmentationRunID: "seg_live_test", segmentID: "seg_000001",
-        startFrame: 0, endFrame: 4_000
+        speechRanges: [0..<4_000]
     )
     let second = SegmentReference(
         segmentationRunID: "seg_live_test", segmentID: "seg_000002",
-        startFrame: 4_000, endFrame: 8_000
+        speechRanges: [4_000..<8_000]
     )
     _ = try await fixture.session.process(segments: [first], checkpoint: fixture.checkpoint)
     if completing {
@@ -401,8 +399,7 @@ func liveASRFinishIsIdempotentAndMarksSuccessfulRun() async throws {
     let segment = SegmentReference(
         segmentationRunID: "seg_live_test",
         segmentID: "seg_000001",
-        startFrame: 0,
-        endFrame: 4_000
+        speechRanges: [0..<4_000]
     )
     _ = try await fixture.session.process(
         segments: [segment],
@@ -448,7 +445,7 @@ func liveASRConcurrentFinishCallersAwaitTheSameCompletion() async throws {
     )
     let segment = SegmentReference(
         segmentationRunID: "seg_live_test", segmentID: "seg_000001",
-        startFrame: 0, endFrame: 4_000
+        speechRanges: [0..<4_000]
     )
 
     let processing = Task {
@@ -492,7 +489,7 @@ func liveASRFinishRetriesAfterCompletionAppendFailure() async throws {
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let segment = SegmentReference(
         segmentationRunID: "seg_live_test", segmentID: "seg_000001",
-        startFrame: 0, endFrame: 4_000
+        speechRanges: [0..<4_000]
     )
     _ = try await fixture.session.process(
         segments: [segment], checkpoint: fixture.checkpoint
@@ -507,7 +504,7 @@ func liveASRFinishRetriesAfterCompletionAppendFailure() async throws {
     }
     let lateSegment = SegmentReference(
         segmentationRunID: "seg_live_test", segmentID: "seg_000002",
-        startFrame: 4_000, endFrame: 8_000
+        speechRanges: [4_000..<8_000]
     )
     let lateProgress = try await fixture.session.register(segments: [lateSegment])
     #expect(lateProgress.completedCount == 1)
@@ -544,14 +541,12 @@ func liveASRFailureKeepsRunUnsuccessful() async throws {
         SegmentReference(
             segmentationRunID: "seg_live_test",
             segmentID: "seg_000001",
-            startFrame: 0,
-            endFrame: 4_000
+            speechRanges: [0..<4_000]
         ),
         SegmentReference(
             segmentationRunID: "seg_live_test",
             segmentID: "seg_000002",
-            startFrame: 4_000,
-            endFrame: 8_000
+            speechRanges: [4_000..<8_000]
         )
     ]
 
@@ -578,10 +573,10 @@ func liveASRUnwritableFailureStopsProcessingAndLeavesSegmentPending() async thro
     let fixture = try await makeLiveASRFixture(failOnCall: 2)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let first = SegmentReference(
-        segmentationRunID: "seg_live_test", segmentID: "seg_000001", startFrame: 0, endFrame: 4_000
+        segmentationRunID: "seg_live_test", segmentID: "seg_000001", speechRanges: [0..<4_000]
     )
     let segment = SegmentReference(
-        segmentationRunID: "seg_live_test", segmentID: "seg_000002", startFrame: 4_000, endFrame: 8_000
+        segmentationRunID: "seg_live_test", segmentID: "seg_000002", speechRanges: [4_000..<8_000]
     )
     let saved = try await fixture.session.process(segments: [first], checkpoint: fixture.checkpoint)
     _ = try await fixture.session.register(segments: [segment])
@@ -615,8 +610,7 @@ func liveASRFinishFailsWhileRegisteredSegmentsRemainPending() async throws {
     let segment = SegmentReference(
         segmentationRunID: "seg_live_test",
         segmentID: "seg_000001",
-        startFrame: 0,
-        endFrame: 4_000
+        speechRanges: [0..<4_000]
     )
     _ = try await fixture.session.register(segments: [segment])
 
@@ -647,11 +641,11 @@ func liveASRDoesNotAppendResultsAfterRunCompleted() async throws {
     )
     let segment = SegmentReference(
         segmentationRunID: "seg_live_test", segmentID: "seg_000001",
-        startFrame: 0, endFrame: 4_000
+        speechRanges: [0..<4_000]
     )
     let nextSegment = SegmentReference(
         segmentationRunID: "seg_live_test", segmentID: "seg_000002",
-        startFrame: 4_000, endFrame: 8_000
+        speechRanges: [4_000..<8_000]
     )
     _ = try await session.register(segments: [segment, nextSegment])
 
@@ -710,7 +704,7 @@ func cancelledLiveASRProcessingRetainsRegisteredSegmentsForRetry() async throws 
     let segments = (0..<3).map { index in
         SegmentReference(
             segmentationRunID: "seg_live_test", segmentID: "seg_00000\(index + 1)",
-            startFrame: Int64(index) * 4_000, endFrame: Int64(index + 1) * 4_000
+            speechRanges: [Int64(index) * 4_000..<Int64(index + 1) * 4_000]
         )
     }
     _ = try await session.register(segments: segments)
@@ -775,7 +769,7 @@ func liveASRConcurrentRegistrationPersistsSegmentOnce() async throws {
     )
     let segment = SegmentReference(
         segmentationRunID: "seg_live_test", segmentID: "seg_000001",
-        startFrame: 0, endFrame: 4_000
+        speechRanges: [0..<4_000]
     )
 
     let first = Task {
@@ -824,7 +818,7 @@ func liveASRRegistrationCompletesAfterDurableAppendDespiteCallerCancellation() a
     )
     let segment = SegmentReference(
         segmentationRunID: "seg_live_test", segmentID: "seg_cancelled_register",
-        startFrame: 0, endFrame: 4_000
+        speechRanges: [0..<4_000]
     )
     let registration = Task {
         try await session.register(segments: [segment])
@@ -865,7 +859,7 @@ func measureLiveRegistrationCost() async throws {
         let segments = (previous..<count).map { index in
             SegmentReference(
                 segmentationRunID: "seg_live_test", segmentID: "row_\(index)",
-                startFrame: Int64(index) * 80_000, endFrame: Int64(index + 1) * 80_000
+                speechRanges: [Int64(index) * 80_000..<Int64(index + 1) * 80_000]
             )
         }
         _ = try await fixture.session.register(segments: segments)

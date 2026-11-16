@@ -87,7 +87,7 @@ struct FakeFinalVAD: FinalTranscriptVADSegmenter {
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
         guard reader.info.committedFrames > 0 else { return [] }
         return [SegmentReference(
-            segmentationRunID: runID, segmentID: "final_segment_1", startFrame: 0, endFrame: reader.info.committedFrames
+            segmentationRunID: runID, segmentID: "final_segment_1", speechRanges: [0..<reader.info.committedFrames]
         )]
     }
 }
@@ -105,7 +105,7 @@ struct FakeLiveVAD: LiveVADProcessing {
             return LiveVADProgress(emittedSegments: [], totalSegmentCount: 0, committedFrames: 0, micSpeechLevels: [])
         }
         let segment = SegmentReference(
-            segmentationRunID: segmentationRunID, segmentID: "live_segment_1", startFrame: 0, endFrame: checkpoint.committedFrames
+            segmentationRunID: segmentationRunID, segmentID: "live_segment_1", speechRanges: [0..<checkpoint.committedFrames]
         )
         return LiveVADProgress(
             emittedSegments: [segment], totalSegmentCount: 1, committedFrames: checkpoint.committedFrames, micSpeechLevels: []

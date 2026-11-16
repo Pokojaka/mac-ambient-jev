@@ -141,14 +141,9 @@ struct FinalTranscriptPipeline: Sendable {
         var pendingSince: [String: Date] = [:]
         for segment in vadSegments {
             try Task.checkCancellation()
-            let created = try await writer.append(EventDraft(
-                eventType: "segment.created",
+            let created = try await writer.append(.segmentCreated(
                 sessionID: sessionID,
-                segmentationRunID: segmentationRunID,
-                segmentID: segment.segmentID,
-                sourceStartFrame: segment.startFrame,
-                sourceEndFrame: segment.endFrame,
-                payload: EmptyPayload()
+                segment: segment
             ))
             try Task.checkCancellation()
             transcriptEvents.append(.segmentCreated(
@@ -251,8 +246,6 @@ struct FinalTranscriptPipeline: Sendable {
             guard segment.segmentationRunID == runID,
                   segment.segmentID.isEmpty == false,
                   ids.insert(segment.segmentID).inserted,
-                  segment.startFrame >= 0,
-                  segment.startFrame < segment.endFrame,
                   segment.endFrame <= audio.info.committedFrames else {
                 throw FinalTranscriptPipelineError.invalidVADRange(segment.segmentID)
             }
@@ -305,20 +298,36 @@ struct FinalTranscriptPipeline: Sendable {
                 )
             }
         }
-        let persisted = objects.compactMap { object -> SegmentReference? in
+        let persisted = try objects.compactMap { object -> SegmentReference? in
             guard object["event_type"] as? String == "segment.created",
-                  object["segmentation_run_id"] as? String == segmentationRunID,
-                  let segmentID = object["segment_id"] as? String,
-                  let startFrame = (object["source_start_frame"] as? NSNumber)?.int64Value,
-                  let endFrame = (object["source_end_frame"] as? NSNumber)?.int64Value else {
+                  object["segmentation_run_id"] as? String == segmentationRunID else {
                 return nil
             }
-            return SegmentReference(
+            guard let segmentID = object["segment_id"] as? String,
+                  let startFrame = (object["source_start_frame"] as? NSNumber)?.int64Value,
+                  let endFrame = (object["source_end_frame"] as? NSNumber)?.int64Value,
+                  let payloadObject = object["payload"] as? [String: Any] else {
+                throw FinalTranscriptPipelineError.persistedSegmentsMismatch(segmentationRunID)
+            }
+            let payload: SegmentCreatedPayload
+            do {
+                let payloadData = try JSONSerialization.data(withJSONObject: payloadObject)
+                payload = try JSONDecoder().decode(SegmentCreatedPayload.self, from: payloadData)
+            } catch {
+                throw FinalTranscriptPipelineError.persistedSegmentsMismatch(segmentationRunID)
+            }
+            guard SegmentReference.isValid(payload.speechRanges) else {
+                throw FinalTranscriptPipelineError.persistedSegmentsMismatch(segmentationRunID)
+            }
+            let segment = SegmentReference(
                 segmentationRunID: segmentationRunID,
                 segmentID: segmentID,
-                startFrame: startFrame,
-                endFrame: endFrame
+                speechRanges: payload.speechRanges
             )
+            guard segment.startFrame == startFrame, segment.endFrame == endFrame else {
+                throw FinalTranscriptPipelineError.persistedSegmentsMismatch(segmentationRunID)
+            }
+            return segment
         }
         let completedCounts = runEvents.filter {
             $0.eventType == "processing.run.completed"

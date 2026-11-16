@@ -36,30 +36,13 @@ func asrAudioLoaderReadsCanonicalSegmentWithoutChangingSamples() async throws {
     let segment = SegmentReference(
         segmentationRunID: "seg_run",
         segmentID: "seg_1",
-        startFrame: 0,
-        endFrame: 3
+        speechRanges: [0..<3]
     )
 
     let input = try loader.load(segment: segment)
 
     #expect(input.samples == [2, 3, 6])
     #expect(input.sampleRate == 16_000)
-}
-
-@Test
-func asrAudioLoaderRejectsReversedSegmentRange() async throws {
-    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate, sessionURL: root)
-    try await writer.append(samples: [1, 2, 3])
-    let checkpoint = try await writer.finish()
-    let loader = ASRAudioLoader(reader: try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root))
-
-    #expect(throws: ProcessingTimelineReaderError.invalidFrameRange) {
-        try loader.load(segment: SegmentReference(
-            segmentationRunID: "seg_run", segmentID: "reversed", startFrame: 2, endFrame: 1
-        ))
-    }
 }
 
 @Test

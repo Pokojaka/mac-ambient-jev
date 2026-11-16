@@ -91,15 +91,7 @@ public struct FileTranscriptionPipeline: Sendable {
         var pendingSince: [String: Date] = [:]
         var existingEvents: [TranscriptEvent] = []
         for segment in segments {
-            let created = try await writer.append(EventDraft(
-                eventType: "segment.created",
-                sessionID: sessionID,
-                segmentationRunID: segmentationRunID,
-                segmentID: segment.segmentID,
-                sourceStartFrame: segment.startFrame,
-                sourceEndFrame: segment.endFrame,
-                payload: EmptyPayload()
-            ))
+            let created = try await writer.append(.segmentCreated(sessionID: sessionID, segment: segment))
             existingEvents.append(.segmentCreated(
                 seq: created.eventSeq,
                 segmentationRunID: segmentationRunID,
@@ -196,8 +188,6 @@ public struct FileTranscriptionPipeline: Sendable {
             guard segment.segmentationRunID == runID,
                   !segment.segmentID.isEmpty,
                   segmentIDs.insert(segment.segmentID).inserted,
-                  segment.startFrame >= 0,
-                  segment.startFrame < segment.endFrame,
                   segment.endFrame <= committedFrames else {
                 throw FileTranscriptionPipelineError.invalidVADSegment(segmentID: segment.segmentID)
             }

@@ -36,7 +36,7 @@ private actor ScriptedProbabilityVAD: VADChunkSegmenting {
         return VADChunkOutput(
             segments: [SegmentReference(
                 segmentationRunID: "seg", segmentID: "chunk-\(chunkIndex)",
-                startFrame: Int64(chunkIndex * 4_096), endFrame: Int64(processedSamples)
+                speechRanges: [Int64(chunkIndex * 4_096)..<Int64(processedSamples)]
             )],
             micLevel: MicSpeechLevelMeasurement.measure(
                 samples: samples, startSeconds: startSeconds,

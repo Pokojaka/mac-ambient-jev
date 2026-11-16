@@ -12,8 +12,7 @@ private struct PausedImportVAD: FinalTranscriptVADSegmenter {
         [SegmentReference(
             segmentationRunID: runID,
             segmentID: "spoken",
-            startFrame: 0,
-            endFrame: reader.info.committedFrames
+            speechRanges: [0..<reader.info.committedFrames]
         )]
     }
 }

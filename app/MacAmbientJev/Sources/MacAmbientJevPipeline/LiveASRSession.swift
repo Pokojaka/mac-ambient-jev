@@ -182,15 +182,7 @@ public actor LiveASRSession {
             registeringSegmentIDs.insert(segment.segmentID)
             defer { registeringSegmentIDs.remove(segment.segmentID) }
             try Task.checkCancellation()
-            let created = try await writer.append(EventDraft(
-                eventType: "segment.created",
-                sessionID: sessionID,
-                segmentationRunID: segmentationRunID,
-                segmentID: segment.segmentID,
-                sourceStartFrame: segment.startFrame,
-                sourceEndFrame: segment.endFrame,
-                payload: EmptyPayload()
-            ))
+            let created = try await writer.append(.segmentCreated(sessionID: sessionID, segment: segment))
             let event = TranscriptEvent.segmentCreated(
                 seq: created.eventSeq,
                 segmentationRunID: segmentationRunID,

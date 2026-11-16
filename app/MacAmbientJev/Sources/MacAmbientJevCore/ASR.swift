@@ -20,6 +20,7 @@ public struct ASRResult: Sendable, Equatable {
 
 public struct ASRAudioInput: Sendable, Equatable {
     public static let minimumDurationSeconds = 0.02
+    public static let maximumDurationSeconds = 30.0
 
     public let samples: [Float]
     public let sampleRate: Int
@@ -57,12 +58,11 @@ public struct ASRAudioLoader: Sendable {
     }
 
     public func load(segment: SegmentReference) throws -> ASRAudioInput {
-        guard segment.startFrame <= segment.endFrame else {
-            throw ProcessingTimelineReaderError.invalidFrameRange
+        var samples: [Float] = []
+        samples.reserveCapacity(segment.speechRanges.reduce(0) { $0 + Int($1.count) })
+        for range in segment.speechRanges {
+            samples.append(contentsOf: try reader.readSamples(frameRange: range))
         }
-        return ASRAudioInput(
-            samples: try reader.readSamples(frameRange: segment.startFrame..<segment.endFrame),
-            sampleRate: Int(CanonicalAudio.sampleRate)
-        )
+        return ASRAudioInput(samples: samples, sampleRate: Int(CanonicalAudio.sampleRate))
     }
 }

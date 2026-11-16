@@ -1,16 +1,29 @@
 import Foundation
 
-public struct SegmentReference: Codable, Sendable, Equatable {
+public struct SegmentReference: Sendable, Equatable {
     public let segmentationRunID: String
     public let segmentID: String
-    public let startFrame: Int64
-    public let endFrame: Int64
+    public let speechRanges: [Range<Int64>]
+    public var startFrame: Int64 { speechRanges[0].lowerBound }
+    public var endFrame: Int64 { speechRanges[speechRanges.count - 1].upperBound }
 
-    public init(segmentationRunID: String, segmentID: String, startFrame: Int64, endFrame: Int64) {
+    public init(segmentationRunID: String, segmentID: String, speechRanges: [Range<Int64>]) {
+        precondition(Self.isValid(speechRanges), "speechRanges must be ordered, nonempty, and within the maximum duration")
         self.segmentationRunID = segmentationRunID
         self.segmentID = segmentID
-        self.startFrame = startFrame
-        self.endFrame = endFrame
+        self.speechRanges = speechRanges
+    }
+
+    public static func isValid(_ speechRanges: [Range<Int64>]) -> Bool {
+        guard let first = speechRanges.first, let last = speechRanges.last else { return false }
+        var previousUpperBound: Int64?
+        for range in speechRanges {
+            guard range.lowerBound >= 0, range.lowerBound < range.upperBound else { return false }
+            if let previousUpperBound, range.lowerBound < previousUpperBound { return false }
+            previousUpperBound = range.upperBound
+        }
+        return last.upperBound - first.lowerBound
+            <= Int64(ASRAudioInput.maximumDurationSeconds * CanonicalAudio.sampleRate)
     }
 }
 
@@ -172,8 +185,7 @@ public struct SegmentationAssembler: Sendable {
         return SegmentReference(
             segmentationRunID: segmentationRunID,
             segmentID: String(format: "seg_%06llu", nextSegmentIndex),
-            startFrame: startFrame,
-            endFrame: endFrame
+            speechRanges: [startFrame..<endFrame]
         )
     }
 }

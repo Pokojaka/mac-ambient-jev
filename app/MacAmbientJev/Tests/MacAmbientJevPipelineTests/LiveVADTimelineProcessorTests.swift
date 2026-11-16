@@ -81,7 +81,7 @@ private actor FailingOnceVADChunkSegmenter: VADChunkSegmenting {
         acceptedFrames += samples.count
         guard calls == 1 else { return VADChunkOutput(segments: [], micLevel: nil) }
         return VADChunkOutput(
-            segments: [SegmentReference(segmentationRunID: "seg", segmentID: "before-failure", startFrame: 0, endFrame: 100)],
+            segments: [SegmentReference(segmentationRunID: "seg", segmentID: "before-failure", speechRanges: [0..<100])],
             micLevel: nil
         )
     }

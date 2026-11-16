@@ -37,7 +37,7 @@ private struct ObservingVAD: FinalTranscriptVADSegmenter {
         log.state.withLock {
             $0.vad.append("\(info.sampleRate)/\(info.channelCount)/\(CanonicalAudio.sampleFormat)")
         }
-        return [SegmentReference(segmentationRunID: runID, segmentID: "probe", startFrame: 0, endFrame: 16_000)]
+        return [SegmentReference(segmentationRunID: runID, segmentID: "probe", speechRanges: [0..<16_000])]
     }
 }
 

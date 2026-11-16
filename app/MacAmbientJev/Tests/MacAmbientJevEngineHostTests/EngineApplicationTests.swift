@@ -443,7 +443,7 @@ private struct GatedOfflineFinalTranscriptVAD: FinalTranscriptVADSegmenter {
         try await gate.suspend()
         guard reader.info.committedFrames > 0 else { return [] }
         return [SegmentReference(
-            segmentationRunID: runID, segmentID: "final_segment_1", startFrame: 0, endFrame: reader.info.committedFrames
+            segmentationRunID: runID, segmentID: "final_segment_1", speechRanges: [0..<reader.info.committedFrames]
         )]
     }
 }

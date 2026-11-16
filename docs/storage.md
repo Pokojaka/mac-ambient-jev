@@ -175,7 +175,7 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 | --- | --- | --- |
 | `processing.run.started` | run | `stage`: String、`provenance`: 下記の object |
 | `processing.run.completed` | run | `stage`: String、`succeeded`: Bool、`completed_count`: Int、`failed_count`: Int |
-| `segment.created` | seg run、segment、開始・終了範囲 | 空 object `{}` |
+| `segment.created` | seg run、segment、開始・終了範囲 | `speech_ranges`: `[[Int64]]` |
 | `asr.pending` | run、seg run、segment、開始・終了範囲 | 空 object `{}`。確定処理でのみ出力する |
 | `asr.completed` | run、seg run、segment、開始・終了範囲 | `text`: String、`detected_language`: optional String、`engine`: String、`model`: optional String、`outcome`: `recognized` または `empty` |
 | `asr.failed` | run、seg run、segment、開始・終了範囲 | `kind`: 下記の失敗種別、`message`: String |
@@ -183,6 +183,8 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 | `clause_boundaries.pending` | run（境界判定 run） | `source`: 区間参照、`reason`: 保留理由、`message`: String |
 | `clauses.closed` | run（境界判定 run） | 下記の節 object。複数行にまたがるため envelope の segment は使わない |
 | `content_priority.assigned` | run（優先度 run） | `assignments`: 判定 object の配列、`request`: リクエスト記録または null |
+
+`segment.created` の `speech_ranges` は空でない配列です。各 `[lower, upper)` は `0 <= lower < upper` の非負フレーム範囲で、lower 順に昇順かつ相互に重なりません（隣接可）。先頭 lower から末尾 upper までの外側範囲は canonical 16 kHz で30秒以下で、envelope の `source_start_frame` / `source_end_frame` はそれぞれ先頭 lower / 末尾 upper です。ASR は各範囲だけを読み連結し、範囲間の gap は読みません。例: `{"speech_ranges":[[0,16000],[24000,40000]]}`。
 
 `stage` の raw value は `segmentation`、`asr`、`clauseBoundary`、`contentPriority` です。metadata のキー `clause_boundary` / `content_priority` と、stage の値 `clauseBoundary` / `contentPriority` を混同しないでください。
 
@@ -196,7 +198,7 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 
 検証済み VAD が0区間の確定処理では segmentation と ASR の run を開始し、両方の `processing.run.completed` は `succeeded: true`、`completed_count: 0`、`failed_count: 0` です。対象がないため `segment.created`、`asr.pending`、ASR 結果イベントは作りません。ASR の prepare・推論と発話文判定は行わず、保存音声も変更しません。空の transcript と `complete` を公開し、`active_runs` は segmentation と ASR の run ID を選び、任意の decision pointer は設定せず、両保留配列を空にします。再処理でも新しい run を作り、完了した空結果を未完了扱いで自動復旧しません。
 
-根拠: [ActiveRuns.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ActiveRuns.swift)、[ASREventPayloads.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)、[PipelineCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/PipelineCoordinator.swift)、[TranscriptTypes.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptTypes.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FinalTranscriptPipeline.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)、[LiveASRSession.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveASRSession.swift)。
+根拠: [ActiveRuns.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ActiveRuns.swift)、[ASREventPayloads.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)、[SegmentEvents.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SegmentEvents.swift)、[PipelineCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/PipelineCoordinator.swift)、[TranscriptTypes.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptTypes.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FinalTranscriptPipeline.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)、[LiveASRSession.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveASRSession.swift)。
 
 ### 発話文判定イベント
 

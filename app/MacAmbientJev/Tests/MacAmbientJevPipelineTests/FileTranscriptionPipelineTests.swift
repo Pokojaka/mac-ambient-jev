@@ -39,8 +39,7 @@ private struct FakeFileVAD: FinalTranscriptVADSegmenter {
             SegmentReference(
                 segmentationRunID: referenceRunID,
                 segmentID: $0.id,
-                startFrame: $0.startFrame,
-                endFrame: $0.endFrame
+                speechRanges: [$0.startFrame..<$0.endFrame]
             )
         }
     }
@@ -205,8 +204,6 @@ func fileTranscriptionWithNoSpeechDoesNotPrepareOrCallASR() async throws {
 @Test
 func invalidVADReferencesFailBeforeASR() async throws {
     let invalidSegments: [[FileSegmentSpec]] = [
-        [FileSegmentSpec(id: "empty", startFrame: 0, endFrame: 0)],
-        [FileSegmentSpec(id: "negative", startFrame: -1, endFrame: 10)],
         [FileSegmentSpec(id: "past-end", startFrame: 0, endFrame: 641)],
         [
             FileSegmentSpec(id: "duplicate", startFrame: 0, endFrame: 100),

@@ -294,7 +294,7 @@ private struct LiveDecisionFixture {
         )
         segments = texts.indices.map {
             SegmentReference(segmentationRunID: "live_seg", segmentID: "seg_\($0 + 1)",
-                             startFrame: Int64($0 * 4_000), endFrame: Int64($0 * 4_000 + 3_000))
+                             speechRanges: [Int64($0 * 4_000)..<Int64($0 * 4_000 + 3_000)])
         }
         self.counter = counter
     }
