@@ -103,7 +103,7 @@ def test_transcribe_file_cli_model(tmp_path: Path) -> None:
 
     fixture = (
         app_directory
-        / "Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_asr_voicevox_long.wav"
+        / "Tests/MacAmbientJevSpeechFixtures/Resources/qwen3_asr_voicevox_long.wav"
     )
     assert fixture.is_file(), f"Missing long model fixture: {fixture}"
     primary_path = tmp_path / "segments.json"

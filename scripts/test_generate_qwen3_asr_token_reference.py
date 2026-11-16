@@ -378,7 +378,7 @@ class TokenReferenceTests(unittest.TestCase):
     def test_bundled_voicevox_clips_load_from_explicit_manifest(self) -> None:
         fixture_directory = (
             reference.REPOSITORY_ROOT
-            / "app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources"
+            / "app/MacAmbientJev/Tests/MacAmbientJevSpeechFixtures/Resources"
         )
         historical_clips = (
             ("short", "qwen3_asr_voicevox_short.wav", 52_907,

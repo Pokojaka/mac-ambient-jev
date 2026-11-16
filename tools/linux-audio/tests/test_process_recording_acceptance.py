@@ -15,7 +15,7 @@ import fake_process_recording as fake
 TESTS_DIRECTORY = Path(__file__).resolve().parent
 FIXTURE = (
     acceptance.REPOSITORY_ROOT
-    / "app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_asr_voicevox_long.wav"
+    / "app/MacAmbientJev/Tests/MacAmbientJevSpeechFixtures/Resources/qwen3_asr_voicevox_long.wav"
 )
 
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="fake executables are POSIX scripts")
