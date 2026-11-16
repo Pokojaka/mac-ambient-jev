@@ -1,0 +1,14 @@
+{
+  "repository": "Sanami/haas-ja-onnx",
+  "commit": "354baedfd9612b00e74cc1ae87dff7f2c558db6f",
+  "files": [
+    {"name": "int8dyn/encoder.onnx", "role": "encoder", "byteCount": 3394700, "sha256": "56cf3d3f47e07188a6e1ef5066069c59ce87966a4311b3873b9407086ef15504"},
+    {"name": "int8dyn/encoder.onnx.data", "role": "encoder_weights", "byteCount": 650776320, "sha256": "c14c639bb9bffd58df30e63c6f93ac53f2b9e777bf56f7e1f1430184a63c456c"},
+    {"name": "int8dyn/decoder_joint.onnx", "role": "decoder_joint", "byteCount": 202988, "sha256": "659058cfaae4bc92a0d4c936789fa5d5ef7cdeba129243eb2eda6c1c54d2d51c"},
+    {"name": "int8dyn/decoder_joint.onnx.data", "role": "decoder_joint_weights", "byteCount": 12837912, "sha256": "c2f5c23ed081b923d7b068f7745195c1adc83687f180fa3b796b25d7fa7366bb"},
+    {"name": "tokenizer.model", "role": "tokenizer", "byteCount": 279711, "sha256": "9bd7bcdff62e43200001cd4c258d22e475b7b3b1e0f64f8be8e6e046f402f38c"},
+    {"name": "LICENSE", "role": "license", "byteCount": 11337, "sha256": "f9462f693a90196de423b41ffa3359860f9bd4bf3dda0e233f3dc5611f28b49f"},
+    {"name": "NOTICE", "role": "notice", "byteCount": 675, "sha256": "c5342050171f82e0154273cfb911a8d85dfb77401dfe9d3e137e177afc47beaf"
+    }
+  ]
+}

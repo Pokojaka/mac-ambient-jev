@@ -1,6 +1,7 @@
 import Foundation
 import MacAmbientJevCore
 import MacAmbientJevONNX
+import MacAmbientJevSpeechFixtures
 import Testing
 @testable import MacAmbientJevPortableRuntime
 
@@ -191,13 +192,7 @@ struct ONNXQwen3ASRModelTests {
 
             let clock = ContinuousClock()
             for fixture in fixtures {
-                let fixtureURL = try #require(
-                    Bundle.module.url(
-                        forResource: fixture.resourceName,
-                        withExtension: "wav",
-                        subdirectory: "Resources"
-                    )
-                )
+                let fixtureURL = try SpeechFixtures.wavURL(named: fixture.resourceName)
                 let audio = try readJapaneseFixture(at: fixtureURL)
                 #expect(audio.samples.count == fixture.sampleCount)
 
@@ -310,7 +305,7 @@ struct ONNXQwen3ASRModelTests {
         do {
             try await engine.prepare()
             for clip in reference.clips {
-                let audio = try readJapaneseFixture(at: try fixtureURL(named: clip.file))
+                let audio = try readJapaneseFixture(at: SpeechFixtures.wavURL(named: URL(fileURLWithPath: clip.file).deletingPathExtension().lastPathComponent))
                 #expect(audio.samples.count == clip.sampleCount)
 
                 let transcription = try await engine.transcribeWithTokens(audio.input)
@@ -471,17 +466,6 @@ private var qwen3ASRParityArchitecture: String {
     #else
     #error("Qwen3-ASR token parity supports only arm64 and x86_64")
     #endif
-}
-
-private func fixtureURL(named filename: String) throws -> URL {
-    let file = URL(fileURLWithPath: filename)
-    return try #require(
-        Bundle.module.url(
-            forResource: file.deletingPathExtension().lastPathComponent,
-            withExtension: file.pathExtension,
-            subdirectory: "Resources"
-        )
-    )
 }
 
 private struct JapaneseFixtureDescriptor {

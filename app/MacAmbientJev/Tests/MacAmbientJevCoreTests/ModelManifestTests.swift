@@ -112,6 +112,21 @@ private func fileJSON(name: String, byteCount: Int = 5, sha: String = String(rep
 }
 
 @Test
+func bareEntryDecodesAndRejectsInvalidCommit() throws {
+    let decoded = try ModelManifest.decodeEntry(Data("""
+    {"repository": "owner/repo", "commit": "\(commit)", "files": [\(fileJSON(name: "a.bin"))]}
+    """.utf8))
+    #expect(decoded.repository == "owner/repo")
+    #expect(decoded.commit == commit)
+    #expect(decoded.files.map(\.name) == ["a.bin"])
+    #expect(throws: ModelManifestError.self) {
+        try ModelManifest.decodeEntry(Data("""
+        {"repository": "owner/repo", "commit": "main", "files": [\(fileJSON(name: "a.bin"))]}
+        """.utf8))
+    }
+}
+
+@Test
 func manifestDecodesRelativePaths() throws {
     let entries = try ModelManifest.decode(manifestJSON(files: fileJSON(name: "a/b.mlmodelc/c.bin")))
     #expect(entries["m"]?.files.first?.name == "a/b.mlmodelc/c.bin")

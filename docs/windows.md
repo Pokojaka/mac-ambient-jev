@@ -806,7 +806,7 @@ docker run --rm \
 
 ### 日本語音声 fixture
 
-実モデル test は [`qwen3_asr_voicevox_short.wav`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_asr_voicevox_short.wav) と [`qwen3_asr_voicevox_long.wav`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_asr_voicevox_long.wav) を使います。両方とも mono PCM16、16 kHz WAV です。参照文は合成時に渡したコーパス文そのもので、短い音声は `general-001`、長い音声は `long-001`、`statistics-001`、`question-001` をこの順に連結しています。
+実モデル test は [`qwen3_asr_voicevox_short.wav`](../app/MacAmbientJev/Tests/MacAmbientJevSpeechFixtures/Resources/qwen3_asr_voicevox_short.wav) と [`qwen3_asr_voicevox_long.wav`](../app/MacAmbientJev/Tests/MacAmbientJevSpeechFixtures/Resources/qwen3_asr_voicevox_long.wav) を使います。両方とも mono PCM16、16 kHz WAV です。参照文は合成時に渡したコーパス文そのもので、短い音声は `general-001`、長い音声は `long-001`、`statistics-001`、`question-001` をこの順に連結しています。この WAV は全 OS 共通の Swift resource target [`MacAmbientJevSpeechFixtures`](../app/MacAmbientJev/Tests/MacAmbientJevSpeechFixtures/SpeechFixtures.swift) に置き、`SpeechFixtures.wavURL(named:)` から取得します。
 
 | fixture | 参照文 | 長さ | samples | bytes | SHA-256 |
 | --- | --- | ---: | ---: | ---: | --- |
@@ -815,7 +815,7 @@ docker run --rm \
 
 音声は VOICEVOX ENGINE の固定 image voicevox/voicevox_engine@sha256:52bfd61345fe6896a3d0014e0efd1931f6d2f91f501f3c27181e7bce05b47d68（CPU linux/arm64）で生成します。engine `/version` は 0.25.2（[0.25.2 release](https://github.com/VOICEVOX/voicevox_engine/releases/tag/0.25.2)、[README](https://raw.githubusercontent.com/VOICEVOX/voicevox_engine/0.25.2/README.md)）、speaker library version は 0.16.0、speaker UUID は `388f246b-8c41-4ac1-8e2d-5d79f3ff56d9`、話者・style は ずんだもん／ノーマル（style ID `3`）です。クレジットは `VOICEVOX:ずんだもん` です。生成器は engine version、speaker/style と `/audio_query` の値を検証し、不一致なら fallback せず失敗します。query は speed 1、pitch 0、intonation 1、volume 1、pre/post phoneme length 0.1、24 kHz、stereo false です。生成された 24 kHz mono PCM16 を整数演算の線形変換で16 kHzへ変換します。出力 frame 数は ceil、端点は clamp、丸めは ties-to-even で、padding はしません。同じ設定で2回生成した WAV は bit-identical です。
 
-[`qwen3_asr_voicevox.LICENSE.txt`](../app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_asr_voicevox.LICENSE.txt) はこの2つの音声に適用される利用条件と生成元を記録します。[VOICEVOX 利用規約](https://voicevox.hiroshiba.jp/term/)、[東北ずん子・ずんだもんプロジェクト音源利用規約](https://zunko.jp/con_ongen_kiyaku.html) および [VOICEVOX 音声モデル・音声ライブラリ利用規約](https://raw.githubusercontent.com/VOICEVOX/voicevox_vvm/main/TERMS.txt) に従い、クレジットを表示した商用・非商用利用が認められる音声を、中立的な test fixture として規約上の制限を保って配布しています。この音声はリポジトリの software license や CC0 で再許諾されるものではありません。再配布時は WAV とともにこの注意書きと規約へのリンクを保持し、`VOICEVOX:ずんだもん` のクレジットと適用条件を受領者にも伝えてください。VOICEVOX software、音声 library、model、画像は同梱・再配布しません。
+[`qwen3_asr_voicevox.LICENSE.txt`](../app/MacAmbientJev/Tests/MacAmbientJevSpeechFixtures/Resources/qwen3_asr_voicevox.LICENSE.txt) はこの2つの音声に適用される利用条件と生成元を記録します。[VOICEVOX 利用規約](https://voicevox.hiroshiba.jp/term/)、[東北ずん子・ずんだもんプロジェクト音源利用規約](https://zunko.jp/con_ongen_kiyaku.html) および [VOICEVOX 音声モデル・音声ライブラリ利用規約](https://raw.githubusercontent.com/VOICEVOX/voicevox_vvm/main/TERMS.txt) に従い、クレジットを表示した商用・非商用利用が認められる音声を、中立的な test fixture として規約上の制限を保って配布しています。この音声はリポジトリの software license や CC0 で再許諾されるものではありません。再配布時は WAV とともにこの注意書きと規約へのリンクを保持し、`VOICEVOX:ずんだもん` のクレジットと適用条件を受領者にも伝えてください。VOICEVOX software、音声 library、model、画像は同梱・再配布しません。
 
 再生成には Python 3.12 以上、`curl`、Docker が必要です。repository root で固定 image を起動し、最大120回・2秒間隔で `/version` の readiness を確認してから [`generate_qwen3_asr_fixtures.py`](../scripts/generate_qwen3_asr_fixtures.py) を実行します。終了時は trap で固定 container 名を削除します。
 
@@ -1419,7 +1419,7 @@ Deterministic acceptance は実際の [EngineApplication](../app/MacAmbientJev/S
 
 `engine_acceptance.py full-model` は Linux / Windows の test-only harness で実 PortableRuntime inference と decisions を実行し、同じ音声を使う ProcessRecording CLI baseline と host 出力を比較します。macOS では PortableRuntime が build されないため、この mode は明示的なエラーで終了します。必須 CLI 引数は `--executable PATH`、`--process-recording PATH`、`--fixture PATH`、`--threads N` です。thread 数に既定値はなく、Linux / Windows runners は `2` を渡します。Linux の no-build invocation は次のとおりです。
 
-<pre><code>python3 -B scripts/engine_acceptance.py full-model &#45;&#45;executable /absolute/path/to/MacAmbientJevEngineHarness &#45;&#45;process-recording /absolute/path/to/MacAmbientJevProcessRecording &#45;&#45;fixture app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_asr_voicevox_long.wav &#45;&#45;threads 2</code></pre>
+<pre><code>python3 -B scripts/engine_acceptance.py full-model &#45;&#45;executable /absolute/path/to/MacAmbientJevEngineHarness &#45;&#45;process-recording /absolute/path/to/MacAmbientJevProcessRecording &#45;&#45;fixture app/MacAmbientJev/Tests/MacAmbientJevSpeechFixtures/Resources/qwen3_asr_voicevox_long.wav &#45;&#45;threads 2</code></pre>
 
 fixture は上記 `日本語音声 fixture` の `long` row（18.464 秒）を使います。既存の [`process_recording_acceptance.py`](../tools/linux-audio/process_recording_acceptance.py) helper が使う reference SHA-256 と sample count はこの row から読み、full-model driver はその pin に対する非圧縮 PCM16 / 16 kHz mono WAV を再検証します。PCM16 値は `/32768` で Float32 に変換し、同じ PCM16 source WAV も保持して baseline と比較します。Linux は16 kHz mono identity のみです。Windows は加えて各 sample を3回繰り返し、両 channel に出力する48 kHz stereo WAV / Float32 fixture を生成します。この入力は engine host の Windows `CanonicalAudioResampler` に渡り、実 SRC を通ります。fixture の3倍反復は入力生成だけの規則で、推論 fallback はありません。
 

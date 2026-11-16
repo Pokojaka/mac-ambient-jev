@@ -290,6 +290,30 @@ ONNX Runtime SDK の取得には Python 3.12 以上が必要です。macOS SDK �
 
 cache hit は dependency resolution、build、test、app build を省略しない。`verify-v1-app` job だけが MLX の Metal shader library を build するため `xcodebuild -downloadComponent MetalToolchain` を実行し、実行ごとに「MacAmbientJev Local Signing」という自己署名コード署名証明書を一時 keychain に作って署名に使う。アプリ job は Python 3.13 を使い、`scripts/fetch_clause_tagger.py --format coreml` で公開 Hugging Face repository から認証なしでモデルを取得する。取得時には manifest に pin された各ファイルの byte 数と SHA-256 を検証する。
 
+### Mac 専用 Haas ASR テスト
+
+[`MacAmbientJevHaasASR`](../app/MacAmbientJev/Sources/MacAmbientJevHaasASR/HaasASRModel.swift) とその tests は macOS 専用で、Core / ONNX に依存しますが app には接続されていません。app の ASR は MLX を使います。
+
+共有 short WAV と利用条件は [`qwen3_asr_voicevox_short.wav`](../app/MacAmbientJev/Tests/MacAmbientJevSpeechFixtures/Resources/qwen3_asr_voicevox_short.wav) と [`qwen3_asr_voicevox.LICENSE.txt`](../app/MacAmbientJev/Tests/MacAmbientJevSpeechFixtures/Resources/qwen3_asr_voicevox.LICENSE.txt) にあります（[日本語音声 fixture の参照文・hash 表](windows.md#日本語音声-fixture)）。
+
+[`haas_mel_golden.json`](../app/MacAmbientJev/Tests/MacAmbientJevHaasASRTests/Resources/haas_mel_golden.json) は共有 short WAV の先頭1秒から作った log-mel golden です。shape は `1×128×112`、`validLength` は100で、Float32 の数値を丸めず全112 frameを保持します（約257 KB）。[HaasMelFrontendTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevHaasASRTests/HaasMelFrontendTests.swift) は最大絶対誤差 `1e-4` 以内を検証し、standalone 測定値は `6.2286854e-6` です。差は Float32 reduction / log rounding と NumPy の演算差によります。この test に model は不要です。
+
+repository root からの生成 command は次のとおりです。
+
+```bash
+uv run --python 3.12 scripts/generate_haas_asr_fixtures.py --reference-dir /absolute/path/to/onnx-354baedfd9612b00e74cc1ae87dff7f2c558db6f
+```
+
+[`generate_haas_asr_fixtures.py`](../scripts/generate_haas_asr_fixtures.py) は import 前に local haas_ort.py の未変更 SHA-256 `b709d2f6279275a04ae50c7991249566a8b8591af9fcbc754bfb363d9bd57177` を検証します。PEP 723 の固定依存は `onnxruntime==1.31.0`、`librosa==0.11.0`、`numpy==1.26.4`、`soundfile==0.13.1`、`sentencepiece==0.2.1` です。NumPy 1.26.4 は FFT が double に昇格する挙動に合わせています。
+
+[`haas_asr_model.json`](../app/MacAmbientJev/Sources/MacAmbientJevHaasASR/Resources/haas_asr_model.json) の Hugging Face commit から model を取得する command は次のとおりです。
+
+```bash
+python3 -B scripts/fetch_haas_asr_model.py --destination /absolute/path/to/haas-ja-onnx-int8dyn
+```
+
+[`fetch_haas_asr_model.py`](../scripts/fetch_haas_asr_model.py) は Hugging Face の pinned commit から取得し、manifest の byte 数と SHA-256 を検証します。検証済みの既存 file は再利用し、破損時は失敗します。
+
 ### Windows CI の temp directory と cache
 
 Windows runner は `RUNNER_TEMP` が空でない絶対 path であり、既存 directory であることを検証してから、`TEMP`、`TMP`、`TMPDIR` のすべてにその完全な値を設定します。設定後に開始する Python / Swift の子 process はこの環境を継承し、新しい Python process ごとに `tempfile` の temp-directory 判定を行います。Foundation 6.2 の Windows *FileManager.temporaryDirectory* は *String.temporaryDirectoryPath* に進み、Windows では *GetTempPathW* を呼びます。corelibs Foundation の *NSTemporaryDirectory()* も *FileManager.default.temporaryDirectory* を返します（[Foundation corelibs implementation](https://raw.githubusercontent.com/swiftlang/swift-corelibs-foundation/swift-6.2-RELEASE/Sources/Foundation/NSPathUtilities.swift)、[swift-foundation implementation](https://raw.githubusercontent.com/swiftlang/swift-foundation/swift-6.2-RELEASE/Sources/FoundationEssentials/String/String+Path.swift)）。Windows は *GetTempPathW* で `TMP` を `TEMP` より優先し（[Microsoft documentation](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-gettemppathw)）、Python 3.12 `tempfile` は `TMPDIR`、`TEMP`、`TMP` の順に検索します（[Python documentation](https://docs.python.org/3.12/library/tempfile.html)）。

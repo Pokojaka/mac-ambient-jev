@@ -43,6 +43,12 @@ public enum ModelManifest {
         return entries
     }
 
+    public static func decodeEntry(_ data: Data) throws -> ModelManifestEntry {
+        let entry = try JSONDecoder().decode(ModelManifestEntry.self, from: data)
+        try validate(entry, key: "model")
+        return entry
+    }
+
     public static func validate(_ entry: ModelManifestEntry, key: String) throws {
         guard !entry.repository.isEmpty, !entry.repository.contains(where: \.isWhitespace) else {
             throw ModelManifestError.invalid("\(key): repository が不正です: \(entry.repository)")

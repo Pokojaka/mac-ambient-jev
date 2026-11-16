@@ -58,7 +58,7 @@ run_full_model() {
   swift build --package-path "$PACKAGE" -c release --product MacAmbientJevEvaluateASR
   swift build --package-path "$PACKAGE" -c release --product MacAmbientJevEngineHarness
   bin_path="$(swift build --package-path "$PACKAGE" -c release --show-bin-path)"
-  fixture="$PACKAGE/Tests/MacAmbientJevPortableRuntimeTests/Resources/qwen3_asr_voicevox_long.wav"
+  fixture="$PACKAGE/Tests/MacAmbientJevSpeechFixtures/Resources/qwen3_asr_voicevox_long.wav"
   python3 "$ROOT/tools/linux-audio/process_recording_acceptance.py" \
     --executable "$bin_path/MacAmbientJevProcessRecording" \
     --evaluator "$bin_path/MacAmbientJevEvaluateASR" \

@@ -51,7 +51,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 CORPUS_PATH = REPOSITORY_ROOT / "tools/corpora/voicevox-ja-core-v1.json"
 RESOURCE_DIRECTORY = (
     REPOSITORY_ROOT
-    / "app/MacAmbientJev/Tests/MacAmbientJevPortableRuntimeTests/Resources"
+    / "app/MacAmbientJev/Tests/MacAmbientJevSpeechFixtures/Resources"
 )
 
 sys.path.insert(0, str(REPOSITORY_ROOT / "tools/linux-audio"))

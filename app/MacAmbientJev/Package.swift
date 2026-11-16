@@ -68,6 +68,11 @@ var targets: [Target] = [
         path: "Tests/MacAmbientJevClauseTaggerFixtures",
         resources: [.copy("Resources")]
     ),
+    .target(
+        name: "MacAmbientJevSpeechFixtures",
+        path: "Tests/MacAmbientJevSpeechFixtures",
+        resources: [.copy("Resources")]
+    ),
     // Deadline-free waits for test doubles, shared by the engine test targets.
     .target(
         name: "MacAmbientJevTestSupport",
@@ -315,6 +320,7 @@ targets.append(.testTarget(
         "MacAmbientJevCore",
         "MacAmbientJevVADFixtures",
         "MacAmbientJevClauseTaggerFixtures",
+        "MacAmbientJevSpeechFixtures",
         "MacAmbientJevTestSupport"
     ],
     resources: [.copy("Resources")],
@@ -472,6 +478,20 @@ targets += [
             "MacAmbientJevVADFixtures",
             .product(name: "FluidAudio", package: "FluidAudio")
         ]
+    )
+]
+targets += [
+    .target(
+        name: "MacAmbientJevHaasASR",
+        dependencies: ["MacAmbientJevCore", "MacAmbientJevONNX"],
+        resources: [.copy("Resources")],
+        swiftSettings: onnxRuntimeIncludeSwiftSettings
+    ),
+    .testTarget(
+        name: "MacAmbientJevHaasASRTests",
+        dependencies: ["MacAmbientJevHaasASR", "MacAmbientJevCore", "MacAmbientJevSpeechFixtures"],
+        resources: [.copy("Resources")],
+        swiftSettings: onnxRuntimeIncludeSwiftSettings
     )
 ]
 #endif
