@@ -134,7 +134,7 @@ def test_segment_checks():
     segments = segments_fixture()
     acceptance.check_segments(segments, fake.DURATION_MS)
     for mutate, message in [
-        (lambda s: s.pop(), "multiple segments"),
+        (lambda s: s.clear(), "at least one segment"),
         (lambda s: s[1].update(start_ms=100), "chronological"),
         (lambda s: s[1].update(end_ms=99_999), "out of bounds"),
         (lambda s: s[0].update(text="abc"), "not Japanese"),

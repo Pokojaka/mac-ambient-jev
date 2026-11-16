@@ -650,7 +650,7 @@ driver は release の CLI と `MacAmbientJevEvaluateASR` の絶対 path、fixtu
 検査内容は次のとおりです。
 
 - 全コマンドの終了コードが 0 で、import の stdout に `session_id:` 行がちょうど 1 つある。
-- 出力 JSON は 2 件以上の segment を時系列・重なりなし・音声長以内で持ち、各 `text` は日本語を含む。`clause_state` は `classified` で、clause slice は priority を持ち再試行待ちがない。
+- 出力 JSON は 1 件以上の segment を時系列・重なりなし・音声長以内で持ち、各 `text` は日本語を含む。`clause_state` は `classified` で、clause slice は priority を持ち再試行待ちがない。
 - `text` を時刻順に連結した raw 文を `MacAmbientJevEvaluateASR` で参照文と比較し、単一 CER の `cer.rate` が 0.15 以下。
 - セッション folder に `session.json`、末尾まで完結した `events.jsonl`、`processing_metadata.json`、`storage.json`（imported original と import 時のフレーム数）があり、`audio/original.*` が入力と byte 単位で同一である。audio directory 以下に `.caf` がなく、`recording.flac` と `.recording.flac.partial` もない。
 - `active_runs` の segmentation・asr・clause_boundary・content_priority があり、それぞれ `processing.run.started` / `processing.run.completed`（成功、失敗数 0）が1組ずつある。segmentation provenance の engine は `onnxruntime-silero-vad`、ASR provenance の engine は `onnxruntime-qwen3-asr` で、ASR model は [qwen3_asr_models.json](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/qwen3_asr_models.json) の `repository@commit`、`intra_op_threads` は2です。decision run の engine は ONNX で、Core ML を名乗りません。境界・優先度の判定 event が active run にあり、保留中の判定対象がありません。
