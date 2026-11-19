@@ -3,7 +3,6 @@ import Foundation
 import MacAmbientJevCore
 import MacAmbientJevPipeline
 import MacAmbientJevRuntime
-import MLX
 
 struct EngineMetrics: Codable {
     let runID: String
@@ -101,13 +100,8 @@ actor RunMonitor {
             return
         }
         guard append(thermalData, to: thermalURL) else { return }
-        let mlx = Memory.snapshot()
         var memory: [String: Any] = [
-            "run_id": runID, "timestamp": timestamp, "phase": phase.rawValue,
-            "mlx_active_bytes": mlx.activeMemory,
-            "mlx_cache_bytes": mlx.cacheMemory,
-            "mlx_peak_bytes": mlx.peakMemory,
-            "mlx_cache_limit_bytes": Memory.cacheLimit
+            "run_id": runID, "timestamp": timestamp, "phase": phase.rawValue
         ]
         switch Self.footprint() {
         case .success(let bytes):

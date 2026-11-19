@@ -29,7 +29,7 @@ extension MacModel {
     /// The model directory relative to `modelsRoot`.
     var relativeDirectory: String {
         switch self {
-        case .asr: "qwen3-asr-1.7b-mlx-8bit"
+        case .asr: "haas-ja-onnx-int8dyn"
         case .vad: "fluidaudio-silero-vad"
         }
     }

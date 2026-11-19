@@ -20,21 +20,19 @@ class FetchTests(unittest.TestCase):
     def test_downloads_each_manifest_file_into_the_models_layout(self) -> None:
         payload = b"stand-in vad file"
         manifest = {
-            "vad": {
-                "repository": "owner/vad",
-                "commit": "abc123",
-                "files": [{
-                    "name": "m.mlmodelc/weights/weight.bin",
-                    "role": "vad_weights",
-                    "byteCount": len(payload),
-                    "sha256": hashlib.sha256(payload).hexdigest(),
-                }],
-            }
+            "repository": "owner/vad",
+            "commit": "abc123",
+            "files": [{
+                "name": "m.mlmodelc/weights/weight.bin",
+                "role": "vad_weights",
+                "byteCount": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }],
         }
         with tempfile.TemporaryDirectory() as temporary:
             repository = Path(temporary).resolve() / "repository"
             (repository / "scripts").mkdir(parents=True)
-            manifest_path = repository / "mac_models.json"
+            manifest_path = repository / "fluid_vad_model.json"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             with mock.patch.object(fetcher, "__file__", repository / "scripts" / "fetch_mac_vad_model.py"), \
                     mock.patch.object(fetcher, "MANIFEST", manifest_path), \

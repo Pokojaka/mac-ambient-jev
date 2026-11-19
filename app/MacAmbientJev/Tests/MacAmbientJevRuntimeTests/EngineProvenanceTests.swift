@@ -1,11 +1,11 @@
 import Foundation
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 import Testing
 @testable import MacAmbientJevRuntime
 
 private struct ResolvedPin: Decodable {
     struct State: Decodable {
-        let revision: String
         let version: String?
     }
 
@@ -30,9 +30,8 @@ private func resolvedPin(_ identity: String) throws -> ResolvedPin {
 }
 
 @Test
-func engineProvenanceNamesTheResolvedDependencyPins() throws {
+func productionEngineProvenanceNamesHaasAndResolvedFluidAudioPin() throws {
     let fluidAudio = try #require(try resolvedPin("fluidaudio").state.version)
-    let speechSwift = try resolvedPin("speech-swift").state.revision
     let paths = AppPaths(
         applicationSupportURL: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString),
         cacheURL: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString),
@@ -40,6 +39,19 @@ func engineProvenanceNamesTheResolvedDependencyPins() throws {
     )
 
     let models = try MacModelStore(paths: paths)
-    #expect(NativeQwen3ASREngine(models: models).provenance.version == "speech-swift@\(speechSwift)")
-    #expect(FluidFinalTranscriptVADSegmenter(models: models).provenance.version == "FluidAudio@\(fluidAudio)")
+    let production = SessionProcessingEngines.production(models: models)
+    #expect(production.asr.provenance == RunProvenance(
+        engine: "onnxruntime-haas-tdt",
+        model: "Sanami/haas-ja-onnx/int8dyn",
+        version: "haas-ja-v1.0@354baedfd9612b00e74cc1ae87dff7f2c558db6f+onnxruntime@1.31.0",
+        configuration: [
+            "language": "ja",
+            "decoding": "tdt-greedy",
+            "max_symbols_per_frame": "10",
+            "intra_op_threads": "4",
+            "minimum_input_seconds": "0.02",
+            "maximum_input_seconds": "30.0",
+        ]
+    ))
+    #expect(production.finalTranscriptVAD.provenance.version == "FluidAudio@\(fluidAudio)")
 }

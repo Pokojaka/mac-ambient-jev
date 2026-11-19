@@ -7,7 +7,7 @@
 ```text
 保存音声の処理タイムライン
   → VAD
-  → speech range 群を外側 span 30 秒以内にまとめた segment ごとの Qwen3-ASR
+  → speech range 群を外側 span 30 秒以内にまとめた segment ごとの ASR（Mac: Haas-ja-v1.0 / ONNX Runtime CPU）
   → 必須ローカル2段階の結果と全区間の境界保留を一括公開
   → Core ML 発話文モデルによる境界判定（任意）
   → BTSJ 発話文の組み立て
@@ -23,7 +23,7 @@
 
 ライブと確定処理は共通の `VADSegmentationState` を使い、同じ 4096-sample VAD probability stream chunking（settle・finish を含む）で区間と segment を作ります。確定処理だけの別 regrouping は行いません。VAD threshold はライブと同じです。speech range の規則もライブと同じで、pre-roll 0.10 秒、14 秒到達時の静音位置分割、0.5 秒未満の独立 speech range の除外は変更しません。
 
-エンジン入力は **16,000 Hz・mono・float32 PCM** だけを受け付けます。VAD は保存済み floats を直接読み、ASR loader は区間のサンプルを変更せず Qwen に 16000 とモデルが定義する言語指定 `language=Japanese` を渡します。20 ms 未満の ASR 入力を推論しない規則は変わりません。source frame は original や device ではなく保存タイムラインの座標です。
+エンジン入力は **16,000 Hz・mono・float32 PCM** だけを受け付けます。VAD は保存済み floats を直接読み、ASR loader は speech range のサンプルを変更せず連結し、range 間の gap 音声を含めません。Mac の Haas-ja-v1.0（モデル ID [Sanami/haas-ja-onnx/int8dyn](https://huggingface.co/Sanami/haas-ja-onnx/tree/354baedfd9612b00e74cc1ae87dff7f2c558db6f/int8dyn)、engine `onnxruntime-haas-tdt`）は ONNX Runtime の CPU で固定 4 演算スレッドを使い、16,000 Hz の入力を受け取ります。日本語専用モデルです。20 ms 未満の入力は推論せず空本文を返し、30 秒を超える入力は分割せず拒否します。source frame は original や device ではなく保存タイムラインの座標です。
 
 VAD と ASR には新しい run ID を付け、各段階の `processing.run.started` に、その実行の engine、model、version、configuration を保存します。以前の run の来歴を新しい実行へ引き継ぎません。
 
@@ -129,7 +129,7 @@ ID は manifest の完全 UUID から実フォルダー URL に解決します�
 
 ## ASR 区間
 
-利用可能な speech range を、最初の range の開始から追加 range の終了までの外側 span が30秒以内なら一 segment にまとめます。1 segment は Qwen3-ASR の一回の呼び出しと transcript row 一つに対応します。ASR loader は speech range の音声だけを連結し、range 間の gap 音声は読みません。行の開始・終了時刻は segment の最初の range の開始・最後の range の終了です。
+利用可能な speech range を、最初の range の開始から追加 range の終了までの外側 span が30秒以内なら一 segment にまとめます。Mac の確定処理では一 segment は Haas の一回の呼び出しと transcript row 一つに対応します。ASR loader は speech range の音声だけを連結し、range 間の gap 音声は読みません。行の開始・終了時刻は segment の最初の range の開始・最後の range の終了です。
 
 画面と `transcript.txt` は同じ表示本文を使い、表示本文がある行を「[mm:ss] 本文」の一行ずつで書き出します。本文内改行は空白にし、フィラー・相槌除去と保存済み LOW 発話文の除去を反映します。ASR の原文と CLI JSON の `text` は表示用の除去で変更しません。
 

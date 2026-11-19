@@ -4,7 +4,6 @@ import MacAmbientJevPipeline
 #if os(macOS)
 import MacAmbientJevAppleSupport
 import MacAmbientJevRuntime
-import MLX
 #else
 import MacAmbientJevPortableRuntime
 #endif
@@ -54,7 +53,6 @@ struct ProcessRecordingCommand {
         let service = makeService(
             paths: paths,
             protectedRoots: defaults.protectedSessionsRoots,
-            pacingMode: pacingMode(for: invocation.input),
             threads: invocation.threads,
             logicalCPUCount: ProcessInfo.processInfo.processorCount
         )
@@ -137,7 +135,6 @@ struct ProcessRecordingCommand {
         let service = makeService(
             paths: paths,
             protectedRoots: defaults.protectedSessionsRoots,
-            pacingMode: .normal,
             threads: nil,
             logicalCPUCount: ProcessInfo.processInfo.processorCount
         )
@@ -196,14 +193,13 @@ struct ProcessRecordingCommand {
     private static func makeService(
         paths: AppPaths,
         protectedRoots: [URL],
-        pacingMode: ASRPacingMode,
         threads: Int?,
         logicalCPUCount: Int
     ) -> SessionFileProcessingService {
         #if os(macOS)
         let timelineBuilder: any ImportedAudioTimelineBuilding = AudioFileTimelineBuilder()
         let makeResources: @Sendable (Bool) throws -> SessionFileProcessingResources = { withDecisions in
-            try checkStart(pacingMode: pacingMode)
+            try checkStart()
             let engines = SessionProcessingEngines.production(models: try MacModelStore(paths: paths))
             let contentPriority: ContentPriorityAccess
             let decisionProviderFactory: DecisionProviderFactory?
@@ -263,13 +259,10 @@ struct ProcessRecordingCommand {
     }
 
     #if os(macOS)
-    private static func checkStart(pacingMode: ASRPacingMode) throws {
+    private static func checkStart() throws {
         let thermal = MacThermalMonitor().pressure
         guard thermal == .nominal || thermal == .fair else {
             throw ProcessRecordingError.processingFailed("熱状態が落ち着くまで開始できません")
-        }
-        if pacingMode == .lowHeat {
-            Memory.cacheLimit = min(Memory.cacheLimit, 2 * 1024 * 1024 * 1024)
         }
     }
 
@@ -302,13 +295,6 @@ struct ProcessRecordingCommand {
             shouldPause: shouldPause,
             onPhase: onPhase
         )
-    }
-
-    private static func pacingMode(for input: RecordingInput) -> ASRPacingMode {
-        switch input {
-        case .importFile(_, _, _, _, let pacing), .resume(_, _, _, let pacing): pacing
-        case .inspect: .normal
-        }
     }
 
     private static func printUsage() {
