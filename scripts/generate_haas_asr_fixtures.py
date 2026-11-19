@@ -35,7 +35,7 @@ TOKENIZER_SHA256 = "9bd7bcdff62e43200001cd4c258d22e475b7b3b1e0f64f8be8e6e046f402
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Generate the Haas log-mel and SentencePiece golden fixtures."
+        description="Generate the Haas log-mel, SentencePiece, and end-to-end parity golden fixtures."
     )
     parser.add_argument("--reference-dir", type=Path, required=True)
     args = parser.parse_args()
@@ -124,6 +124,55 @@ def main() -> None:
         encoding="utf-8",
     )
     print(tokenizer_output_path)
+
+    encoder_session, decoder_session = reference.sessions(
+        args.reference_dir / "int8dyn" / "encoder.onnx",
+        args.reference_dir / "int8dyn" / "decoder_joint.onnx",
+        threads=4,
+    )
+    reference_tokenizer = reference.Tokenizer(str(tokenizer_path))
+    clips = []
+    for name in ("short", "long"):
+        resource_name = f"qwen3_asr_voicevox_{name}"
+        audio = reference.load_wav(
+            repository_root
+            / "app/MacAmbientJev/Tests/MacAmbientJevSpeechFixtures/Resources"
+            / f"{resource_name}.wav"
+        )
+        if name == "long":
+            max_samples = 30 * 16000
+            if len(audio) < max_samples:
+                print(
+                    f"{resource_name} is shorter than 30 seconds; "
+                    f"using all {len(audio)} samples."
+                )
+            audio = audio[:max_samples]
+        mel, valid_length = reference.logmel(audio)
+        encoded, encoded_length = reference.encode(
+            encoder_session, mel, valid_length
+        )
+        token_ids = reference.greedy_tdt(
+            decoder_session, encoded, encoded_length
+        )
+        clips.append(
+            {
+                "resourceName": resource_name,
+                "sampleCount": len(audio),
+                "tokenIDs": token_ids,
+                "text": reference_tokenizer.decode(token_ids),
+            }
+        )
+    asr_output_path = (
+        repository_root
+        / "app/MacAmbientJev/Tests/MacAmbientJevHaasASRTests/Resources/"
+        "haas_parity_golden.json"
+    )
+    asr_output_path.write_text(
+        json.dumps({"clips": clips}, separators=(",", ":"), allow_nan=False)
+        + "\n",
+        encoding="utf-8",
+    )
+    print(asr_output_path)
 
 
 if __name__ == "__main__":
