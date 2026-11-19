@@ -272,27 +272,27 @@ swift test --package-path app/MacAmbientJev
 bash scripts/verify_v1.sh
 ```
 
-ONNX Runtime SDK の取得には Python 3.12 以上が必要です。macOS SDK は arm64 のみで、SwiftPM は core-only の build / test でも SDK を要求し、不在または他の macOS architecture は fatal error になります。SDK 検証は versioned dylib と install name @rpath/libonnxruntime.1.dylib に対応する `libonnxruntime.1.dylib` SDK symlink の両方を確認し、install name の normalization や dylib の app bundle への同梱は行いません。wrapper tests は CPU での int32 tensor round-trip を含みますが、Mac runtime ASR は MLX / speech-swift を使います。
+ONNX Runtime SDK の取得には Python 3.12 以上が必要です。macOS SDK は arm64 のみで、SwiftPM は core-only の build / test でも SDK を要求し、不在または他の macOS architecture は fatal error になります。SDK 検証は versioned dylib と `libonnxruntime.1.dylib` SDK symlink の両方を確認します。Mac の本番 ASR は ONNX Runtime を使います。SDK 検証や app build は、ONNX Runtime dylib の app bundle への同梱・署名を確認しません。Mac の外部 SwiftPM package dependency は FluidAudio だけで、ONNX Runtime SDK は pinned local system library です。
 
-`verify_v1.sh` は `RUN_MODEL_TESTS` と `ASR_SMOKE_AUDIO` を引き継ぎ、`scripts/verify_v1_tests.sh`、続けて `scripts/verify_v1_app.sh` の順に実行する。`RUN_MODEL_TESTS=1` の場合は、Swift コマンドを始める前に `ASR_SMOKE_AUDIO` が読み取り可能な絶対パスであることを検査する。`scripts/verify_v1.sh`、`scripts/verify_v1_tests.sh`、`scripts/build_app.sh` は ONNX Runtime SDK を SwiftPM より前に取得する。`verify_v1_tests.sh` は Silero model も取得し、その path を `MAC_AMBIENT_JEV_SILERO_MODEL`、FluidAudio parity 用 model root を `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` として test runner に渡す。`scripts/verify_v1_tests.sh` は次の1〜6を行い、`scripts/verify_v1_app.sh` は7を行う。
+`verify_v1.sh` は `RUN_MODEL_TESTS` と `ASR_SMOKE_AUDIO` を引き継ぎ、`scripts/verify_v1_tests.sh`、続けて `scripts/verify_v1_app.sh` の順に実行する。`RUN_MODEL_TESTS=1` の場合は、Swift command の前に `ASR_SMOKE_AUDIO` が読み取り可能な絶対 path であることを検査する。`scripts/verify_v1.sh`、`scripts/verify_v1_tests.sh`、`scripts/build_app.sh` は ONNX Runtime SDK を SwiftPM より前に取得する。`verify_v1_tests.sh` は Silero model も取得し、その path を `MAC_AMBIENT_JEV_SILERO_MODEL`、FluidAudio VAD model 用の isolated application-support root を `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` として test runner に渡す。`scripts/verify_v1_tests.sh` は次の1〜6を行い、`scripts/verify_v1_app.sh` は7を行う。
 
 1. `scripts/check_doc_references.py` で参照検査を実行する。`scripts/test_japanese_numeral_exclusions.py` で漢数字表示の除外句一覧の生成規則と、コミット済みの生成物が `labels.tsv` と一致することを検査する。イベント・処理 metadata の schema version 3 と、未対応・欠損・型不正の version の拒否も検証する。Python の `regex` package が必要。
 2. ONNX Runtime SDK を取得してから SwiftPM の依存を解決し、`swift build --build-tests` で package とテストをまとめて build する。
-3. `scripts/fetch_silero_vad.py` が pinned Silero ONNX model を取得し、`scripts/fetch_mac_vad_model.py` が [mac_models.json](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/Resources/mac_models.json) に固定した FluidAudio VAD model を取得する（SHA-256 と byte 数を照合し、取得済みなら再取得しない）。FluidAudio model は `.build/mac-test-models/<commit>` に置く。その後、事前に build したテストを再利用し、UUID の event path を `.build/test-events/` に作ってから `env -u RUN_MODEL_TESTS MAC_AMBIENT_JEV_TEST_APP_SUPPORT=<表示された directory> MAC_AMBIENT_JEV_SILERO_MODEL=<Silero model path> python3 -B scripts/run_swift_tests.py --package-path "$PACKAGE" --skip-build --event-stream-output-path "$EVENT_PATH"` を実行する。runner は test process の完了後に event を報告します。この実行では [VADParityFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/VADParityFixtureTests.swift) の FluidAudio 一致検査（`committedFixtureMatchesFluidAudio`）と ONNX Silero parity tests が実行される。FluidAudio の確率差は 0.05 以下、`segments.flatMap(\.speechRanges)` の speech ranges は完全一致し（外側 segment の grouping は比較せず fixture は変更しない）、model がなければ失敗する（skip しない）。ASR model は渡さないため、実 ASR 推論の test は opt-in です。[SegmentGrouperTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/SegmentGrouperTests.swift) は30秒境界・settle・finish、[VADSegmentationStateTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/VADSegmentationStateTests.swift) は segment validity（順序・非重複・30秒以下）、合成 timeline を通す `VADTimelineProcessor` の live/final drain parity、連続発話・長い無音の各ケースに限った32秒＋4096-sample chunk内の release、遅れて報告された speech end 後の次 segment を検査します。これらのケースの解放時間は一般的な遅延上限を示しません。
+3. `scripts/fetch_silero_vad.py` が pinned Silero ONNX model を取得し、`scripts/fetch_mac_vad_model.py` が [`fluid_vad_model.json`](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/Resources/fluid_vad_model.json) の bare manifest entry に固定した FluidAudio VAD model を取得する（SHA-256 と byte 数を照合し、取得済みなら再取得しない）。FluidAudio model は `.build/mac-test-models/<commit>/mac-ambient-jev/models/fluidaudio-silero-vad` に置く。その後、事前に build したテストを再利用し、UUID の event path を `.build/test-events/` に作ってから `env -u RUN_MODEL_TESTS MAC_AMBIENT_JEV_TEST_APP_SUPPORT=<表示された directory> MAC_AMBIENT_JEV_SILERO_MODEL=<Silero model path> python3 -B scripts/run_swift_tests.py --package-path "$PACKAGE" --skip-build --event-stream-output-path "$EVENT_PATH"` を実行する。runner は test process の完了後に event を報告します。この実行では [VADParityFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/VADParityFixtureTests.swift) の FluidAudio 一致検査（`committedFixtureMatchesFluidAudio`）と ONNX Silero parity tests が実行される。FluidAudio の確率差は 0.05 以下、`segments.flatMap(\.speechRanges)` の speech ranges は完全一致し（外側 segment の grouping は比較せず fixture は変更しない）、model がなければ失敗する（skip しない）。ASR model は渡さないため、実 ASR 推論の test は opt-in です。[SegmentGrouperTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/SegmentGrouperTests.swift) は30秒境界・settle・finish、[VADSegmentationStateTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/VADSegmentationStateTests.swift) は segment validity（順序・非重複・30秒以下）、合成 timeline を通す `VADTimelineProcessor` の live/final drain parity、連続発話・長い無音の各ケースに限った32秒＋4096-sample chunk内の release、遅れて報告された speech end 後の次 segment を検査します。これらのケースの解放時間は一般的な遅延上限を示しません。
 4. `MacAmbientJevProcessRecording` を build し、`scripts/verify_cli_inputs.py` で不正入力、ローカル2段階（segmentation / asr）の成功0件を公開した named folder の inspect、イベント・処理 metadata の未対応・欠損・型不正 version の拒否、resume 出力先の containment と保存ファイルの不変性を確認する。
 5. `MacAmbientJevEvaluateSession` を build する。
-6. モデル検証を指定した場合は Swift test 一覧に ASRIntegrationTests があることと Runtime test bundle の存在を確認し、その bundle を `xcrun xctest` で実行する。実モデルを使うテストは、アプリのモデル directory にピン留めしたASR・VADの2モデルが取得済みで検証に通ることが前提で、ダウンロードはしない（取得して読み込むまでの確認は後述の RealModelFetchIntegrationTests）。
-7. `scripts/build_app.sh` は `python3 -B scripts/fetch_clause_tagger.py --format coreml` で固定された Hugging Face の公開 repository から Core ML model files を取得し、manifest が指定する各ファイルの byte 数と SHA-256 を検証して app bundle に同梱する。同梱物は ClauseTagger.mlpackage、tokenizer.json、LICENSE.md です。MLX の Metal shader library は Swift Build backend で生成するため、その backend で build し、Apple Silicon 専用の arm64 のみを対象にする。続けてアプリアイコンの CFBundleIconFile 指定と `.icns` の読み込み、最小・最大解像度の収録、MLX Metal shader library、同梱した発話文判定モデルの package・tokenizer・license、Runtime の resource bundle（SwiftPM の accessor は app の resource directory から探す）にあるピン留めモデルの manifest がソースと同一であること、codesign の検証、利用者が選んだファイルへの read/write と app-scope bookmark の2つの entitlement を確認する。
+6. `RUN_MODEL_TESTS=1` を指定した場合は、既に build 済みの suite から [ASRIntegrationTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/ASRIntegrationTests.swift) だけを既存の [`run_swift_tests.py`](../scripts/run_swift_tests.py) による Swift Testing の filtered run（`--skip-build --filter ASRIntegrationTests`）として実行し、UUID 付き `.build/test-events/macos-asr-smoke-<UUID>.jsonl` event stream の path を表示する（SwiftPM の [`--filter` / `--skip-build` docs](https://raw.githubusercontent.com/swiftlang/swift-package-manager/main/Sources/PackageManagerDocs/Documentation.docc/SwiftTest.md)）。Smoke は caller が明示する isolated `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` root と canonical Japanese WAV（16 kHz mono、0秒超〜30秒以下）を使い、model の取得はしない。network fetch test は自動実行しない。
+7. `scripts/build_app.sh` は `python3 -B scripts/fetch_clause_tagger.py --format coreml` で固定された Hugging Face の公開 repository から Core ML model files を取得し、manifest が指定する各ファイルの byte 数と SHA-256 を検証して app bundle に同梱する。同梱物は ClauseTagger.mlpackage、tokenizer.json、LICENSE.md です。Swift Build backend の arm64 Release app を build します。`scripts/verify_v1_app.sh` はアプリアイコンの CFBundleIconFile 指定と `.icns` の読み込み・最小/最大解像度、同梱した発話文判定モデル、Runtime resource bundle 内の `fluid_vad_model.json` と HaasASR resource bundle 内の `haas_asr_model.json` が各 source manifest と同一であること、app の codesign、利用者が選んだ file への read/write と app-scope bookmark の2つの entitlement を確認します。
 
-アプリの build は行うが GUI を起動しない。通常の検証は実 ASR モデルを実行せず、認識精度やライブ録音の合格根拠にはならない。`.github/workflows/ci.yml` は draft PR を除き、`macos-26` 上で `verify-v1-tests` と `verify-v1-app` を並列に実行する。両 job は Python 3.13 を用意する。前者は `regex` package を install し、`scripts/test_fetch_clause_tagger.py`、`scripts/test_export_clause_tagger_onnx.py`、`scripts/test_build_app.py`、`scripts/test_fetch_mac_vad_model.py`、`scripts/test_fetch_onnxruntime.py` を実行してから、固定した VAD モデルの `.build/mac-test-models`（key は `mac_models.json` の hash。main への push だけが保存する）を restore して `bash scripts/verify_v1_tests.sh` を実行する。後者は `bash scripts/verify_v1_app.sh` を実行する。両 job は `app/MacAmbientJev` package の `.build/checkouts`、`.build/repositories`、`.build/artifacts`、`.build/workspace-state.json` のみを同じ `swiftpm-sources` key で restore / save する。key inputs は runner OS / architecture、Swift と Xcode の version output の SHA-256 fingerprint、`Package.resolved` と `Package.swift` の hash で、restore prefix はありません。cache paths に build products は含まれないため、debug test bundle、debug product、release product は cache しません。test job は debug test bundle と debug `MacAmbientJev` product を build し、app job は `swiftbuild` backend の arm64 release `MacAmbientJev` product を build します。
+アプリの build は行うが GUI を起動しない。通常の検証は実 ASR モデルを実行せず、認識精度やライブ録音の合格根拠にはならない。`.github/workflows/ci.yml` は draft PR を除き、`macos-26` 上で `verify-v1-tests` と `verify-v1-app` を並列に実行する。両 job は Python 3.13 を用意する。前者は `regex` package を install し、`scripts/test_fetch_clause_tagger.py`、`scripts/test_export_clause_tagger_onnx.py`、`scripts/test_build_app.py`、`scripts/test_fetch_mac_vad_model.py`、`scripts/test_fetch_onnxruntime.py` を実行してから、固定した FluidAudio VAD model の `.build/mac-test-models`（cache input は `fluid_vad_model.json` の hash。main への push だけが保存する）を restore して `bash scripts/verify_v1_tests.sh` を実行する。後者は `bash scripts/verify_v1_app.sh` を実行する。両 job は `app/MacAmbientJev` package の `.build/checkouts`、`.build/repositories`、`.build/artifacts`、`.build/workspace-state.json` のみを同じ `swiftpm-sources` key で restore / save する。key inputs は runner OS / architecture、Swift と Xcode の version output の SHA-256 fingerprint、`Package.resolved` と `Package.swift` の hash で、restore prefix はありません。cache paths に build products は含まれないため、debug test bundle、debug product、release product は cache しません。test job は debug test bundle と debug `MacAmbientJev` product を build し、app job は `swiftbuild` backend の arm64 release `MacAmbientJev` product を build します。
 
 両 Mac CI job は `.build/onnxruntime/<version>` を restore します。key は fetcher を import して得る ONNX Runtime version・platform・asset SHA-256 で、restore prefix はありません。cache hit でも SDK fetch step を実行して検証します。cache save は検証成功後の `main` push かつ restore miss の場合だけです。この SDK cache は上記 SwiftPM source cache とは別です。
 
-cache hit は dependency resolution、build、test、app build を省略しない。`verify-v1-app` job だけが MLX の Metal shader library を build するため `xcodebuild -downloadComponent MetalToolchain` を実行し、実行ごとに「MacAmbientJev Local Signing」という自己署名コード署名証明書を一時 keychain に作って署名に使う。アプリ job は Python 3.13 を使い、`scripts/fetch_clause_tagger.py --format coreml` で公開 Hugging Face repository から認証なしでモデルを取得する。取得時には manifest に pin された各ファイルの byte 数と SHA-256 を検証する。
+cache hit は dependency resolution、build、test、app build を省略しない。`verify-v1-app` job は実行ごとに「MacAmbientJev Local Signing」という自己署名コード署名証明書を一時 keychain に作り、app の署名に使う。アプリ job は Python 3.13 を使い、`scripts/fetch_clause_tagger.py --format coreml` で公開 Hugging Face repository から認証なしでモデルを取得する。取得時には manifest に pin された各ファイルの byte 数と SHA-256 を検証する。
 
 ### Mac 専用 Haas ASR テスト
 
-[`MacAmbientJevHaasASR`](../app/MacAmbientJev/Sources/MacAmbientJevHaasASR/HaasASRModel.swift) とその tests は macOS 専用で、Core / ONNX に依存しますが app には接続されていません。app の ASR は MLX を使います。
+[`MacAmbientJevHaasASR`](../app/MacAmbientJev/Sources/MacAmbientJevHaasASR/HaasASRModel.swift) とその tests は macOS 専用で、Core / ONNX に依存します。app は [`SessionProcessingEngines.production(models:)`](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/SessionProcessingEngines.swift) から [`HaasASREngine`](../app/MacAmbientJev/Sources/MacAmbientJevHaasASR/HaasASREngine.swift) を使い、[`MacModelStore`](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/MacModelStore.swift) が検証した pinned model directory を渡します。app の model 取得・検証は `ModelPreparer` と `MacModelProvisioning` を通ります。
 
 [`HaasASREngine`](../app/MacAmbientJev/Sources/MacAmbientJevHaasASR/HaasASREngine.swift) は ONNX Runtime の CPU 実行、`ORT_ENABLE_ALL`、intra-op 4 / inter-op 1 で動く actor です。encoder の channel-major 出力は frame-major に転置し、TDT greedy decoding 中の recurrent state は ONNX Runtime value のまま次 step に渡します。`unload()` は prepare generation を無効化して pending prepare を cancel し、読み込み済み graph を解放します。
 
@@ -327,11 +327,7 @@ python3 -B scripts/fetch_haas_asr_model.py --destination /absolute/path/to/haas-
 
 [`fetch_haas_asr_model.py`](../scripts/fetch_haas_asr_model.py) は Hugging Face の pinned commit から取得し、manifest の byte 数と SHA-256 を検証します。検証済みの既存 file は再利用し、破損時は失敗します。
 
-実モデル parity は既存の `RUN_MODEL_TESTS=1` gate を使います。gate 有効時は `HAAS_ASR_ONNX_MODEL_DIRECTORY` に fetcher で取得・検証済みの、既存で読み取り可能な model directory の絶対パスを明示してください。未設定・不正なら test は失敗し、既定値や別 directory への fallback はありません。ONNX Runtime SDK を先に `python3 -B scripts/fetch_onnxruntime.py` で取得するか、既存 SDK を用意してから実行します。
-
-```bash
-RUN_MODEL_TESTS=1 HAAS_ASR_ONNX_MODEL_DIRECTORY=/absolute/path/to/onnx-354baedfd9612b00e74cc1ae87dff7f2c558db6f swift test --package-path app/MacAmbientJev --filter HaasParityTests
-```
+実モデル parity は `RUN_MODEL_TESTS=1` gate を使います。`HAAS_ASR_ONNX_MODEL_DIRECTORY` は HaasParityTests 専用で、production app / runtime の model directory を上書きしません。gate 有効時はここに fetcher で取得・検証済みの既存 model directory の絶対 path を明示してください。未設定・不正なら test は失敗し、既定値や別 directory への fallback はありません。ONNX Runtime SDK を先に `python3 -B scripts/fetch_onnxruntime.py` で取得するか、既存 SDK を用意してから実行します。実モデル検査の順序は後述の fetch → ASR smoke → Haas parity です。
 
 [`HaasParityTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevHaasASRTests/HaasParityTests.swift) は各 clip の `tokenIDs` 配列と decode `text` の完全一致を検証し、結果の `detectedLanguage` が `nil` であることも確認します。別の graph を encoder path に置く検査は `HaasASRError.unexpectedGraph` を期待します。
 
@@ -525,7 +521,7 @@ Linux 音声正規化は入力と出力が同一ファイル（シンボリッ�
 
 [CanonicalAudioIngressTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppleSupportTests/CanonicalAudioIngressTests.swift) は device-rate の合成 tone を irregular / 512-frame block に分けて実 drain とディスクへ通す。48 kHz・44.1 kHz の累積 duration、block 境界の single-stream reference との sample 差、997 / 3101 Hz の波形誤差、16 kHz identity、4-channel import 平均、fractional-ratio の gap・overlap・overflow・stop tail、部分 append failure 後の retry と並行 finish / snapshot を検証する。fixture を保存前に preconvert しない。EOS 後の全体長は正確な長さの floor か ceil で、gap は公開範囲へ切り詰める。
 
-`captureStartReservesStoredPCMNotDeviceRate` は injected tap の実 capture start を 48 kHz・44.1 kHz・16 kHz で実行し、601,600,000 bytes の受理と 601,599,999 bytes の拒否を確認する。hardware・permission prompt は使わない。[CanonicalEngineInputTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/CanonicalEngineInputTests.swift) は `NativeQwen3ASREngine` が model load 前に非 canonical sample rate を拒否することを検証する。`finalizationEnginesReceiveCanonicalAudioForRecordedAndImportedSessions` は48 kHz の録音を irregular block で実 drain に通した session と44.1 kHz stereo の import を実 `NativeSessionProcessor` で確定し、injected VAD が16 kHz・mono・float32LEを、injected ASR が sample rate 16 kHz・16,000 samples を受け取ること、および import original の bytes が不変であることを検証する。
+`captureStartReservesStoredPCMNotDeviceRate` は injected tap の実 capture start を 48 kHz・44.1 kHz・16 kHz で実行し、601,600,000 bytes の受理と 601,599,999 bytes の拒否を確認する。hardware・permission prompt は使わない。[CanonicalEngineInputTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/CanonicalEngineInputTests.swift) の `productionASRRejectsNoncanonicalRateBeforeModelLoading` は本番 factory が作る [`HaasASREngine`](../app/MacAmbientJev/Sources/MacAmbientJevHaasASR/HaasASREngine.swift) が model load 前に非 canonical sample rate を拒否することを検証する。`finalizationEnginesReceiveCanonicalAudioForRecordedAndImportedSessions` は48 kHz の録音を irregular block で実 drain に通した session と44.1 kHz stereo の import を実 `NativeSessionProcessor` で確定し、injected VAD が16 kHz・mono・float32LEを、injected ASR が sample rate 16 kHz・16,000 samples を受け取ること、および import original の bytes が不変であることを検証する。
 
 ### 保存音声のテスト
 
@@ -553,23 +549,33 @@ fixture は seed 固定の `--seconds` 秒・48 kHz stereo float32 CAF の再現
 
 ### 実 ASR モデルの smoke
 
-Apple Silicon / macOS で、明示的な WAV ファイルを指定する。
+Apple Silicon / macOS で実行する。実 ASR model tests には、production の Application Support と分離した絶対 path を `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` に明示する（モデルはその下の `mac-ambient-jev` の `models` directory に置く）。Smoke input の `ASR_SMOKE_AUDIO` も絶対 path で指定する。
+
+`ASR_SMOKE_AUDIO` は絶対 path の読み取り可能な WAV で、16 kHz・mono・0 秒超〜30 秒以下の日本語音声が必須です。[ASRIntegrationTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/ASRIntegrationTests.swift) は production factory と `MacModelStore` から作った Haas engine で `prepare`、`transcribe`、`unload` を行い、trim 後の本文が非空で日本語文字を含むことを確認しますが、参照文との一致率は測りません。`RUN_MODEL_TESTS=1` と、production data と分離した絶対 path の `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` を明示します。engine は model を自動取得せず、未取得なら検証失敗になります。[VADParityFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/VADParityFixtureTests.swift) の FluidAudio 一致検査は `RUN_MODEL_TESTS=1` または `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` があるときに動き、CI は後者で pinned VAD model を渡します。
+
+実際の取得は [RealModelFetchIntegrationTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/RealModelFetchIntegrationTests.swift) が検証します。`URLSessionModelTransport` と `ModelPreparer` を使い、shared [`haas_asr_model.json`](../app/MacAmbientJev/Sources/MacAmbientJevHaasASR/Resources/haas_asr_model.json) の7個の pinned Haas files（約670 MB）と [`fluid_vad_model.json`](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/Resources/fluid_vad_model.json) の FluidAudio VAD files を、同じ `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` root 配下へ取得・検証します。その後 production Haas ASR を prepare し、VAD fixture の短い音声 clip で ASR、VAD model で VAD を実行します。`RUN_MODEL_TESTS=1` と production data から分離した絶対 path の `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` が必要です（`verify_v1_tests.sh` は `RUN_MODEL_TESTS` を外すためこの network test は実行しません）。実行途中で止めて同じ root で再実行すると、取得済み file と `.partial` を使って Range で再開します。表示する throughput はその実行で実際に取得した byte 数だけで計算します。
+
+実モデル検査は次の順に実行します。まず fetch test が同じ test root に Haas と FluidAudio model を取得し、その後 ASR smoke が日本語 WAV を認識し、最後に Haas parity が参照 golden と照合します。
 
 ```bash
-RUN_MODEL_TESTS=1 ASR_SMOKE_AUDIO="$AUDIO_WAV_ABSOLUTE" \
-  bash scripts/verify_v1.sh
-```
-
-`ASR_SMOKE_AUDIO` は絶対パスの読み取り可能なファイルが必須。Runtime の ASRIntegrationTests はさらに 16 kHz、mono、0 秒超〜60 秒以下を要求する。日本語音声を使う。モデルをロードして認識し、trim 後の本文が非空で日本語文字を含むことを確認するが、参照文との一致率は測らない。ASRIntegrationTests と MacModelLoadingIntegrationTests は `RUN_MODEL_TESTS=1` のときだけ動き、アプリが使うモデル directory（`~/Library/Application Support/mac-ambient-jev/models`）にピン留めした ASR・VAD の2モデルが取得済みで検証に通ることが前提です。VADParityFixtureTests の FluidAudio 一致検査は `RUN_MODEL_TESTS=1` または `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` があるときに動きます。エンジンはダウンロードしないため、未取得なら型付きエラーで失敗します。別の場所のモデルを使うときは、絶対パスの Application Support 相当 directory を `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` に指定します（その下の mac-ambient-jev の models フォルダーを読みます）。テスト用 directory には manifest のファイルだけを hard link かコピーで置けば足ります。[VADParityFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/VADParityFixtureTests.swift) の FluidAudio 一致検査だけは `RUN_MODEL_TESTS=1` がなくても `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` があれば動き、CI はこれで固定した VAD モデルを渡します。
-
-実際のダウンロードは [RealModelFetchIntegrationTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/RealModelFetchIntegrationTests.swift) が確かめます。`URLSessionModelTransport` でASR・VADの2モデルを約2.5 GBダウンロードし、`ModelPreparer` で照合と読み込みを行い、短いクリップで ASR と VAD を実行して経過時間とスループットを表示します。`RUN_MODEL_TESTS=1` と、絶対パスの `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` があるときだけ動きます（`verify_v1_tests.sh` は `RUN_MODEL_TESTS` を外すので動きません）。アプリ自身の directory には取得しません。実行途中で止めて同じ directory で再実行すると、取得済みのファイルと `.partial` を使って Range で再開します。表示するスループットは、その実行でダウンロードした byte 数だけで計算します。
-
-```bash
-RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_TEST_APP_SUPPORT=/absolute/folder \
+python3 -B scripts/fetch_onnxruntime.py
+RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_TEST_APP_SUPPORT=/absolute/isolated/application-support \
   swift test --package-path app/MacAmbientJev --filter RealModelFetchIntegrationTests
+RUN_MODEL_TESTS=1 MAC_AMBIENT_JEV_TEST_APP_SUPPORT=/absolute/isolated/application-support \
+  ASR_SMOKE_AUDIO=/absolute/path/to/japanese-16k-mono.wav \
+  swift test --package-path app/MacAmbientJev --filter ASRIntegrationTests
+RUN_MODEL_TESTS=1 HAAS_ASR_ONNX_MODEL_DIRECTORY=/absolute/isolated/application-support/mac-ambient-jev/models/haas-ja-onnx-int8dyn \
+  swift test --package-path app/MacAmbientJev --filter HaasParityTests
 ```
 
-`verify_v1.sh` は integration test の検出と Runtime test bundle の存在も確認し、指定時だけその bundle を xctest で実行する。`RUN_MODEL_TESTS=1` だけで fixture を指定しない手順は使えない。
+`verify_v1_tests.sh` は opt-in smoke を既存の Swift Testing runner で次のように filtered 実行し、毎回新しい `.build/test-events/macos-asr-smoke-<UUID>.jsonl` を作成して path を表示します。`MAC_AMBIENT_JEV_TEST_APP_SUPPORT` には caller が明示した production Application Support と分離済みの絶対 root を設定してください。production root を default にすることはなく、ここに必要な model は事前に用意し、test 中の自動取得はありません。`ASR_SMOKE_AUDIO` は canonical Japanese WAV（16 kHz mono、0秒超〜30秒以下）の読み取り可能な絶対 path が必要です。通常 suite は引き続き `RUN_MODEL_TESTS` を外して実行し、network を使う実 model fetch test は自動実行しません。
+
+```bash
+RUN_MODEL_TESTS=1 \
+  ASR_SMOKE_AUDIO=/absolute/path/to/canonical-japanese-16k-mono.wav \
+  MAC_AMBIENT_JEV_TEST_APP_SUPPORT=/absolute/path/to/isolated-application-support \
+  bash scripts/verify_v1_tests.sh
+```
 
 ## 共通 Swift の検証
 
@@ -637,7 +643,7 @@ swift run --package-path app/MacAmbientJev MacAmbientJevProcessRecording \
   --sessions-root "$SESSIONS_ROOT" --keep-session --low-heat "$AUDIO_FILE" "$SEGMENTS_OUTPUT"
 ```
 
-Portable の import / resume は `--threads N` が必須です（export-only resume を含む）。`N` は `1...min(4, logicalCPUCount)` で、ASR と tagger の ONNX session は N、VAD は常に1 thread です。Mac は `--threads` を拒否します。`--low-heat` は Portable では ASR 区間間の pacing のみを行い、thermal monitor / start gate / pause はありません。Mac では推論が必要な import / resume の開始時に nominal / fair を要求し、critical 時は処理を pause します。resource を作る Mac run の `--low-heat` は pacing に加えて MLX cache 上限を抑えます。measurement option と thermal / memory sampling は Mac 専用です。これらは短い fixture の成功から長時間のメモリ条件やライブ遅延を推定するものではありません。
+Portable の import / resume は `--threads N` が必須です（export-only resume を含む）。`N` は `1...min(4, logicalCPUCount)` で、ASR と tagger の ONNX session は N、VAD は常に1 thread です。Mac は `--threads` を拒否し、本番 Haas ASR は intra-op 4 threads 固定です。`--low-heat` は Portable では ASR 区間間の pacing のみを行い、thermal monitor / start gate / pause はありません。Mac では推論が必要な import / resume の開始時に nominal / fair を要求し、critical 時は処理を pause します。Mac の `--low-heat` も ASR 区間間の pacing だけを行い、thermal gate は変更しません。measurement option と thermal / memory sampling は Mac 専用です。これらは短い fixture の成功から長時間のメモリ条件やライブ遅延を推定するものではありません。
 
 `--with-decisions` の実行時に Mac は `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY` に実在する絶対 directory を要求し、その直下の ClauseTagger.mlpackage と tokenizer.json を Core ML provider が使います。Portable の処理資源解決には `MAC_AMBIENT_JEV_SILERO_MODEL`（既存 absolute file）、`QWEN3_ASR_ONNX_MODEL_DIRECTORY`（既存 absolute directory）、`QWEN3_ASR_ONNX_MODEL_SIZE`（`0.6b` または `1.7b`）が必要です。`--with-decisions` を指定する場合だけ、4つ目の `MAC_AMBIENT_JEV_CLAUSE_TAGGER_MODEL_DIRECTORY`（既存 absolute directory）も必要です。設定に既定値や暗黙 download はありません。inspect と推論不要の export-only resume は model environment を読みません。decision-only retry は ASR / VAD 推論を再実行しませんが、Portable の処理資源解決時には基本3項目も必要です。
 
@@ -765,7 +771,7 @@ Linux runner の ASR artifact は `MacAmbientJevEvaluateASR` で評価します�
 
 ## macOS のファイル処理長時間計測
 
-この長時間計測は macOS 専用です。`scripts/measure_v1_run.sh` は Mac release CLI の MLX memory / thermal sampling と `/usr/bin/time -l` を使い、音声 import または保存済み session の resume を一回計測します。Portable CLI は measurement options を拒否し、thermal / memory sampling を持ちません。事前に Mac release product を build し、必要空き容量は 4 GiB 以上です。`scripts/measure_live_latency.sh`、`scripts/measure_v1_run.sh`、`scripts/measure_session_storage.py` は ONNX Runtime SDK を自動取得します。
+この長時間計測は macOS 専用です。`scripts/measure_v1_run.sh` は Mac release CLI の phys_footprint memory / thermal sampling と `/usr/bin/time -l` を使い、音声 import または保存済み session の resume を一回計測します。Portable CLI は measurement options を拒否し、thermal / memory sampling を持ちません。事前に Mac release product を build し、必要空き容量は 4 GiB 以上です。`scripts/measure_live_latency.sh`、`scripts/measure_v1_run.sh`、`scripts/measure_session_storage.py` は ONNX Runtime SDK を自動取得します。
 
 計測後は root 直下の manifest の完全 UUID を正規化して検索し、ちょうど一つの実フォルダーを解決します。ID 不在・複数一致・一致したフォルダーの名前/日時/suffix/source stem の不整合は明示エラーです。stem の Swift Character 境界での切り詰めを検査するため、実行する `python3` に `regex` package が必要です（`python3 -m pip install regex`）。日時は `created_at` から再計算しません。events、metadata、checkpoint、original は同じ解決済みフォルダーから読み、original が複数なら失敗します。import がセッション作成前に失敗して stdout に ID がない場合は、セッションの欠測理由を残します。ID がある場合は lookup の失敗を欠測扱いにしません。
 
@@ -775,7 +781,7 @@ Linux runner の ASR artifact は `MacAmbientJevEvaluateASR` で評価します�
 swift build --package-path app/MacAmbientJev -c release \
   --product MacAmbientJevProcessRecording
 
-# macOS only: uses Mac thermal / MLX metrics and /usr/bin/time -l
+# macOS only: uses Mac thermal / footprint metrics and /usr/bin/time -l
 bash scripts/measure_v1_run.sh \
   --id lecture-ja \
   --audio "$AUDIO_FILE" \
@@ -802,7 +808,7 @@ bash scripts/measure_v1_run.sh \
 - `asr_rtf` は ASR 呼び出し時間 ÷ 処理済み音声秒数。モデルロード、pacing 待機、処理全体の wall time を混ぜない。
 - 欠落・破損した engine metrics、thermal/memory sample、run ID 不一致は失敗。欠測を 0 として補完しない。
 - 読み取るイベントと processing metadata は `schema_version: 3` が必須。版が異なるか欠落している場合は計測を失敗とする。
-- `memory.jsonl` は run ID、UTC 時刻、phase、`footprint_bytes`、MLX の active/cache/peak/cache-limit bytes。footprint 取得失敗は null と `footprint_error` の理由を持つ。sample 書き込み失敗も CLI の失敗になる。
+- `memory.jsonl` の各行は `run_id`、UTC `timestamp`、`phase`、`footprint_bytes` だけを持ちます。footprint 取得失敗時は `footprint_bytes: null` と `footprint_error` を記録します。sample 書き込み失敗も CLI の失敗になります。
 - `thermal.jsonl` は run ID、UTC 時刻、state。サンプルは開始・終了・約 5 秒ごと、および phase 変更時に取る。critical は確定処理を一時停止する。
 - マイクの dropout、発話文判定の件数（`decision_success_count` など）、クラッシュ復旧の音声喪失窓は、このオフライン計測では測れず null と理由を記録する。
 
@@ -821,7 +827,7 @@ bash scripts/measure_live_latency.sh --sample-rate 48000 --channels 1 "$AUDIO_FI
 
 `MacAmbientJevMeasureLiveLatency` は既存音声を原速で投入し、ASR segment の最後の `speechRange` 終端から最初の非空な RAW ASR 更新までを計測する。発話文判定は無効で、最初の `displayText` は未評価の ASR 原文。空白・改行だけの本文は除外するが、認識されたフィラーだけの非空 raw 行も最初の更新として数える。CLI は tagger を実行せず F・B除去範囲を適用しないため、これは F・B除去後の更新時間ではない。report に記録する本文も raw で、空白・句読点の変更や正規化を行わない。次区間待ちと境界・優先度判定の時間は測らない。投入は遅延計測と同じ時計の起点からの絶対予定で行い、各 0.5 秒の塊はその末尾の音声時刻まで待ってから durable append する。変換や append の処理時間は後続の塊へ累積しない。report の `replay_max_feed_lag_seconds` は、各 append の完了時刻から、それまでに投入した replay input の音声秒数を引いた値の最大値である。この値が大きい場合は投入が原速に追いついておらず、遅延値に投入の遅れが含まれる。replay の入力形式は既定でファイル形式、明示指定時はその device 相当形式に変換する。sample rate は 1000〜768000 Hz、channels は 1〜32。durable append 前に同じ ingress converter を通し、保存と VAD / ASR は常に 16 kHz mono。report の `source_*`、`replay_input_*` と `processing_*` は別形式を表し、frame 座標は保存 timeline を参照する。`--match-default-input` は既定入力 format を読むだけで capture を開始しないが、sample rate/channels の明示指定とは併用できない。
 
-Qwen と VAD のキャッシュ済みモデルが必要。共有の `VADSegmentationState` は live / final で最大14秒の発話範囲（必要時は静かな位置で分割）を span 最大30秒の segment にまとめ、1 segment が ASR / 表示行の単位です。14秒は発話範囲の上限で、表示単位ではありません。segment の最初の speech frame から約31–32秒の release 待ちに ASR 時間が加わる場合がありますが、ケース依存の目安で保証ではありません。測るのは非空更新までで、実画面描画、マイク入力の実時間、全発話の精度を保証する指標ではない。
+Haas ASR と FluidAudio VAD の取得済みモデルが必要。共有の `VADSegmentationState` は live / final で最大14秒の発話範囲（必要時は静かな位置で分割）を span 最大30秒の segment にまとめ、1 segment が ASR / 表示行の単位です。14秒は発話範囲の上限で、表示単位ではありません。segment の最初の speech frame から約31–32秒の release 待ちに ASR 時間が加わる場合がありますが、ケース依存の目安で保証ではありません。測るのは非空更新までで、実画面描画、マイク入力の実時間、全発話の精度を保証する指標ではない。
 
 ### 保存整理のテスト
 

@@ -5,7 +5,7 @@ import MacAmbientJevPipeline
 import MacAmbientJevVADFixtures
 @testable import MacAmbientJevRuntime
 
-/// Downloads the pinned Qwen ASR and VAD models from Hugging Face into the
+/// Downloads the pinned Haas ASR and VAD models from Hugging Face into the
 /// application-support root named by the environment, verifies and loads them,
 /// transcribes a short committed clip, and exercises VAD. Run it once by hand:
 ///
@@ -26,15 +26,29 @@ struct RealModelFetchIntegrationTests {
         .timeLimit(.minutes(10))
     )
     @MainActor
-    func fetchesVerifiesLoadsAndRunsQwenAndVADModels() async throws {
+    func fetchesVerifiesLoadsAndRunsHaasAndVADModels() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        _ = try #require(
+            environment["MAC_AMBIENT_JEV_TEST_APP_SUPPORT"],
+            "MAC_AMBIENT_JEV_TEST_APP_SUPPORT must name an isolated absolute root."
+        )
         let store = try realModelStore()
+        #expect(store.entry(.asr).files.map(\.name).sorted() == [
+            "int8dyn/encoder.onnx",
+            "int8dyn/encoder.onnx.data",
+            "int8dyn/decoder_joint.onnx",
+            "int8dyn/decoder_joint.onnx.data",
+            "tokenizer.model",
+            "LICENSE",
+            "NOTICE",
+        ].sorted())
         // Bytes already on disk for the models this run has to fetch (finished files and `.partial`
         // files). They are not downloaded again, so they stay out of the throughput.
         let alreadyOnDisk = MacModel.allCases
             .filter { !store.isFetched($0) }
             .reduce(Int64(0)) { $0 + Self.bytesOnDisk(in: store.directory($1)) }
 
-        let asr = NativeQwen3ASREngine(models: store)
+        let asr = SessionProcessingEngines.production(models: store).asr
         let preparer = ModelPreparer(
             provisioning: MacModelProvisioning(store: store, transport: URLSessionModelTransport()),
             asr: asr
@@ -58,6 +72,8 @@ struct RealModelFetchIntegrationTests {
         let finished = clock.now
 
         #expect(preparer.status.phase == .ready)
+        #expect(store.isFetched(.asr))
+        #expect(store.isFetched(.vad))
         let downloadSeconds = (downloadEnd ?? finished) - start
         let elapsed = finished - start
         let seconds = Double(downloadSeconds.components.seconds) + Double(downloadSeconds.components.attoseconds) / 1e18

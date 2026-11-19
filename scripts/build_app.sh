@@ -60,13 +60,6 @@ done
 iconutil -c icns "$ICONSET" -o "$RESOURCES/AppIcon.icns"
 rm -rf "$ICONSET"
 
-MLX_BUNDLE="$BIN_DIR/mlx-swift_Cmlx.bundle"
-MLX_METALLIB="$MLX_BUNDLE/Contents/Resources/default.metallib"
-if [[ ! -r "$MLX_METALLIB" ]]; then
-  echo "SwiftPM MLX shader bundle is missing: $MLX_METALLIB" >&2
-  exit 1
-fi
-
 shopt -s nullglob
 RESOURCE_BUNDLES=("$BIN_DIR"/*.bundle)
 if (( ${#RESOURCE_BUNDLES[@]} == 0 )); then

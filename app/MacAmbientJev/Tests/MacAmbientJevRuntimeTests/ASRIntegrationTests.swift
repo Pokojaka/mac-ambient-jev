@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import Testing
+import MacAmbientJevPipeline
 @testable import MacAmbientJevCore
 @testable import MacAmbientJevRuntime
 
@@ -12,8 +13,13 @@ struct ASRIntegrationTests {
             "Set RUN_MODEL_TESTS=1 to run the real-model ASR smoke test."
         )
     )
-    func qwen3ASRLoadsModelAndTranscribesJapaneseAudio() async throws {
+    func haasASRLoadsModelAndTranscribesJapaneseAudio() async throws {
         let environment = ProcessInfo.processInfo.environment
+        _ = try #require(
+            environment["MAC_AMBIENT_JEV_TEST_APP_SUPPORT"],
+            "MAC_AMBIENT_JEV_TEST_APP_SUPPORT must name an isolated absolute root."
+        )
+        let models = try realModelStore()
         let audioPath = try #require(
             environment["ASR_SMOKE_AUDIO"],
             "ASR_SMOKE_AUDIO must point to an explicit absolute WAV path."
@@ -27,7 +33,7 @@ struct ASRIntegrationTests {
         try #require(format.sampleRate == 16_000)
         try #require(format.channelCount == 1)
         try #require(audioFile.length > 0)
-        try #require(audioFile.length <= Int64(format.sampleRate * 60))
+        try #require(audioFile.length <= Int64(format.sampleRate * ASRAudioInput.maximumDurationSeconds))
 
         let buffer = try #require(
             AVAudioPCMBuffer(
@@ -44,7 +50,7 @@ struct ASRIntegrationTests {
             )
         )
 
-        let engine = NativeQwen3ASREngine(models: try realModelStore())
+        let engine = SessionProcessingEngines.production(models: models).asr
         try await engine.prepare()
         let result = try await engine.transcribe(
             ASRAudioInput(samples: samples, sampleRate: Int(format.sampleRate))

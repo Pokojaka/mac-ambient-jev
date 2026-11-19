@@ -2,6 +2,7 @@ import Foundation
 import Synchronization
 import Testing
 import MacAmbientJevCore
+import MacAmbientJevPipeline
 @testable import MacAmbientJevRuntime
 
 private let content = Data("model bytes".utf8)
@@ -124,7 +125,7 @@ func enginesWithoutModelsFailWithTheTypedErrorBeforeLoading() async throws {
     let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: nil)
     let store = try MacModelStore(paths: paths)
 
-    await #expect(throws: MacModelError.notInstalled(.asr)) { try await NativeQwen3ASREngine(models: store).prepare() }
+    await #expect(throws: MacModelError.notInstalled(.asr)) { try await SessionProcessingEngines.production(models: store).asr.prepare() }
     await #expect(throws: MacModelError.notInstalled(.vad)) {
         _ = try await FluidVADSegmentationEngine.make(
             models: store, segmentationRunID: "seg", canonicalSampleRate: 16_000, measureMicInputLevels: false

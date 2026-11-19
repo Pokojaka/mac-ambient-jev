@@ -53,6 +53,10 @@ class BuildAppTests(unittest.TestCase):
         self.assertTrue(
             (root / ".build/MacAmbientJev.app/Contents/Resources/clause-tagger/tokenizer.json").is_file()
         )
+        self.assertEqual(
+            (root / ".build/MacAmbientJev.app/Contents/Resources/MacAmbientJev_MacAmbientJevRuntime.bundle/Contents/Resources/Resources/fluid_vad_model.json").read_bytes(),
+            b"fake model",
+        )
         python_calls = (root / "python.log").read_text().splitlines()
         self.assertLess(
             python_calls.index(f"-B {environment['EXPECTED_ORT_FETCHER']}"),
@@ -122,13 +126,13 @@ class BuildAppTests(unittest.TestCase):
         (package / "Assets").mkdir(parents=True)
         (package / "Entitlements").mkdir(parents=True)
         stub_bin.mkdir()
-        (fake_bin / "mlx-swift_Cmlx.bundle/Contents/Resources").mkdir(parents=True)
+        (fake_bin / "MacAmbientJev_MacAmbientJevRuntime.bundle/Contents/Resources/Resources").mkdir(parents=True)
         tagger_directory.mkdir(parents=True)
         shutil.copy2(BUILD_SCRIPT, scripts / "build_app.sh")
         shutil.copy2(INFO_PLIST_SCRIPT, scripts / "app_info_plist.sh")
         (package / "Assets/AppIcon.png").write_bytes(b"fake icon")
         (fake_bin / "MacAmbientJev").write_bytes(b"fake executable")
-        (fake_bin / "mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib").write_bytes(b"shader")
+        (fake_bin / "MacAmbientJev_MacAmbientJevRuntime.bundle/Contents/Resources/Resources/fluid_vad_model.json").write_bytes(b"fake model")
         (tagger_directory / "ClauseTagger.mlpackage").mkdir()
         (tagger_directory / "ClauseTagger.mlpackage/Manifest.json").write_text("{}\n", encoding="utf-8")
         (tagger_directory / "tokenizer.json").write_text("{}\n", encoding="utf-8")
