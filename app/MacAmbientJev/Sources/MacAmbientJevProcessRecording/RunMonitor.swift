@@ -165,12 +165,22 @@ actor RunMonitor {
             withJSONObject: [
                 "run_id": runID,
                 "timestamp": timestamp,
-                "state": String(describing: state)
+                "state": stateName(state)
             ],
             options: [.sortedKeys]
         )
         data.append(0x0A)
         return data
+    }
+
+    private static func stateName(_ state: ProcessInfo.ThermalState) -> String {
+        switch state {
+        case .nominal: "nominal"
+        case .fair: "fair"
+        case .serious: "serious"
+        case .critical: "critical"
+        @unknown default: preconditionFailure("未知の熱状態です: \(state.rawValue)")
+        }
     }
 
     private static func appendLine(_ data: Data, to url: URL) throws {
