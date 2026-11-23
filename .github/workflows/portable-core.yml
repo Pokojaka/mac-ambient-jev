@@ -495,9 +495,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: app/MacAmbientJev/.build
-          key: swiftpm-tests-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('app/MacAmbientJev/Package.resolved') }}-${{ hashFiles('app/MacAmbientJev/Package.swift') }}
+          key: swiftpm-tests-${{ hashFiles('scripts/fetch_onnxruntime.py') }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('app/MacAmbientJev/Package.resolved') }}-${{ hashFiles('app/MacAmbientJev/Package.swift') }}
           restore-keys: |
-            swiftpm-tests-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.version }}-
+            swiftpm-tests-${{ hashFiles('scripts/fetch_onnxruntime.py') }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.version }}-
       - name: Test clause tagger exporter helpers (stdlib only)
         run: |
           python -B scripts/test_export_clause_tagger_onnx.py

@@ -2,35 +2,39 @@ from __future__ import annotations
 
 import os
 import platform
+import shutil
 import stat
 import sys
-import tarfile
 import tempfile
 import zipfile
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pinned_download
 
 
 VERSION = "1.31.0"
-RELEASE_URL = f"https://github.com/microsoft/onnxruntime/releases/download/v{VERSION}"
-LINUX_X64 = ("linux-x64", f"onnxruntime-linux-x64-{VERSION}.tgz", "cc5c72baf5ae5c8238a6841f0897227be2d02826b9cf98eaf02fdefaeeb03a57")
-LINUX_ARM64 = ("linux-aarch64", f"onnxruntime-linux-aarch64-{VERSION}.tgz", "c5b8b3cca31f3d643a3b313b8f42e2d0f16a4fcefd02cda343d97bd5306afaab")
-WINDOWS_X64 = ("win-x64", f"onnxruntime-win-x64-{VERSION}.zip", "3958d8a44984160692c1b4ffd0de3cb48f8c39f9d34bb31e433db06e30b82195")
-WINDOWS_ARM64 = ("win-arm64", f"onnxruntime-win-arm64-{VERSION}.zip", "ef6206fa8d6975878d93a97035d280240ce5764c126a7430e5427e18923316d5")
-MACOS_ARM64 = ("osx-arm64", f"onnxruntime-osx-arm64-{VERSION}.tgz", "1031b36dd3bdaa8d976a6130d9cf2a05e9be320b93ae804f8427b91dc3432afc")
-MACOS_ARM64_BYTES = 36549009
-ASSETS = {
-    ("linux", "x86_64"): LINUX_X64, ("linux", "aarch64"): LINUX_ARM64, ("linux", "arm64"): LINUX_ARM64,
-    ("windows", "amd64"): WINDOWS_X64, ("windows", "x86_64"): WINDOWS_X64,
-    ("windows", "arm64"): WINDOWS_ARM64, ("windows", "aarch64"): WINDOWS_ARM64,
-    ("darwin", "arm64"): MACOS_ARM64,
+PACKAGE_NAME = f"microsoft.ml.onnxruntime.{VERSION}.nupkg"
+PACKAGE_URL = f"https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/{VERSION}/{PACKAGE_NAME}"
+PACKAGE_BYTES = 159626085
+PACKAGE_SHA256 = "7e35fdb4f5adb62f01e60798e2e5ed05108f5fbbe1cca03fbcc37903cf7c5e3b"
+PLATFORMS = {
+    ("linux", "x86_64"): "linux-x64", ("linux", "aarch64"): "linux-arm64", ("linux", "arm64"): "linux-arm64",
+    ("windows", "amd64"): "win-x64", ("windows", "x86_64"): "win-x64",
+    ("windows", "arm64"): "win-arm64", ("windows", "aarch64"): "win-arm64",
+    ("darwin", "arm64"): "osx-arm64",
+}
+NATIVE_FILES = {
+    "linux-x64": (("libonnxruntime.so", "libonnxruntime.so"), ("libonnxruntime_providers_shared.so", "libonnxruntime_providers_shared.so")),
+    "linux-arm64": (("libonnxruntime.so", "libonnxruntime.so"), ("libonnxruntime_providers_shared.so", "libonnxruntime_providers_shared.so")),
+    "osx-arm64": (("libonnxruntime.dylib", "libonnxruntime.1.dylib"),),
+    "win-x64": (("onnxruntime.dll", "onnxruntime.dll"), ("onnxruntime.lib", "onnxruntime.lib"), ("onnxruntime_providers_shared.dll", "onnxruntime_providers_shared.dll"), ("onnxruntime_providers_shared.lib", "onnxruntime_providers_shared.lib")),
+    "win-arm64": (("onnxruntime.dll", "onnxruntime.dll"), ("onnxruntime.lib", "onnxruntime.lib"), ("onnxruntime_providers_shared.dll", "onnxruntime_providers_shared.dll"), ("onnxruntime_providers_shared.lib", "onnxruntime_providers_shared.lib")),
 }
 
 
-def choose_asset(system: str, machine: str) -> tuple[str, str, str]:
+def choose_platform(system: str, machine: str) -> str:
     try:
-        return ASSETS[(system.casefold(), machine.casefold())]
+        return PLATFORMS[(system.casefold(), machine.casefold())]
     except KeyError as error:
         raise RuntimeError(
             f"未対応の実行環境です: platform.system()={system!r}, platform.machine()={machine!r}。"
@@ -38,109 +42,105 @@ def choose_asset(system: str, machine: str) -> tuple[str, str, str]:
         ) from error
 
 
-def _assert_within(parent: Path, path: Path) -> None:
-    try:
-        path.resolve().relative_to(parent.resolve())
-    except ValueError as error:
-        raise RuntimeError(f"対象パスが許可されたディレクトリ外です: {path}") from error
-
-
-def _require_directory(path: Path) -> None:
-    try:
-        is_directory = stat.S_ISDIR(path.lstat().st_mode)
-    except FileNotFoundError as error:
-        raise ValueError(f"必要なディレクトリがありません: {path}") from error
-    if not is_directory:
-        raise ValueError(f"必要なディレクトリがありません: {path}")
-
-
-def _require_file(path: Path, root: Path, allow_symlink: bool) -> None:
-    try:
-        metadata = path.lstat()
-    except FileNotFoundError as error:
-        raise ValueError(f"必要な ONNX Runtime ファイルがありません: {path}") from error
-    if stat.S_ISREG(metadata.st_mode):
-        return
-    if allow_symlink and stat.S_ISLNK(metadata.st_mode):
-        try:
-            resolved = path.resolve(strict=True)
-            resolved.relative_to(root.resolve())
-        except (OSError, ValueError) as error:
-            raise ValueError(f"共有ライブラリのリンク先が不正です: {path}") from error
-        if resolved.is_file():
-            return
-        raise ValueError(f"共有ライブラリのリンク先が通常ファイルではありません: {path}")
-    raise ValueError(f"必要な ONNX Runtime ファイルが通常ファイルではありません: {path}")
-
-
-def _validate_tree(root: Path, is_zip: bool, platform_name: str) -> None:
+def _validate_tree(root: Path, platform_name: str) -> None:
     for directory in (root, root / "include", root / "lib"):
-        _require_directory(directory)
-    if not is_zip:
-        for entry in root.rglob("*"):
-            if stat.S_ISLNK(entry.lstat().st_mode):
-                _require_file(entry, root, True)
-    required = [root / "LICENSE", root / "ThirdPartyNotices.txt", root / "include" / "onnxruntime_c_api.h"]
-    if is_zip:
-        required.extend((root / "lib" / "onnxruntime.lib", root / "lib" / "onnxruntime.dll"))
-    elif platform_name == "osx-arm64":
-        required.extend((root / "lib" / f"libonnxruntime.{VERSION}.dylib", root / "lib" / "libonnxruntime.1.dylib"))
-    else:
-        required.extend(root / "lib" / f"libonnxruntime.so{suffix}" for suffix in (f".{VERSION}", ".1", ""))
+        try:
+            valid = stat.S_ISDIR(directory.lstat().st_mode)
+        except FileNotFoundError:
+            valid = False
+        if not valid:
+            raise ValueError(f"必要なディレクトリがありません: {directory}")
+    required = [root / "LICENSE", root / "ThirdPartyNotices.txt", root / "include" / "onnxruntime_c_api.h", root / "include" / "onnxruntime_experimental_c_api.inc"]
+    required.extend(root / "lib" / output for _, output in NATIVE_FILES[platform_name])
+    soname = root / "lib" / "libonnxruntime.so.1"
+    if platform_name.startswith("linux-"):
+        required.append(soname)
+    for entry in root.rglob("*"):
+        if entry.is_symlink() and not (platform_name.startswith("linux-") and entry == soname):
+            raise ValueError(f"許可されていないシンボリックリンクです: {entry}")
     for path in required:
-        _require_file(path, root, not is_zip and path.parent == root / "lib")
+        try:
+            mode = path.lstat().st_mode
+        except FileNotFoundError as error:
+            raise ValueError(f"必要な ONNX Runtime ファイルがありません: {path}") from error
+        if path == soname and platform_name.startswith("linux-"):
+            try:
+                resolved = path.resolve(strict=True)
+                resolved.relative_to(root.resolve())
+            except (OSError, ValueError) as error:
+                raise ValueError(f"共有ライブラリの SONAME リンクが不正です: {path}") from error
+            if not stat.S_ISLNK(mode) or resolved != (root / "lib" / "libonnxruntime.so").resolve() or not resolved.is_file():
+                raise ValueError(f"共有ライブラリの SONAME リンクが不正です: {path}")
+        elif not stat.S_ISREG(mode):
+            raise ValueError(f"必要な ONNX Runtime ファイルが通常ファイルではありません: {path}")
 
 
-def _extract(archive: Path, staging: Path, root_name: str, is_zip: bool, platform_name: str) -> None:
-    if is_zip:
-        with zipfile.ZipFile(archive) as source:
-            for member in source.infolist():
-                name = member.filename
-                windows_name = PureWindowsPath(name)
-                if name.startswith(("/", "\\")) or Path(name).is_absolute() or windows_name.drive or windows_name.root:
-                    raise ValueError(f"安全でないアーカイブ内パスです: {name!r}")
-            source.extractall(staging)
-    else:
-        with tarfile.open(archive, mode="r:gz", errorlevel=2) as source:
-            source.extractall(staging, filter="data")
-    entries = list(staging.iterdir())
-    if len(entries) != 1 or entries[0].name != root_name:
-        raise ValueError(f"アーカイブのルートディレクトリが不正です: {root_name}")
-    _validate_tree(staging / root_name, is_zip, platform_name)
+def _extract(archive: Path, staging: Path, platform_name: str) -> None:
+    prefix = f"runtimes/{platform_name}/native/"
+    native = dict(NATIVE_FILES[platform_name])
+    selected: list[tuple[zipfile.ZipInfo, Path]] = []
+    with zipfile.ZipFile(archive) as source:
+        members = source.infolist()
+        for member in members:
+            name = member.orig_filename
+            posix, windows = PurePosixPath(name), PureWindowsPath(name)
+            if "\\" in name or ":" in name or posix.is_absolute() or windows.drive or windows.root or ".." in posix.parts:
+                raise ValueError(f"安全でないアーカイブ内パスです: {name!r}")
+        for member in members:
+            name = member.filename
+            target = None
+            if name in ("LICENSE", "ThirdPartyNotices.txt"):
+                target = staging / platform_name / name
+            elif name.startswith("build/native/include/"):
+                filename = name.removeprefix("build/native/include/")
+                if "/" not in filename and (filename.endswith(".h") or filename == "onnxruntime_experimental_c_api.inc"):
+                    target = staging / platform_name / "include" / filename
+            elif name.startswith(prefix) and name.removeprefix(prefix) in native:
+                target = staging / platform_name / "lib" / native[name.removeprefix(prefix)]
+            if target is None:
+                continue
+            kind = stat.S_IFMT(member.external_attr >> 16)
+            if kind not in (0, stat.S_IFREG):
+                raise ValueError(f"選択したアーカイブ項目が通常ファイルではありません: {name!r}")
+            selected.append((member, target))
+        root = staging / platform_name
+        (root / "include").mkdir(parents=True)
+        (root / "lib").mkdir()
+        for member, target in selected:
+            with source.open(member) as input_file, target.open("wb") as output_file:
+                shutil.copyfileobj(input_file, output_file)
+    if platform_name.startswith("linux-"):
+        (staging / platform_name / "lib" / "libonnxruntime.so.1").symlink_to("libonnxruntime.so")
 
 
 def fetch() -> Path:
-    platform_name, asset_name, expected = choose_asset(platform.system(), platform.machine())
+    platform_name = choose_platform(platform.system(), platform.machine())
     repository = Path(__file__).resolve().parent.parent
     cache = pinned_download.ensure_repository_directory(repository, repository / ".build" / "onnxruntime" / VERSION)
-    root_name = f"onnxruntime-{platform_name}-{VERSION}"
-    destination = cache / root_name
-    is_zip = asset_name.endswith(".zip")
+    destination = cache / platform_name
     if os.path.lexists(destination):
         try:
-            _validate_tree(destination, is_zip, platform_name)
+            _validate_tree(destination, platform_name)
         except Exception as error:
             raise RuntimeError(f"展開先ディレクトリを削除してください: {destination}。理由: {error}") from error
         return destination.resolve()
-
     for stale_staging in cache.glob(".extract-*"):
         pinned_download.remove_tree(stale_staging)
-    for cached_asset_name in {asset[1] for asset in ASSETS.values()}:
-        for temporary in cache.glob(f".{cached_asset_name}.*.download"):
-            if not stat.S_ISREG(temporary.lstat().st_mode):
-                raise RuntimeError(f"一時アーカイブが通常ファイルではありません: {temporary}")
-            temporary.unlink()
-
-    archive = pinned_download.download_verified(f"{RELEASE_URL}/{asset_name}", expected, cache / asset_name)
-    if platform_name == "osx-arm64" and archive.stat().st_size != MACOS_ARM64_BYTES:
-        raise ValueError(f"macOS arm64 アーカイブのサイズが一致しません: {archive.stat().st_size} bytes")
+    for temporary in cache.glob(f".{PACKAGE_NAME}.*.download"):
+        if not stat.S_ISREG(temporary.lstat().st_mode):
+            raise RuntimeError(f"一時アーカイブが通常ファイルではありません: {temporary}")
+        temporary.unlink()
+    archive = pinned_download.download_verified(PACKAGE_URL, PACKAGE_SHA256, cache / PACKAGE_NAME)
+    if archive.stat().st_size != PACKAGE_BYTES:
+        raise ValueError(f"NuGet package のサイズが一致しません: {archive.stat().st_size} bytes")
     staging = Path(tempfile.mkdtemp(prefix=".extract-", dir=cache))
     try:
-        _assert_within(cache, staging)
-        _extract(archive, staging, root_name, is_zip, platform_name)
+        _extract(archive, staging, platform_name)
+        root = staging / platform_name
+        _validate_tree(root, platform_name)
         if os.path.lexists(destination):
             raise RuntimeError(f"展開先ディレクトリが既に存在します: {destination}")
-        os.replace(staging / root_name, destination)
+        os.replace(root, destination)
         return destination.resolve()
     finally:
         pinned_download.remove_tree(staging)
