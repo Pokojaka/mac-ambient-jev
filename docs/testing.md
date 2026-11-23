@@ -294,9 +294,15 @@ cache hit は dependency resolution、build、test、app build を省略しな�
 
 [`MacAmbientJevHaasASR`](../app/MacAmbientJev/Sources/MacAmbientJevHaasASR/HaasASRModel.swift) とその tests は macOS 専用で、Core / ONNX に依存しますが app には接続されていません。app の ASR は MLX を使います。
 
+[`HaasASREngine`](../app/MacAmbientJev/Sources/MacAmbientJevHaasASR/HaasASREngine.swift) は ONNX Runtime の CPU 実行、`ORT_ENABLE_ALL`、intra-op 4 / inter-op 1 で動く actor です。encoder の channel-major 出力は frame-major に転置し、TDT greedy decoding 中の recurrent state は ONNX Runtime value のまま次 step に渡します。`unload()` は prepare generation を無効化して pending prepare を cancel し、読み込み済み graph を解放します。
+
+入力は canonical 16,000 Hz mono float32 のみです。30秒超は `inputTooLong` で拒否し分割せず、20 ms 未満は prepare 前でも空結果を返します。モデル不要の [`HaasASREngineTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevHaasASRTests/HaasASREngineTests.swift) はこれらの境界、準備前の20 ms入力の `notPrepared`、非canonical sample rate の拒否、pending prepare 中の unload による cancellation を検証します。認識言語は日本語で、返却する `detectedLanguage` は `nil` です。
+
 共有 short WAV と利用条件は [`qwen3_asr_voicevox_short.wav`](../app/MacAmbientJev/Tests/MacAmbientJevSpeechFixtures/Resources/qwen3_asr_voicevox_short.wav) と [`qwen3_asr_voicevox.LICENSE.txt`](../app/MacAmbientJev/Tests/MacAmbientJevSpeechFixtures/Resources/qwen3_asr_voicevox.LICENSE.txt) にあります（[日本語音声 fixture の参照文・hash 表](windows.md#日本語音声-fixture)）。
 
 [`haas_mel_golden.json`](../app/MacAmbientJev/Tests/MacAmbientJevHaasASRTests/Resources/haas_mel_golden.json) は共有 short WAV の先頭1秒から作った log-mel golden です。shape は `1×128×112`、`validLength` は100で、Float32 の数値を丸めず全112 frameを保持します（約257 KB）。[HaasMelFrontendTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevHaasASRTests/HaasMelFrontendTests.swift) は最大絶対誤差 `1e-4` 以内を検証し、standalone 測定値は `6.2286854e-6` です。差は Float32 reduction / log rounding と NumPy の演算差によります。この test に model は不要です。
+
+[`haas_parity_golden.json`](../app/MacAmbientJev/Tests/MacAmbientJevHaasASRTests/Resources/haas_parity_golden.json) は ONNX 参照実装で作った token ID と decode text の完全一致 golden です。[`HaasParityTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevHaasASRTests/HaasParityTests.swift) は short（52,907 samples、3.3066875秒）と long WAV の全295,424 samples（18.464秒）を比較します。long WAV は30秒未満なので先頭30秒への切り詰めはありません。参照手順は `load_wav` → `logmel` → `sessions(threads=4)` → `encode` → `greedy_tdt` → `haas_ort.Tokenizer.decode` で、各 clip の全 `tokenIDs` と `text` は parity golden に固定されています。
 
 repository root からの生成 command は次のとおりです。
 
@@ -304,10 +310,10 @@ repository root からの生成 command は次のとおりです。
 uv run --python 3.12 scripts/generate_haas_asr_fixtures.py --reference-dir /absolute/path/to/onnx-354baedfd9612b00e74cc1ae87dff7f2c558db6f
 ```
 
-[`generate_haas_asr_fixtures.py`](../scripts/generate_haas_asr_fixtures.py) は import 前に local haas_ort.py の未変更 SHA-256 `b709d2f6279275a04ae50c7991249566a8b8591af9fcbc754bfb363d9bd57177` を検証します。PEP 723 の固定依存は `onnxruntime==1.31.0`、`librosa==0.11.0`、`numpy==1.26.4`、`soundfile==0.13.1`、`sentencepiece==0.2.1` です。NumPy 1.26.4 は FFT が double に昇格する挙動に合わせています。
+[`generate_haas_asr_fixtures.py`](../scripts/generate_haas_asr_fixtures.py) は import 前に local haas_ort.py の未変更 SHA-256 `b709d2f6279275a04ae50c7991249566a8b8591af9fcbc754bfb363d9bd57177` を検証します。`--reference-dir` には固定済み haas_ort.py、tokenizer、encoder / decoder ONNX model files が必要です。PEP 723 の固定依存は `onnxruntime==1.31.0`、`librosa==0.11.0`、`numpy==1.26.4`、`soundfile==0.13.1`、`sentencepiece==0.2.1` です。NumPy 1.26.4 は FFT が double に昇格する挙動に合わせています。
 
 [`SentencePieceDecoder.swift`](../app/MacAmbientJev/Sources/MacAmbientJevHaasASR/SentencePieceDecoder.swift) と [`SentencePieceDecoderTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevHaasASRTests/SentencePieceDecoderTests.swift) は tokenizer を純 Swift で decode し、[`haas_spm_golden.json`](../app/MacAmbientJev/Tests/MacAmbientJevHaasASRTests/Resources/haas_spm_golden.json) の3,575件（3072個すべての単独 ID、`[0]`・`[33, 66]`・`[227, 151, 130]`、Python 3.12 `random.Random(146005)` の Mersenne Twister による長さ1〜40の500件）を照合します。
-上記 `uv` command は PEP 723 定義の `sentencepiece==0.2.1` を使い、両 golden を byte-for-byte 同一に再生成します。
+上記 `uv` command は PEP 723 定義の `sentencepiece==0.2.1` を使い、3つの golden を byte-for-byte 同一に再生成します。
 `▁` は NORMAL / USER piece 内では U+0020 に置換し、BYTE piece から復元した U+2581 はそのまま保持します。不正 UTF-8 は無効 byte ごとに U+FFFD、UNKNOWN piece は `U+0020 U+2047 U+0020` を出力します。`add_dummy_prefix` が有効な場合、dummy 未消費かつ出力が空のときに限り、NORMAL / USER piece の先頭の `▁` を取り除きます。BYTE piece の空白や UNKNOWN surface は対象外です。`remove_extra_whitespaces=false` のため、先頭が marker のみの piece でも出力が空のまま dummy を1回消費します。truncate した model と piece 数不一致の model は拒否します。
 [`tokenizer.model`](../app/MacAmbientJev/Tests/MacAmbientJevHaasASRTests/Resources/tokenizer.model) は [pinned Haas-ja ONNX snapshot](https://huggingface.co/Sanami/haas-ja-onnx/tree/354baedfd9612b00e74cc1ae87dff7f2c558db6f) 由来（279711 bytes、SHA-256 `9bd7bcdff62e43200001cd4c258d22e475b7b3b1e0f64f8be8e6e046f402f38c`）で、NOTICE に記載のとおり Third Intelligence の [Haas-ja-v1.0](https://huggingface.co/third-intelligence/Haas-ja-v1.0) から派生した Apache-2.0 model です。再配布条件と attribution は [`haas_tokenizer.LICENSE.txt`](../app/MacAmbientJev/Tests/MacAmbientJevHaasASRTests/Resources/haas_tokenizer.LICENSE.txt) と [`haas_tokenizer.NOTICE.txt`](../app/MacAmbientJev/Tests/MacAmbientJevHaasASRTests/Resources/haas_tokenizer.NOTICE.txt) を参照してください。
 SentencePiece proto2 の absent-field default は `add_dummy_prefix=true` と `unk_surface`=`U+0020 U+2047 U+0020` です。model は `remove_extra_whitespaces=false` を明示します。
@@ -320,6 +326,14 @@ python3 -B scripts/fetch_haas_asr_model.py --destination /absolute/path/to/haas-
 ```
 
 [`fetch_haas_asr_model.py`](../scripts/fetch_haas_asr_model.py) は Hugging Face の pinned commit から取得し、manifest の byte 数と SHA-256 を検証します。検証済みの既存 file は再利用し、破損時は失敗します。
+
+実モデル parity は既存の `RUN_MODEL_TESTS=1` gate を使います。gate 有効時は `HAAS_ASR_ONNX_MODEL_DIRECTORY` に fetcher で取得・検証済みの、既存で読み取り可能な model directory の絶対パスを明示してください。未設定・不正なら test は失敗し、既定値や別 directory への fallback はありません。ONNX Runtime SDK を先に `python3 -B scripts/fetch_onnxruntime.py` で取得するか、既存 SDK を用意してから実行します。
+
+```bash
+RUN_MODEL_TESTS=1 HAAS_ASR_ONNX_MODEL_DIRECTORY=/absolute/path/to/onnx-354baedfd9612b00e74cc1ae87dff7f2c558db6f swift test --package-path app/MacAmbientJev --filter HaasParityTests
+```
+
+[`HaasParityTests.swift`](../app/MacAmbientJev/Tests/MacAmbientJevHaasASRTests/HaasParityTests.swift) は各 clip の `tokenIDs` 配列と decode `text` の完全一致を検証し、結果の `detectedLanguage` が `nil` であることも確認します。別の graph を encoder path に置く検査は `HaasASRError.unexpectedGraph` を期待します。
 
 ### Windows CI の temp directory と cache
 
