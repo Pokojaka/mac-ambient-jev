@@ -176,6 +176,9 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 | `processing.run.started` | run | `stage`: String、`provenance`: 下記の object |
 | `processing.run.completed` | run | `stage`: String、`succeeded`: Bool、`completed_count`: Int、`failed_count`: Int |
 | `segment.created` | seg run、segment、開始・終了範囲 | `speech_ranges`: `[[Int64]]` |
+| `segmentation.progress` | seg run | `consumed_frames`: Int64 |
+| `segmentation.input.sealed` | seg run | `frame_count`: Int64 |
+| `segmentation.completed` | seg run | `consumed_frames`: Int64、`segment_count`: Int |
 | `asr.pending` | run、seg run、segment、開始・終了範囲 | 空 object `{}`。確定処理でのみ出力する |
 | `asr.completed` | run、seg run、segment、開始・終了範囲 | `text`: String、`detected_language`: optional String、`engine`: String、`model`: optional String、`outcome`: `recognized` または `empty` |
 | `asr.failed` | run、seg run、segment、開始・終了範囲 | `kind`: 下記の失敗種別、`message`: String |
@@ -194,7 +197,13 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 
 選択された segmentation / ASR run の組で、`asr.completed` は `empty` を含めその区間の終端です。同じ区間の成功結果が重複すれば整合性エラーです。`asr.failed` は診断記録で完了ではなく、prepare・音声読取・認識の最初の失敗で試行を止め、その区間と後続を pending のまま残します。次に開いたときは、未完了区間だけを古い順に処理します。
 
-[ASRSessionRecovery.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASRSessionRecovery.swift) は全 speech range、永続化された登録日時、および run 開始記録を復元します。イベント schema・保存形式や、現行アプリの確定処理の経路は変更しません。
+これらも現行 schema 3 のイベントであり、schema 3 以外の互換 reader はありません。`segmentation.progress.consumed_frames` は無音を含む実際に VAD が消費した frame 数（読取・buffer 済み数や最後の speech 位置ではない）で、入力が未 seal の間は 4096 frame 境界で進みます。今回出力した全 segment の `segment.created` が durable になった後だけ progress を保存します。
+
+`segmentation.input.sealed.frame_count` は EOF の正確な最終 frame 数を単一の EOF flush 前に保存します。`segmentation.completed` は EOF までの正確な `consumed_frames` と、全 `segment.created` を保存した後の `segment_count` を記録します。`ASRSessionRecovery` は共通 reader として segmentation events も復元し、`asrRunID: nil` なら segmentation-only recovery を選びます。
+
+未完了 run の `VADSession.open` は reader を sample 0 から replay し、segment prefix を ordinal・ID・全 speech ranges で照合します。一致した prefix は再保存せず、owner は新しい tail の `segment.created` を返す前に保存するため、別の segment-writing path で再登録しません。mismatch・EOF で不足する prefix・frame count 不一致は `SegmentationConsistencyError` を投げ、error 後は reopen が必要です。並行操作は拒否します。
+
+完了済み segmentation は processor factory と VAD を使わず、復元済み segment は `segments` から参照できます。`processAvailable` は 4096 sample 未満の端数を保持し、polling / pause では flush せず EOF `finish` でだけ flush します。VAD / Core ML / assembler の状態は保存せず、progress は restart seek point ではありません。実装: [VADSession.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/VADSession.swift)、[ASRSessionRecovery.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASRSessionRecovery.swift)、[SegmentationEvents.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SegmentationEvents.swift)。
 
 イベントには空本文を含む全区間が残ります。ライブの `segment.created` / `asr.completed` は暫定結果で、確定処理では新しい segmentation / ASR run を作ります。
 
