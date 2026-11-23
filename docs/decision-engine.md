@@ -90,6 +90,8 @@ Linux / Windows では PortableRuntime の `ONNXClauseTagger` actor（`DecisionP
 2. 検証済みの tokenizer.json から Core の `ClauseTaggerTokenizer` を、manifest の tokenizer SHA-256 を期待値にして作ります。
 3. ONNX Runtime の CPU session を一つ作ります。inter-op スレッドは1、intra-op スレッドは呼出し側が渡す正の数、CPU memory arena は無効です。graph optimization level は ONNX Runtime 1.31.0 の wrapper が SetSessionGraphOptimizationLevel を呼び、`ORT_ENABLE_ALL` を明示的に指定します（[ONNX Runtime の graph optimizations](https://onnxruntime.ai/docs/performance/model-optimizations/graph-optimizations.html)）。optimized graph / session の cache はありません。他の execution provider への切り替えや、実行時の準備・ダウンロードはありません。
 
+ONNX Runtime SDK は公式の [Microsoft.ML.OnnxRuntime 1.31.0 NuGet package](https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime/1.31.0) を `scripts/fetch_onnxruntime.py` で事前取得し、Linux / Windows 共通で version `1.31.0` と同じ package pin を使います（固定値は [ONNX Runtime](windows.md#onnx-runtime)）。SDK を実行時に取得することはありません。
+
 session 作成後に graph の入出力 metadata を完全一致で検証します。入力は `input_ids` int64 `[1,-1]`、出力は `boundary_probs` float32 `[1,-1,2]`、`span_probs` float32 `[1,-1,4]`、`priority_probs` float32 `[1,2]` で、名前・dtype・rank・固定次元が一つでも違えば初期化エラーです。`identity` は manifest から作る `ClauseTaggerModelIdentity` で、ONNX ファイル内の metadata は読みません。
 
 各推論は Core ML と同じ入力検査（長さ `2...192`、先頭 CLS、末尾 SEP、全 ID が語彙 `0..<102400`）に失敗すると `invalidInput` を返します。出力は形状と要素数が入力長と厳密に一致し、全値が有限の 0..1 で、各 row の和が 1 から `1e-5` 以内でなければ `invalidOutput` です。値の clamp や再正規化はしません。ONNX Runtime 自体の失敗は `unavailable` として返します。request の組み立て、投影、優先度、キャンセル確認は Core ML 版と同じ `ClauseTaggerDecisionLogic` を通り、inference closure だけが違います。actor が session への呼出しを直列化します。

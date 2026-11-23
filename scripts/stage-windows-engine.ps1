@@ -78,14 +78,12 @@ try {
             Triple = 'x86_64-unknown-windows-msvc'
             PeMachine = 0x8664
             OnnxArchitecture = 'x64'
-            OnnxSha256 = '3958d8a44984160692c1b4ffd0de3cb48f8c39f9d34bb31e433db06e30b82195'
         }
         ARM64 = @{
             TargetArch = 'aarch64'
             Triple = 'aarch64-unknown-windows-msvc'
             PeMachine = 0xaa64
             OnnxArchitecture = 'arm64'
-            OnnxSha256 = 'ef6206fa8d6975878d93a97035d280240ce5764c126a7430e5427e18923316d5'
         }
     }
     $architectureDetails = $architectureDetailsByName[$Architecture]
@@ -159,7 +157,7 @@ try {
     Write-Host "Swift runtime directory: $swiftRuntimeDirectory"
 
     $onnxCache = Join-Path -Path $repositoryRoot -ChildPath ".build\onnxruntime\1.31.0"
-    $expectedOnnxRoot = Join-Path -Path $onnxCache -ChildPath "onnxruntime-win-$($architectureDetails.OnnxArchitecture)-1.31.0"
+    $expectedOnnxRoot = Join-Path -Path $onnxCache -ChildPath "win-$($architectureDetails.OnnxArchitecture)"
     $fetchResult = Invoke-NativeCapture -Name 'Fetch pinned ONNX Runtime 1.31.0' -Executable 'python' -ArgumentList @('scripts/fetch_onnxruntime.py') -DisplayOutput $true
     if ($fetchResult.Lines.Count -ne 1) {
         throw "ONNX Runtime fetch returned $($fetchResult.Lines.Count) paths; expected exactly one."
@@ -270,16 +268,24 @@ try {
         }
     }
 
-    $onnxArchiveName = "onnxruntime-win-$($architectureDetails.OnnxArchitecture)-1.31.0.zip"
-    $onnxArchive = Join-Path -Path $onnxCache -ChildPath $onnxArchiveName
+    $onnxPackageMetadata = Invoke-NativeCapture -Name 'Read pinned ONNX Runtime package metadata' -Executable 'python' -ArgumentList @('-c', "import json,sys; sys.path.insert(0,'scripts'); import fetch_onnxruntime as ort; print(json.dumps({'name':ort.PACKAGE_NAME,'bytes':ort.PACKAGE_BYTES,'sha256':ort.PACKAGE_SHA256}))") -DisplayOutput $false
+    if ($onnxPackageMetadata.Lines.Count -ne 1) {
+        throw "ONNX Runtime package metadata returned $($onnxPackageMetadata.Lines.Count) lines; expected exactly one."
+    }
+    $onnxPackage = ConvertFrom-Json -InputObject ([string]$onnxPackageMetadata.Lines[0]) -ErrorAction Stop
+    $onnxArchive = Join-Path -Path $onnxCache -ChildPath $onnxPackage.name
     if (-not (Test-Path -LiteralPath $onnxArchive -PathType Leaf)) {
-        throw "Pinned ONNX Runtime archive is missing; refusing to use another DLL source: $onnxArchive"
+        throw "ONNX Runtime NuGet package is missing: $onnxArchive"
+    }
+    $actualOnnxPackageLength = (Get-Item -LiteralPath $onnxArchive).Length
+    if ($actualOnnxPackageLength -ne $onnxPackage.bytes) {
+        throw "ONNX Runtime NuGet package size mismatch. Expected $($onnxPackage.bytes) bytes, got ${actualOnnxPackageLength}: $onnxArchive"
     }
     $actualOnnxSha256 = (Get-FileHash -LiteralPath $onnxArchive -Algorithm SHA256).Hash
-    if ($actualOnnxSha256 -ine $architectureDetails.OnnxSha256) {
-        throw "ONNX Runtime archive SHA256 mismatch. Expected $($architectureDetails.OnnxSha256), got ${actualOnnxSha256}: $onnxArchive"
+    if ($actualOnnxSha256 -ine $onnxPackage.sha256) {
+        throw "ONNX Runtime NuGet package SHA256 mismatch. Expected $($onnxPackage.sha256), got ${actualOnnxSha256}: $onnxArchive"
     }
-    Write-Host "Verified ONNX Runtime archive SHA256: $actualOnnxSha256"
+    Write-Host "Verified ONNX Runtime package SHA256: $actualOnnxSha256"
 
     if (Test-Path -LiteralPath $destinationPath) {
         throw "Destination appeared before staging; refusing to modify or overwrite it: $destinationPath"
@@ -290,7 +296,7 @@ try {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $archiveHandle = [System.IO.Compression.ZipFile]::OpenRead($onnxArchive)
     try {
-        $onnxEntryName = "onnxruntime-win-$($architectureDetails.OnnxArchitecture)-1.31.0/lib/onnxruntime.dll"
+        $onnxEntryName = "runtimes/win-$($architectureDetails.OnnxArchitecture)/native/onnxruntime.dll"
         $onnxEntry = $archiveHandle.GetEntry($onnxEntryName)
         if ($null -eq $onnxEntry) {
             throw "Pinned ONNX Runtime archive is missing the required entry: $onnxEntryName"

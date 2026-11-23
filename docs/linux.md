@@ -160,6 +160,8 @@ primary の区間別時刻が発話境界を表し、評価 artifact の区間�
 
 Python 3.12 以上、Swift 6.2 系、ONNX Runtime SDK、Silero model が必要です。Linux では入力音声を 16 kHz mono に用意してください。以下の `/absolute/path/...` は置換する例であり、既定 path ではありません。指定した入力、model directory、出力親 directory は事前に存在させます。
 
+`scripts/fetch_onnxruntime.py` は公式 [Microsoft.ML.OnnxRuntime 1.31.0 NuGet package](https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime/1.31.0) から version `1.31.0` に固定した SDK を `.build/onnxruntime/1.31.0/{linux-x64|linux-arm64}` に展開し、`include` と `lib` を使います。Linux SDK には `libonnxruntime.so`、SONAME symlink `libonnxruntime.so.1 -> libonnxruntime.so`、`libonnxruntime_providers_shared.so` が含まれます。package size と SHA-256 の pin は [ONNX Runtime](windows.md#onnx-runtime) を参照してください。
+
 ```bash
 set -eu
 python3.12 scripts/fetch_onnxruntime.py
