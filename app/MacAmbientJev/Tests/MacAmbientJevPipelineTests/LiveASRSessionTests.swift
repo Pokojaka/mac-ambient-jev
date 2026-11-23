@@ -7,10 +7,13 @@ private actor CountingASREngine: ASREngine {
     nonisolated let provenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
     private var prepareCalls = 0
     private var transcribeCalls = 0
+    private var inputSampleCounts: [Int] = []
     private let failOnCall: Int?
+    private let emptyOnCall: Int?
 
-    init(failOnCall: Int? = nil) {
+    init(failOnCall: Int? = nil, emptyOnCall: Int? = nil) {
         self.failOnCall = failOnCall
+        self.emptyOnCall = emptyOnCall
     }
 
     func prepare() async throws {
@@ -19,6 +22,7 @@ private actor CountingASREngine: ASREngine {
 
     func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
         transcribeCalls += 1
+        inputSampleCounts.append(input.samples.count)
         if failOnCall == transcribeCalls {
             throw NSError(
                 domain: "LiveASRSessionTests",
@@ -28,7 +32,7 @@ private actor CountingASREngine: ASREngine {
                 ]
             )
         }
-        return ASRResult(text: "segment-\(transcribeCalls)", detectedLanguage: nil)
+        return ASRResult(text: emptyOnCall == transcribeCalls ? "" : "segment-\(transcribeCalls)", detectedLanguage: nil)
     }
 
     func unload() async {}
@@ -36,6 +40,7 @@ private actor CountingASREngine: ASREngine {
     func counts() -> (prepare: Int, transcribe: Int) {
         (prepareCalls, transcribeCalls)
     }
+    func inputCounts() -> [Int] { inputSampleCounts }
 }
 
 private actor SuspendedASREngine: ASREngine {
@@ -162,10 +167,12 @@ private final class Locked<Value>: @unchecked Sendable {
 
 private func makeLiveASRFixture(
     failOnCall: Int? = nil,
+    emptyOnCall: Int? = nil,
     decisionRuns: (boundary: String, priority: String)? = nil
 ) async throws -> (
     root: URL,
     checkpoint: AudioCheckpoint,
+    sessionID: UUID,
     session: LiveASRSession,
     engine: CountingASREngine
 ) {
@@ -182,9 +189,10 @@ private func makeLiveASRFixture(
     )
     let checkpoint = await writer.committedSnapshot()
 
-    let engine = CountingASREngine(failOnCall: failOnCall)
+    let engine = CountingASREngine(failOnCall: failOnCall, emptyOnCall: emptyOnCall)
+    let sessionID = UUID()
     let session = LiveASRSession(
-        sessionID: UUID(),
+        sessionID: sessionID,
         sessionURL: root,
         segmentationRunID: "seg_live_test",
         asrRunID: "asr_live_test",
@@ -195,7 +203,110 @@ private func makeLiveASRFixture(
         clauseBoundaryRunID: decisionRuns?.boundary,
         contentPriorityRunID: decisionRuns?.priority
     )
-    return (root, checkpoint, session, engine)
+    return (root, checkpoint, sessionID, session, engine)
+}
+
+@Test(arguments: [0, 1, 2])
+func reopeningProcessesOnlySegmentsWithoutSuccessfulResults(_ interruption: Int) async throws {
+    let fixture = try await makeLiveASRFixture(
+        failOnCall: interruption == 2 ? 2 : nil, emptyOnCall: 1
+    )
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let segmentationRunID = "seg_live_test", asrRunID = "asr_live_test"
+    let first = SegmentReference(segmentationRunID: segmentationRunID, segmentID: "seg_000001", speechRanges: [0..<1_000, 2_000..<2_500])
+    let second = SegmentReference(segmentationRunID: segmentationRunID, segmentID: "seg_000002", speechRanges: [4_000..<6_000])
+    let third = SegmentReference(segmentationRunID: segmentationRunID, segmentID: "seg_000003", speechRanges: [8_000..<11_000])
+    let segments = [first, second, third]
+    let reader = try ProcessingTimelineReader(directory: fixture.root, checkpoint: fixture.checkpoint, sessionURL: fixture.root)
+    if interruption == 0 {
+        _ = try await fixture.session.register(segments: [third, first, second])
+    } else {
+        let initial = try await fixture.session.process(segments: [first], reader: reader)
+        #expect(initial.completedCount == 1)
+        _ = try await fixture.session.register(segments: [third, second])
+        if interruption == 2 {
+            let failed = try await fixture.session.process(reader: reader)
+            #expect(failed.completedCount == 1 && failed.failedCount == 1 && failed.pendingCount == 2)
+            _ = try await fixture.session.process(reader: reader)
+            #expect(await fixture.engine.inputCounts() == [1_500, 2_000])
+        }
+    }
+    let resumedEngine = CountingASREngine(emptyOnCall: interruption == 0 ? 1 : nil)
+    let resumed = try await LiveASRSession.open(
+        sessionID: fixture.sessionID, sessionURL: fixture.root, segmentationRunID: segmentationRunID,
+        asrRunID: asrRunID, processingDirectory: fixture.root, writer: try SessionWriter(sessionURL: fixture.root),
+        asr: resumedEngine, sampleRate: fixture.checkpoint.sampleRate,
+        clauseBoundaryRunID: nil, contentPriorityRunID: nil
+    )
+    let hydrated = await resumed.snapshot()
+    let pendingIDs = interruption == 0
+        ? segments.map(\.segmentID)
+        : [second.segmentID, third.segmentID]
+    #expect(
+        hydrated.progress.completedCount == (interruption == 0 ? 0 : 1)
+            && hydrated.progress.pendingCount == pendingIDs.count
+    )
+    #expect(
+        hydrated.segments.filter { $0.outcome == .pending }.map(\.segmentID) == pendingIDs
+            && hydrated.segments.map(\.startFrame) == [0, 4_000, 8_000]
+    )
+
+    let progress = try await resumed.process(reader: reader)
+    #expect(progress.completedCount == 3 && progress.failedCount == 0 && progress.pendingCount == 0)
+    let expectedTexts = interruption == 0
+        ? ["", "segment-2", "segment-3"]
+        : ["", "segment-1", "segment-2"]
+    #expect(progress.materializedSegments.map(\.text) == expectedTexts)
+    #expect(await resumedEngine.inputCounts() == (interruption == 0 ? [1_500, 2_000, 3_000] : [2_000, 3_000]))
+
+    let bytes = try Data(contentsOf: fixture.root.appending(path: "events.jsonl"))
+    let events = try SessionRecovery.recoverJSONL(bytes).lines.map {
+        try #require(JSONSerialization.jsonObject(with: $0) as? [String: Any])
+    }
+    let completed = events.filter { $0["event_type"] as? String == "asr.completed" && $0["processing_run_id"] as? String == asrRunID }
+    #expect(completed.compactMap { $0["segment_id"] as? String } == segments.map(\.segmentID))
+    #expect(completed.compactMap { ($0["payload"] as? [String: Any])?["outcome"] as? String } == ["empty", "recognized", "recognized"])
+    let createdSegments = events.filter { $0["event_type"] as? String == "segment.created" && $0["segmentation_run_id"] as? String == segmentationRunID }
+    #expect(createdSegments.count == 3)
+    let failures = events.filter { $0["event_type"] as? String == "asr.failed" && $0["processing_run_id"] as? String == asrRunID }
+    #expect(failures.compactMap { $0["segment_id"] as? String } == (interruption == 2 ? [second.segmentID] : []))
+    let starts = events.filter { $0["event_type"] as? String == "processing.run.started" && $0["processing_run_id"] as? String == asrRunID }
+    #expect(starts.count == 1 && (starts.first?["payload"] as? [String: Any])?["stage"] as? String == "asr")
+    let repeatedEngine = CountingASREngine()
+    let repeated = try await LiveASRSession.open(
+        sessionID: fixture.sessionID, sessionURL: fixture.root, segmentationRunID: segmentationRunID,
+        asrRunID: asrRunID, processingDirectory: fixture.root, writer: try SessionWriter(sessionURL: fixture.root),
+        asr: repeatedEngine, sampleRate: fixture.checkpoint.sampleRate,
+        clauseBoundaryRunID: nil, contentPriorityRunID: nil
+    )
+    #expect(try await repeated.process(reader: reader).completedCount == 3)
+    #expect(await repeatedEngine.inputCounts().isEmpty)
+    #expect(try Data(contentsOf: fixture.root.appending(path: "events.jsonl")) == bytes)
+}
+
+@Test
+func reopeningRejectsDuplicateSuccessfulResult() async throws {
+    let fixture = try await makeLiveASRFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let segment = SegmentReference(segmentationRunID: "seg_live_test", segmentID: "seg_000001", speechRanges: [0..<4_000])
+    _ = try await fixture.session.process(segments: [segment], checkpoint: fixture.checkpoint)
+    let payload = ASRCompletedEventPayload(
+        text: "segment-1",
+        detectedLanguage: nil,
+        provenance: fixture.engine.provenance
+    )
+    _ = try await SessionWriter(sessionURL: fixture.root).append(EventDraft(
+        eventType: "asr.completed", sessionID: fixture.sessionID, processingRunID: "asr_live_test",
+        segmentationRunID: "seg_live_test", segmentID: segment.segmentID,
+        sourceStartFrame: segment.startFrame, sourceEndFrame: segment.endFrame, payload: payload))
+    await #expect(throws: ASRSessionRecoveryError.duplicateSuccessfulResult(segmentID: segment.segmentID)) {
+        try await LiveASRSession.open(
+            sessionID: fixture.sessionID, sessionURL: fixture.root, segmentationRunID: "seg_live_test",
+            asrRunID: "asr_live_test", processingDirectory: fixture.root, writer: try SessionWriter(sessionURL: fixture.root),
+            asr: CountingASREngine(), sampleRate: fixture.checkpoint.sampleRate,
+            clauseBoundaryRunID: nil, contentPriorityRunID: nil
+        )
+    }
 }
 
 @Test
@@ -556,7 +667,7 @@ func liveASRFailureKeepsRunUnsuccessful() async throws {
     )
     #expect(progress.completedCount == 1)
     #expect(progress.failedCount == 1)
-    #expect(progress.pendingCount == 0)
+    #expect(progress.pendingCount == 1)
     #expect(progress.materializedSegments.map(\.text) == ["segment-1"])
     #expect(try await fixture.session.register(segments: segments) == progress)
 
@@ -564,7 +675,7 @@ func liveASRFailureKeepsRunUnsuccessful() async throws {
     #expect(!completion.succeeded)
     #expect(completion.completedCount == 1)
     #expect(completion.failedCount == 1)
-    #expect(completion.pendingCount == 0)
+    #expect(completion.pendingCount == 1)
     #expect(completion.materializedSegments == progress.materializedSegments)
 }
 

@@ -192,6 +192,10 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 
 `asr.failed.kind` は `engine_unavailable`（準備できないエンジン）、`audio_unreadable`（区間音声読取失敗）、`transcription_failed`（認識呼び出し失敗）のいずれかです。TIMEOUT の専用種別はありません。
 
+選択された segmentation / ASR run の組で、`asr.completed` は `empty` を含めその区間の終端です。同じ区間の成功結果が重複すれば整合性エラーです。`asr.failed` は診断記録で完了ではなく、prepare・音声読取・認識の最初の失敗で試行を止め、その区間と後続を pending のまま残します。次に開いたときは、未完了区間だけを古い順に処理します。
+
+[ASRSessionRecovery.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASRSessionRecovery.swift) は全 speech range、永続化された登録日時、および run 開始記録を復元します。イベント schema・保存形式や、現行アプリの確定処理の経路は変更しません。
+
 イベントには空本文を含む全区間が残ります。ライブの `segment.created` / `asr.completed` は暫定結果で、確定処理では新しい segmentation / ASR run を作ります。
 
 `processing.run.completed` の count は段階ごとの処理対象件数です。segmentation / ASR は区間、clauseBoundary は判定が成立した区間と保留の区間、contentPriority は可視本文のある発話文の成立数と保留数を数えます。通常の decision run は判定保留があっても `succeeded: true` を出し、`failed_count` に保留数を保存します。これはローカル必須処理の失敗を意味しません。再試行 run の実際の失敗は `succeeded: false` です（再試行 run の終了・count 規則は下記）。保存破損や参照の不整合は保留に変換せず、エラーにします。

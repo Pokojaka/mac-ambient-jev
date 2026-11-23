@@ -284,13 +284,11 @@ public actor PipelineCoordinator {
                     metrics.modelLoadSeconds += seconds(start.duration(to: clock.now))
                     try Task.checkCancellation()
                     prepared = false
-                    for segment in segments {
-                        try await recordFailure(
-                            segment, kind: .engineUnavailable, error: error, in: &tally,
-                            stopOnPersistenceFailure: stopOnPersistenceFailure,
-                            onSegmentPersisted: onSegmentPersisted
-                        )
-                    }
+                    try await recordFailure(
+                        segments[0], kind: .engineUnavailable, error: error, in: &tally,
+                        stopOnPersistenceFailure: stopOnPersistenceFailure,
+                        onSegmentPersisted: onSegmentPersisted
+                    )
                 }
             }
 
@@ -323,7 +321,7 @@ public actor PipelineCoordinator {
                             stopOnPersistenceFailure: stopOnPersistenceFailure,
                             onSegmentPersisted: onSegmentPersisted
                         )
-                        continue
+                        break
                     }
                     try Task.checkCancellation()
 
@@ -346,7 +344,7 @@ public actor PipelineCoordinator {
                             stopOnPersistenceFailure: stopOnPersistenceFailure,
                             onSegmentPersisted: onSegmentPersisted
                         )
-                        continue
+                        break
                     }
                     if !input.isShorterThanMinimumASRDuration, input.sampleRate > 0 {
                         metrics.asrCallSeconds += seconds(start.duration(to: clock.now))
