@@ -73,18 +73,18 @@ jobs:
           sys.path.insert(0, 'scripts')
           import fetch_onnxruntime as ort
 
-          chosen = ort.choose_asset(platform.system(), platform.machine())
+          chosen = ort.choose_platform(platform.system(), platform.machine())
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'version={ort.VERSION}\n')
-              output.write(f'platform={chosen[0]}\n')
-              output.write(f'sha256={chosen[2]}\n')
+              output.write(f'platform={chosen}\n')
+              output.write(f'sha256={ort.PACKAGE_SHA256}\n')
           PY
       - name: Restore ONNX Runtime SDK cache
         id: onnxruntime-sdk
         uses: actions/cache/restore@v4
         with:
           path: .build/onnxruntime/${{ steps.onnxruntime.outputs.version }}
-          key: onnxruntime-${{ steps.onnxruntime.outputs.version }}-${{ steps.onnxruntime.outputs.platform }}-${{ steps.onnxruntime.outputs.sha256 }}
+          key: onnxruntime-nuget-${{ steps.onnxruntime.outputs.version }}-${{ steps.onnxruntime.outputs.platform }}-${{ steps.onnxruntime.outputs.sha256 }}
       - name: Fetch ONNX Runtime SDK
         run: python3 -B scripts/fetch_onnxruntime.py
       - name: Verify V1 tests
@@ -185,18 +185,18 @@ jobs:
           sys.path.insert(0, 'scripts')
           import fetch_onnxruntime as ort
 
-          chosen = ort.choose_asset(platform.system(), platform.machine())
+          chosen = ort.choose_platform(platform.system(), platform.machine())
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'version={ort.VERSION}\n')
-              output.write(f'platform={chosen[0]}\n')
-              output.write(f'sha256={chosen[2]}\n')
+              output.write(f'platform={chosen}\n')
+              output.write(f'sha256={ort.PACKAGE_SHA256}\n')
           PY
       - name: Restore ONNX Runtime SDK cache
         id: onnxruntime-sdk
         uses: actions/cache/restore@v4
         with:
           path: .build/onnxruntime/${{ steps.onnxruntime.outputs.version }}
-          key: onnxruntime-${{ steps.onnxruntime.outputs.version }}-${{ steps.onnxruntime.outputs.platform }}-${{ steps.onnxruntime.outputs.sha256 }}
+          key: onnxruntime-nuget-${{ steps.onnxruntime.outputs.version }}-${{ steps.onnxruntime.outputs.platform }}-${{ steps.onnxruntime.outputs.sha256 }}
       - name: Fetch ONNX Runtime SDK
         run: python3 -B scripts/fetch_onnxruntime.py
       - name: Verify V1 app

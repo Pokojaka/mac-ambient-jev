@@ -13,7 +13,7 @@
 
 ## 検証
 
-リポジトリのルートから実行する。
+リポジトリのルートから実行する。ONNX Runtime SDK は公式 [Microsoft.ML.OnnxRuntime 1.31.0 NuGet package](https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime/1.31.0) を使い、package は159626085 bytes、SHA-256 `7e35fdb4f5adb62f01e60798e2e5ed05108f5fbbe1cca03fbcc37903cf7c5e3b` に固定する。取得 URL と展開 layout は [docs/windows.md#onnx-runtime](docs/windows.md#onnx-runtime) を参照する。
 
 ```bash
 python3 -B scripts/check_portable_core.py
