@@ -220,13 +220,21 @@ if !missingONNXRuntimeFiles.isEmpty {
 #if os(Windows)
 let onnxRuntimeLinkerFlags = [onnxRuntimeLibrary.path]
 #else
-let onnxRuntimeLinkerFlags = [
+var onnxRuntimeLinkerFlags = [
     onnxRuntimeLibrary.path,
     "-Xlinker",
     "-rpath",
     "-Xlinker",
     onnxRuntimeLibraryDirectory.path
 ]
+#if os(macOS)
+onnxRuntimeLinkerFlags += [
+    "-Xlinker",
+    "-rpath",
+    "-Xlinker",
+    "@executable_path/../Frameworks"
+]
+#endif
 #endif
 
 // The systemLibrary has no cSettings, so pass the include directory to each Swift importer.

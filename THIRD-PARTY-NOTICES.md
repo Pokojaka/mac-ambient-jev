@@ -88,6 +88,8 @@ SOFTWARE.
 
 macOS app の Haas-ja-v1.0 `int8dyn` ASR と、Linux / Windows portable engine の Qwen3-ASR、Silero VAD、clause tagger は ONNX Runtime C API の CPU Execution Provider を使います。
 
+macOS app は Microsoft ONNX Runtime 1.31.0 の `Contents/Frameworks/libonnxruntime.1.dylib` を同梱します。SDK root の `LICENSE` と `ThirdPartyNotices.txt` は `Contents/Resources/onnxruntime/` に変更せずコピーし、SDK original は変更しません。app 内の dylib copy は app signing 前に local identity で再署名します。ONNX Runtime の attribution と license はこれらの同梱 notices を参照してください。
+
 ```text
 MIT License
 

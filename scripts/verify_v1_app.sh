@@ -6,6 +6,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 bash "$ROOT/scripts/build_app.sh"
 
 APP_CONTENTS="$ROOT/.build/MacAmbientJev.app/Contents"
+SDK_ROOT="$ROOT/.build/onnxruntime/1.31.0/osx-arm64"
+DYLIB="$APP_CONTENTS/Frameworks/libonnxruntime.1.dylib"
+EXECUTABLE="$APP_CONTENTS/MacOS/MacAmbientJev"
 test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP_CONTENTS/Info.plist")" = "AppIcon.icns"
 ICONSET="$ROOT/.build/VerifiedAppIcon.iconset"
 rm -rf "$ICONSET"
@@ -28,7 +31,52 @@ if ! cmp -s "$ROOT/app/MacAmbientJev/Sources/MacAmbientJevHaasASR/Resources/haas
   echo "Built app is missing or has a different Haas ASR model config." >&2
   exit 1
 fi
-codesign --verify --deep "$ROOT/.build/MacAmbientJev.app"
+if [[ ! -f "$DYLIB" ]]; then
+  echo "Built app is missing ONNX Runtime dylib: $DYLIB" >&2
+  exit 1
+fi
+DYLIB_ID_OUTPUT="$(otool -D "$DYLIB")"
+if ! awk 'NR == 1 { next } NF { if ($0 != "@rpath/libonnxruntime.1.dylib") exit 1; count++ } END { if (count != 1) exit 1 }' <<< "$DYLIB_ID_OUTPUT"; then
+  echo "Bundled ONNX Runtime dylib has an unexpected install ID:" >&2
+  echo "$DYLIB_ID_OUTPUT" >&2
+  exit 1
+fi
+for artifact in LICENSE ThirdPartyNotices.txt; do
+  bundled="$APP_CONTENTS/Resources/onnxruntime/$artifact"
+  if [[ ! -f "$bundled" ]]; then
+    echo "Built app is missing ONNX Runtime resource: $bundled" >&2
+    exit 1
+  fi
+  if ! cmp -s "$SDK_ROOT/$artifact" "$bundled"; then
+    echo "Built app has a different ONNX Runtime resource: $bundled" >&2
+    exit 1
+  fi
+done
+RPATHS="$(otool -l "$EXECUTABLE" | awk '
+  $1 == "cmd" { in_rpath = ($2 == "LC_RPATH"); next }
+  in_rpath && $1 == "path" {
+    sub(/^[[:space:]]*path[[:space:]]+/, "")
+    sub(/[[:space:]]+\(offset [0-9]+\)$/, "")
+    print
+    in_rpath = 0
+  }
+')"
+FRAMEWORK_RPATH_FOUND=0
+while IFS= read -r rpath; do
+  if [[ "$rpath" == "@executable_path/../Frameworks" ]]; then
+    FRAMEWORK_RPATH_FOUND=1
+  fi
+  if [[ "${rpath:0:${#ROOT}}" == "$ROOT" ]]; then
+    echo "App contains repository-local runtime path: $rpath" >&2
+    exit 1
+  fi
+done <<< "$RPATHS"
+if [[ "$FRAMEWORK_RPATH_FOUND" -ne 1 ]]; then
+  echo "App is missing rpath @executable_path/../Frameworks" >&2
+  exit 1
+fi
+codesign --verify --strict "$DYLIB"
+codesign --verify --deep --strict "$ROOT/.build/MacAmbientJev.app"
 
 SIGNED_ENTITLEMENTS="$(mktemp)"
 trap 'rm -f "$SIGNED_ENTITLEMENTS"' EXIT
