@@ -21,11 +21,14 @@
 | 後続区間 | 扱い |
 | --- | --- |
 | 本文のある ASR 結果 | 先頭 60 Character を次区間として入力する |
-| 空の ASR 結果（空白・句読点だけを含む） | テキスト列の終端。次区間と継続判定を省く |
-| ASR 失敗（ASR gap） | 判定せず境界判定を保留（`asr_gap`）。gap をまたいで本文を推測しない |
-| なし（録音停止・最後の区間） | テキスト列の終端 |
+| 成功した空の ASR 結果（空白・句読点だけを含む） | 現在のテキスト列の区切り。次区間と継続判定を省く |
+| 確定処理・再試行・保存済み readback の ASR gap | 判定せず境界判定を保留（`asr_gap`）。gap をまたいで本文を推測しない |
+| ライブ incremental: 登録済みだが成功結果なし（未完了・`asr.failed`） | 未完了として待つ。`asr.failed` は diagnostic のみで、gap・EOF・後続区間にしない |
+| ライブ incremental の入力全体 EOF（caller の明示 `finishInput`） | segmentation 完了は caller の責任で API は検証せず、未完了 ASR があれば拒否。全 segment の ASR 成功後だけ EOF にする |
 
-ASR gap の後に空の ASR 結果が保存された場合も、そこでテキスト列を区切ります。gap より前の未解決本文は保留のまま残し、空結果の後の本文は独立した列として判定します。空結果の後に別の ASR gap があれば、その直後の本文の先頭は再び未解決です。ライブ、確定・再試行、保存済みイベントの再読込で同じ規則を使います。
+確定処理・再試行・保存済みイベント readback の batch gap では、ASR gap の後に成功した空結果が保存された場合も、そこでテキスト列を区切ります。gap より前の未解決本文は保留のまま残し、空結果の後の本文は独立した列として判定します。空結果の後に別の ASR gap があれば、その直後の本文の先頭は再び未解決です。これは incremental live の待ち規則とは別です。
+
+`LiveContentPrioritySession.open` を同じ decision run IDs と reopen 済み ASR で明示呼出しすると、pending を含む durable boundary / assignment を再要求せず同じ incremental run を復元します。これは明示的な pending retry や新しい decision run の開始ではありません。
 
 区間の境界判定に失敗した場合は `clause_boundaries.pending` を記録し、フィラー・相槌除去範囲を推測しません。
 

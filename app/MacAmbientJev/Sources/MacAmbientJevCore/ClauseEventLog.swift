@@ -29,6 +29,9 @@ struct ClauseEventLog {
         let pendingSources: [SegmentTextReference]
         /// Sources unresolved because they touch a pending result, including the pending ones.
         let unresolvedSources: Set<SegmentTextReference>
+        let assembly: ClauseBoundaryAssembly
+        let composer: ClauseTextComposer
+        let unsavedClauses: [ClauseUnit]
     }
 
     struct PriorityRun {
@@ -406,7 +409,9 @@ struct ClauseEventLog {
         }
         let result = BoundaryRun(
             runID: runID, complete: run.completed, inputs: inputs, clauses: stored,
-            clauseTexts: texts, pendingSources: pending, unresolvedSources: unresolved
+            clauseTexts: texts, pendingSources: pending, unresolvedSources: unresolved,
+            assembly: run.completed ? finished : assembly, composer: composer,
+            unsavedClauses: Array(afterFinish.dropFirst(storedUnits.count))
         )
         validation.boundaries[runID] = result
         return result
