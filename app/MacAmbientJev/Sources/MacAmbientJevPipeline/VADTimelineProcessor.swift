@@ -43,6 +43,7 @@ public actor VADTimelineProcessor {
     private var undeliveredMicSpeechLevels: [MicLevelWindow] = []
     private var knownGaps: [AudioGapEvent] = []
     private var finished = false
+    public private(set) var consumedFrames: Int64 = 0
 
     /// Seconds of source audio read from the timeline per VAD step.
     static let sourceReadSeconds = 1.0
@@ -97,6 +98,7 @@ public actor VADTimelineProcessor {
         if pendingOffset < pending16k.count {
             let finalChunk = Array(pending16k[pendingOffset...])
             accept(try await engine.process16kChunk(finalChunk))
+            consumedFrames += Int64(finalChunk.count)
         }
 
         pending16k.removeAll(keepingCapacity: false)
@@ -115,6 +117,7 @@ public actor VADTimelineProcessor {
             let end = pendingOffset + engine.chunkSize
             let chunk = Array(pending16k[pendingOffset..<end])
             accept(try await engine.process16kChunk(chunk))
+            consumedFrames += Int64(engine.chunkSize)
             pendingOffset = end
         }
 

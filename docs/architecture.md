@@ -134,13 +134,17 @@ Core、Pipeline、EngineProtocol、EngineHost は Apple 専用 framework adapter
 
 ライブ / 確定処理は共有の `VADSegmentationState` を使い、発話範囲を最大14秒（必要時は静かな位置で分割）にし、span 最大30秒の外側 segment にまとめます。1 segment が1 ASR・1 transcript row の単位で、ASR はその `speechRanges` だけを順に連結して処理します。segment の最初の speech frame からの release 待ちは約31–32秒というケース依存の目安で、一般的な遅延上限ではありません。
 
+Pipeline の [`VADSession`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/VADSession.swift) は保存 reader に対する segmentation の durable owner で、[`VADTimelineProcessor`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/VADTimelineProcessor.swift) は無音を含む VAD の実消費 frame 数を公開します。Core の [`ASRSessionRecovery`](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASRSessionRecovery.swift) は events を一度だけ読む共通 recovery reader で、`asrRunID: nil` は segmentation-only です。
+未保存の出力 segment をすべて `segment.created` として保存した後にだけ 4096 frame 境界の progress を保存し、EOF では正確な frame 数を seal してから唯一の部分 chunk を flush し、全 tail segment を保存した後、保存済み全件数を `segmentation.completed` に記録します。未完了 run は sample 0 から再実行し、各 ordinal の ID・全 speech ranges が完全一致する prefix のみ再利用し、不一致は error にします。VAD / model state は保存せず、progress から seek しません。
+完了済み run は保存済み `segments` を使い、processor factory も VAD も呼びません。操作が返すのは新たに保存した tail だけで、全体は `segments` にあり、`VADSession` が `segment.created` を書くため consumer は別 writer 経路で再登録しません。保存詳細は [storage.md](storage.md#eventsjsonl) を参照してください。
+
 ライブ、確定処理、ファイル評価の ASR 区間実行は Core の [`PipelineCoordinator`](../app/MacAmbientJev/Sources/MacAmbientJevCore/PipelineCoordinator.swift) を共有します。`execute` は音声読取・認識・pacing・計測・結果保存を行い、保存後の callback でライブ行と件数を更新します。バッチ実行は ASR 段階を完了せず、保存音声は `run`、ライブは `LiveASRSession.finish` が完了を保存します。ライブ ASR のモデル準備も共有 `execute` 内で行い、成功する session では一度だけです。
 モデル準備・音声読取・文字起こしの最初の失敗は診断 `asr.failed` を保存した後に attempt を止め、以降の区間を処理せず、それ以前の成功は保持します。失敗区間は pending に残り、次の `open` で retry します。LiveASRSession はイベント保存に失敗すれば元の error を throw し、durable write 前に行・件数・status を更新しません。
 
 `LiveASRSession` は materialized 行の配列を保持し、snapshot と completion もこの配列を使います。`open` は durable events から指定された segmentation / ASR runs を復元し、`segment.created` の全 `speechRanges` と durable 登録時刻、成功した空結果を含む `asr.completed`、既存の `processing.run.started` を保持します。成功結果の重複は明示的な consistency error です。
 `process(reader:)` は任意の `TimelineAudioReading` を受け取り、登録済みで成功結果のない区間を start frame の古い順にすべて処理します。既登録 ID と run-start は重複保存しません。pending 件数は durable 登録 ID 数から `asr.completed` の成功 ID 数だけを引き、`asr.failed` は診断のみなので失敗区間も pending です。
 reopen は durable events から pending set を再導出し、成功区間を再処理せず、失敗区間は次の `open` 後に再試行します。行は ASR event の保存後または durable な発話文 event 適用時に更新し、保存に失敗した event は行・件数に反映しません。ASR 完了後は判定応答を待たず原文を表示し、assessment が未保存・保留・失敗なら原文のままです。ライブの境界判定 run と優先度 run は session 開始時に決まり、active run として扱います。
-`open` / `process(reader:)` は session worker の能力で、現行アプリの停止・recovery・CLI caller には接続されていません。既存の停止時 finalization routing は変わらず、オフライン materialization とアプリのライブキュー所有もこのキャッシュとは独立です。
+`VADSession.open` / `processAvailable` / `finish` と `LiveASRSession.open` / `process(reader:)` は session worker の能力で、現行アプリの停止・recovery・CLI caller には接続されていません。既存の停止時 finalization routing は変わらず、オフライン materialization とアプリのライブキュー所有もこのキャッシュとは独立です。
 
 ライブ ASR の結果は保存直後に原文で表示し、区間の順序と結果（空・失敗を含む）を `LiveContentPrioritySession` の独立キューへ渡します。キューは次区間の保存またはテキスト列の終端を待って区間ごとに境界を判定し、成功した assessment の保存後に限り F・B除去範囲を表示へ反映します。`ClauseBoundaryAssembly` で閉じた BTSJ 発話文を保存してから最大40発話文の batch で優先度を判定し、再試行待ちでない保存済み LOW slice を表示から除きます。境界・優先度の待機や失敗は ASR drain・原文表示へ伝播しません。録音停止ではテキスト列の終端をキューに伝え、確定処理は開始時点で保存済みのライブ判定を固定してからキューを取り消します。確定・再試行の優先度再利用では、比較する各 run 自身の保存済み F・B除去範囲をその run の発話文 parts に適用して区切りなしで連結し、UTF-8 byte 列が完全一致する場合だけ再利用します。ライブの F・B除去範囲を確定側・再試行側の原文へ移しません。[ライブ](live.md)・[発話文判定](decision-engine.md)
 

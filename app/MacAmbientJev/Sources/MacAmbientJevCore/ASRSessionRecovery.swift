@@ -16,8 +16,11 @@ public struct ASRSessionRecovery: Sendable {
     public let pendingSince: [String: Date]
     public let events: [TranscriptEvent]
     public let runStarted: Bool
+    public let consumedFrames: Int64
+    public let sealedFrames: Int64?
+    public let segmentationCompleted: Bool
 
-    public init(eventsURL: URL, sessionID: UUID, segmentationRunID: String, asrRunID: String) throws {
+    public init(eventsURL: URL, sessionID: UUID, segmentationRunID: String, asrRunID: String?) throws {
         let data = try SessionWriter.readDurableLog(eventsURL: eventsURL)
         let recovered = try SessionRecovery.recoverJSONL(data)
         let lines = try EventLogLine.decode(recovered.lines)
@@ -27,12 +30,57 @@ public struct ASRSessionRecovery: Sendable {
         var events: [TranscriptEvent] = []
         var successfulSegmentIDs: Set<String> = []
         var runStarted = false
+        var consumedFrames: Int64 = 0
+        var sealedFrames: Int64?
+        var segmentationCompleted = false
 
         for line in lines {
             switch line.header.eventType {
+            case "segmentation.progress", "segmentation.input.sealed", "segmentation.completed":
+                guard line.header.segmentationRunID == segmentationRunID else { continue }
+                guard line.header.sessionID == sessionID else {
+                    throw SegmentationConsistencyError.invalidRecord(eventSeq: line.header.eventSeq)
+                }
+                switch line.header.eventType {
+                case "segmentation.progress":
+                    let body: PayloadBody<SegmentationProgressPayload>
+                    do { body = try line.body(PayloadBody<SegmentationProgressPayload>.self) }
+                    catch { throw SegmentationConsistencyError.invalidRecord(eventSeq: line.header.eventSeq) }
+                    let cursor = body.payload.consumedFrames
+                    guard !segmentationCompleted, cursor >= 0, cursor.isMultiple(of: 4096), cursor > consumedFrames,
+                          sealedFrames.map({ cursor <= $0 }) ?? true else {
+                        throw SegmentationConsistencyError.invalidRecord(eventSeq: line.header.eventSeq)
+                    }
+                    consumedFrames = cursor
+                case "segmentation.input.sealed":
+                    let body: PayloadBody<SegmentationInputSealedPayload>
+                    do { body = try line.body(PayloadBody<SegmentationInputSealedPayload>.self) }
+                    catch { throw SegmentationConsistencyError.invalidRecord(eventSeq: line.header.eventSeq) }
+                    let count = body.payload.frameCount
+                    guard sealedFrames == nil, count >= 0, count >= consumedFrames,
+                          orderedSegments.allSatisfy({ $0.endFrame <= count }) else {
+                        throw SegmentationConsistencyError.invalidRecord(eventSeq: line.header.eventSeq)
+                    }
+                    sealedFrames = count
+                default:
+                    let body: PayloadBody<SegmentationCompletedPayload>
+                    do { body = try line.body(PayloadBody<SegmentationCompletedPayload>.self) }
+                    catch { throw SegmentationConsistencyError.invalidRecord(eventSeq: line.header.eventSeq) }
+                    let cursor = body.payload.consumedFrames
+                    guard !segmentationCompleted, sealedFrames == cursor, body.payload.segmentCount >= 0,
+                          body.payload.segmentCount == orderedSegments.count, cursor >= consumedFrames else {
+                        throw SegmentationConsistencyError.invalidRecord(eventSeq: line.header.eventSeq)
+                    }
+                    consumedFrames = cursor
+                    segmentationCompleted = true
+                }
+
             case "segment.created":
                 let selectedSegmentationRunID = try line.requiredSegmentationRunID()
                 guard selectedSegmentationRunID == segmentationRunID else { continue }
+                guard !segmentationCompleted else {
+                    throw SegmentationConsistencyError.invalidRecord(eventSeq: line.header.eventSeq)
+                }
                 guard line.header.sessionID == sessionID else { throw line.malformed }
                 let envelope: EventEnvelope<SegmentCreatedPayload>
                 do {
@@ -47,6 +95,9 @@ public struct ASRSessionRecovery: Sendable {
                       envelope.sourceStartFrame == firstRange.lowerBound,
                       envelope.sourceEndFrame == lastRange.upperBound,
                       segments[segmentID] == nil else { throw line.malformed }
+                guard sealedFrames.map({ lastRange.upperBound <= $0 }) ?? true else {
+                    throw SegmentationConsistencyError.invalidRecord(eventSeq: line.header.eventSeq)
+                }
 
                 let segment = SegmentReference(
                     segmentationRunID: segmentationRunID, segmentID: segmentID,
@@ -61,6 +112,7 @@ public struct ASRSessionRecovery: Sendable {
                 ))
 
             case "asr.completed":
+                guard let asrRunID else { continue }
                 let runID = try line.requiredRunID()
                 guard runID == asrRunID else { continue }
                 let selectedSegmentationRunID = try line.requiredSegmentationRunID()
@@ -79,6 +131,7 @@ public struct ASRSessionRecovery: Sendable {
                 ))
 
             case "processing.run.started":
+                guard let asrRunID else { continue }
                 let runID = try line.requiredRunID()
                 guard runID == asrRunID else { continue }
                 guard line.header.sessionID == sessionID else { throw line.malformed }
@@ -95,5 +148,8 @@ public struct ASRSessionRecovery: Sendable {
         self.pendingSince = pendingSince
         self.events = events
         self.runStarted = runStarted
+        self.consumedFrames = consumedFrames
+        self.sealedFrames = sealedFrames
+        self.segmentationCompleted = segmentationCompleted
     }
 }
