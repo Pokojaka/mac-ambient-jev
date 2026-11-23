@@ -274,7 +274,10 @@ private struct LiveDecisionFixture {
     let counter: DecisionUsageCounter
     let recorder = LiveRecorder()
 
-    init(texts: [String?], makeDecisions: @escaping NativeSessionProcessor.DecisionCoordinatorFactory, counter: DecisionUsageCounter) async throws {
+    init(
+        texts: [String?], makeDecisions: @escaping NativeSessionProcessor.DecisionCoordinatorFactory,
+        counter: DecisionUsageCounter, savedResults: Bool = false
+    ) async throws {
         root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let audio = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
@@ -283,19 +286,43 @@ private struct LiveDecisionFixture {
         checkpoint = await audio.committedSnapshot()
         let writer = try SessionWriter(sessionURL: root)
         let sessionID = UUID()
-        asr = LiveASRSession(
-            sessionID: sessionID, sessionURL: root, segmentationRunID: "live_seg", asrRunID: "live_asr",
-            processingDirectory: root, writer: writer, asr: ScriptedASR(texts), sampleRate: checkpoint.sampleRate,
-            clauseBoundaryRunID: "boundary_live", contentPriorityRunID: "priority_live"
-        )
-        priority = LiveContentPrioritySession(
-            sessionID: sessionID, boundaryRunID: "boundary_live", priorityRunID: "priority_live",
-            writer: writer, liveASR: asr, makeDecisions: makeDecisions, usageCounter: counter
-        )
         segments = texts.indices.map {
             SegmentReference(segmentationRunID: "live_seg", segmentID: "seg_\($0 + 1)",
                              speechRanges: [Int64($0 * 4_000)..<Int64($0 * 4_000 + 3_000)])
         }
+        let scriptedASR = ScriptedASR(texts)
+        if savedResults {
+            _ = try await writer.append(EventDraft(eventType: "processing.run.started", sessionID: sessionID,
+                processingRunID: "live_asr", payload: ProcessingRunStartedPayload(stage: .asr, provenance: scriptedASR.provenance)))
+            for segment in segments { _ = try await writer.append(.segmentCreated(sessionID: sessionID, segment: segment)) }
+            for (segment, text) in zip(segments, texts) {
+                if let text {
+                    _ = try await writer.append(EventDraft(eventType: "asr.completed", sessionID: sessionID,
+                        processingRunID: "live_asr", segmentationRunID: "live_seg", segmentID: segment.segmentID,
+                        sourceStartFrame: segment.startFrame, sourceEndFrame: segment.endFrame,
+                        payload: ASRCompletedEventPayload(text: text, detectedLanguage: "ja", provenance: scriptedASR.provenance)))
+                } else {
+                    _ = try await writer.append(EventDraft(eventType: "asr.failed", sessionID: sessionID,
+                        processingRunID: "live_asr", segmentationRunID: "live_seg", segmentID: segment.segmentID,
+                        sourceStartFrame: segment.startFrame, sourceEndFrame: segment.endFrame,
+                        payload: ASRFailedEventPayload(kind: .transcriptionFailed, message: "test failure")))
+                }
+            }
+            asr = try await LiveASRSession.open(
+                sessionID: sessionID, sessionURL: root, segmentationRunID: "live_seg", asrRunID: "live_asr",
+                processingDirectory: root, writer: writer, asr: scriptedASR, sampleRate: checkpoint.sampleRate,
+                clauseBoundaryRunID: "boundary_live", contentPriorityRunID: "priority_live")
+        } else {
+            asr = LiveASRSession(
+                sessionID: sessionID, sessionURL: root, segmentationRunID: "live_seg", asrRunID: "live_asr",
+                processingDirectory: root, writer: writer, asr: scriptedASR, sampleRate: checkpoint.sampleRate,
+                clauseBoundaryRunID: "boundary_live", contentPriorityRunID: "priority_live"
+            )
+        }
+        priority = LiveContentPrioritySession(
+            sessionID: sessionID, boundaryRunID: "boundary_live", priorityRunID: "priority_live",
+            writer: writer, liveASR: asr, makeDecisions: makeDecisions, usageCounter: counter
+        )
         self.counter = counter
     }
 
@@ -323,6 +350,18 @@ private struct LiveDecisionFixture {
                 }
             }
         }
+    }
+
+    func enqueueSavedResults() async throws {
+        let snapshot = await asr.snapshot()
+        await recorder.record(snapshot.progress.materializedSegments)
+        for status in snapshot.segments {
+            guard case .recognized(let source, _) = status.outcome else { continue }
+            try await priority.enqueue(source: source, snapshot: snapshot,
+                onStatus: { await recorder.record(status: $0) },
+                onUpdate: { await recorder.record($0.progress.materializedSegments) })
+        }
+        try await priority.finishInput(snapshot: snapshot)
     }
 
     func eventLog() async throws -> Data {
@@ -572,22 +611,55 @@ func failedTaggerLoadKeepsLiveRowsUnsplitAndPendingWithoutRequests() async throw
     await fixture.priority.worker?.value
 }
 
+@Test(.timeLimit(.minutes(10)), arguments: [false, true])
+func failedASRStopsBeforeLaterDecisionRequests(leadingFailure: Bool) async throws {
+    let provider = LiveProvider(continuing: [], fillerRanges: [])
+    let counter = DecisionUsageCounter()
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    let texts: [String?] = leadingFailure ? [nil, "後の本文"] : ["前の本文", nil, "後の本文"]
+    let fixture = try await LiveDecisionFixture(texts: texts, makeDecisions: { decisions }, counter: counter)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    for index in fixture.segments.indices { try await fixture.recognize(index) }
+    try await fixture.priority.finishInput(snapshot: await fixture.asr.snapshot())
+    let log = try await fixture.eventLog()
+    let snapshot = await fixture.asr.snapshot()
+    let objects = try fixture.eventObjects(from: log)
+
+    #expect(snapshot.progress.materializedSegments.map(\.text) == (leadingFailure ? [] : ["前の本文"]))
+    #expect(snapshot.progress.materializedSegments.map(\.clauseState) == (leadingFailure ? [] : [.boundaryPending]))
+    #expect(snapshot.progress.completedCount == (leadingFailure ? 0 : 1))
+    #expect(snapshot.progress.failedCount == 1)
+    #expect(snapshot.progress.pendingCount == 2)
+    #expect(await provider.boundaryRequests.isEmpty)
+    #expect(await provider.priorityRequests.isEmpty)
+
+    let failedIDs = objects.filter { $0["event_type"] as? String == "asr.failed" }
+        .compactMap { $0["segment_id"] as? String }
+    #expect(failedIDs == [leadingFailure ? "seg_1" : "seg_2"])
+    let completedIDs = objects.filter { $0["event_type"] as? String == "asr.completed" }
+        .compactMap { $0["segment_id"] as? String }
+    #expect(completedIDs == (leadingFailure ? [] : ["seg_1"]))
+    let reasons = objects.filter { $0["event_type"] as? String == "clause_boundaries.pending" }
+        .compactMap { ($0["payload"] as? [String: Any])?["reason"] as? String }
+    #expect(reasons == (leadingFailure ? [] : ["asr_gap"]))
+}
+
+// Decision tests consume durable missing-result snapshots independently of fail-fast ASR execution.
 @Test(.timeLimit(.minutes(10)))
 func failedASRLeavesThePrecedingSegmentPendingAndTheNextHeadUnresolved() async throws {
     let provider = LiveProvider(continuing: [], fillerRanges: [])
     let counter = DecisionUsageCounter()
     let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
-    let fixture = try await LiveDecisionFixture(texts: ["前の区間", nil, "後の頭。独立"], makeDecisions: { decisions }, counter: counter)
+    let fixture = try await LiveDecisionFixture(texts: ["前の区間", nil, "後の頭。独立"], makeDecisions: { decisions }, counter: counter, savedResults: true)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
 
-    try await fixture.recognize(0)
-    try await fixture.recognize(1)
-    try await fixture.recognize(2)
-    try await fixture.priority.finishInput(snapshot: await fixture.asr.snapshot())
+    try await fixture.enqueueSavedResults()
     try await fixture.recorder.wait { $0.map(\.clauseState) == [.boundaryPending, .boundaryPending] }
 
     // The gap is not bridged: no request carries text across it.
     #expect(await provider.boundaryRequests.map(\.source.segmentID) == ["seg_3"])
+    #expect(await provider.boundaryRequests.map { $0.next?.text } == [nil])
     let log = try await fixture.eventLog()
     let objects = try fixture.eventObjects(from: log)
     let reasons = objects.filter { $0["event_type"] as? String == "clause_boundaries.pending" }
@@ -658,11 +730,10 @@ func emptySuccessfulASRSeparatesAnUnresolvedGapFromLaterText(missingAfterSeparat
     let texts: [String?] = missingAfterSeparator
         ? ["欠落の前", nil, "", nil, "独立した後"]
         : ["欠落の前", nil, "", "独立した後"]
-    let fixture = try await LiveDecisionFixture(texts: texts, makeDecisions: { decisions }, counter: counter)
+    let fixture = try await LiveDecisionFixture(texts: texts, makeDecisions: { decisions }, counter: counter, savedResults: true)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
 
-    for index in fixture.segments.indices { try await fixture.recognize(index) }
-    try await fixture.priority.finishInput(snapshot: await fixture.asr.snapshot())
+    try await fixture.enqueueSavedResults()
     try await fixture.recorder.wait {
         $0.filter(\.hasRecognizedText).map(\.clauseState)
             == [.boundaryPending, missingAfterSeparator ? .boundaryPending : .classified]
@@ -725,11 +796,10 @@ func leadingASRFailureDoesNotInventTheNextHeadAsAnIndependentClause() async thro
     let provider = LiveProvider(continuing: [], fillerRanges: [])
     let counter = DecisionUsageCounter()
     let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
-    let fixture = try await LiveDecisionFixture(texts: [nil, "欠落後の頭。独立"], makeDecisions: { decisions }, counter: counter)
+    let fixture = try await LiveDecisionFixture(texts: [nil, "欠落後の頭。独立"], makeDecisions: { decisions }, counter: counter, savedResults: true)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
 
-    for index in fixture.segments.indices { try await fixture.recognize(index) }
-    try await fixture.priority.finishInput(snapshot: await fixture.asr.snapshot())
+    try await fixture.enqueueSavedResults()
     try await provider.waitForPriorities(1)
     try await fixture.recorder.wait { rows in
         rows.first?.clauseState == .boundaryPending && rows.first?.clauseSlices.first?.priority == .primary

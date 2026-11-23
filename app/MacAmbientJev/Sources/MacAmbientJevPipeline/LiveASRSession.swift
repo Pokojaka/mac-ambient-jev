@@ -111,7 +111,7 @@ public actor LiveASRSession {
     private var transcriptEvents: [TranscriptEvent] = []
     private var segmentStatuses: [LiveASRSegmentStatus] = []
     private var segmentStatusIndex: [String: Int] = [:]
-    private var registeredSegmentIDs: Set<String> = []
+    private var registeredSegments: [String: SegmentReference] = [:]
     private var registeringSegmentIDs: Set<String> = []
     private var pendingSince: [String: Date] = [:]
     private var finishedSegmentIDs: Set<String> = []
@@ -119,6 +119,8 @@ public actor LiveASRSession {
     private var failedCount = 0
     private var prepared = false
     private var runStarted = false
+    private var attemptFailed = false
+    private var processing = false
     private var startingRun = false
     private var runStartWaiters: [CheckedContinuation<Void, any Error>] = []
     private var finalized = false
@@ -156,6 +158,65 @@ public actor LiveASRSession {
         )
     }
 
+    public static func open(
+        sessionID: UUID,
+        sessionURL: URL,
+        segmentationRunID: String,
+        asrRunID: String,
+        processingDirectory: URL,
+        writer: any SessionEventAppending,
+        asr: any ASREngine,
+        sampleRate: Double,
+        clauseBoundaryRunID: String?,
+        contentPriorityRunID: String?
+    ) async throws -> LiveASRSession {
+        let recovery = try ASRSessionRecovery(
+            eventsURL: sessionURL.appending(path: "events.jsonl"),
+            sessionID: sessionID,
+            segmentationRunID: segmentationRunID,
+            asrRunID: asrRunID
+        )
+        let session = LiveASRSession(
+            sessionID: sessionID,
+            sessionURL: sessionURL,
+            segmentationRunID: segmentationRunID,
+            asrRunID: asrRunID,
+            processingDirectory: processingDirectory,
+            writer: writer,
+            asr: asr,
+            sampleRate: sampleRate,
+            clauseBoundaryRunID: clauseBoundaryRunID,
+            contentPriorityRunID: contentPriorityRunID
+        )
+        try await session.hydrate(recovery)
+        return session
+    }
+
+    private func hydrate(_ recovery: ASRSessionRecovery) throws {
+        registeredSegments = Dictionary(uniqueKeysWithValues: recovery.segments.map { ($0.segmentID, $0) })
+        pendingSince = recovery.pendingSince
+        for segment in recovery.segments {
+            setStatus(LiveASRSegmentStatus(segmentID: segment.segmentID, startFrame: segment.startFrame, outcome: .pending))
+        }
+        runStarted = recovery.runStarted
+
+        for event in recovery.events {
+            switch event.kind {
+            case .segmentCreated:
+                try materializer.appendSourceEvent(event)
+                transcriptEvents.append(event)
+            case .asrCompleted:
+                guard let segmentID = event.segmentID,
+                      let segment = registeredSegments[segmentID] else {
+                    throw TranscriptMaterializationError.missingClauseSource
+                }
+                _ = try applyPersistedSegment(segment, event: event)
+            default:
+                throw TranscriptMaterializationError.missingClauseSource
+            }
+        }
+    }
+
     /// Durably registers newly detected speech before it enters the ASR queue.
     @discardableResult
     public func register(
@@ -176,7 +237,7 @@ public actor LiveASRSession {
         try Task.checkCancellation()
 
         for segment in segments
-        where !registeredSegmentIDs.contains(segment.segmentID)
+        where registeredSegments[segment.segmentID] == nil
             && !registeringSegmentIDs.contains(segment.segmentID) {
             try Task.checkCancellation()
             guard !finalized else { break }
@@ -193,7 +254,7 @@ public actor LiveASRSession {
             )
             try materializer.appendSourceEvent(event)
             transcriptEvents.append(event)
-            registeredSegmentIDs.insert(segment.segmentID)
+            registeredSegments[segment.segmentID] = segment
             pendingSince[segment.segmentID] = created.createdAt
             setStatus(LiveASRSegmentStatus(segmentID: segment.segmentID, startFrame: segment.startFrame, outcome: .pending))
         }
@@ -206,48 +267,49 @@ public actor LiveASRSession {
         onSegmentFinished: (@Sendable (LiveASRSegmentStatus, LiveASRSnapshot) async -> Void)? = nil
     ) async throws -> LiveASRProgress {
         try Task.checkCancellation()
-        guard !finalized else {
-            return currentProgress()
-        }
+        guard !finalized else { return currentProgress() }
+        let reader = try ProcessingTimelineReader(
+            directory: processingDirectory,
+            checkpoint: checkpoint,
+            sessionURL: sessionURL
+        )
+        return try await process(segments: segments, reader: reader, onSegmentFinished: onSegmentFinished)
+    }
+
+    @discardableResult
+    public func process(
+        segments: [SegmentReference] = [],
+        reader: any TimelineAudioReading,
+        onSegmentFinished: (@Sendable (LiveASRSegmentStatus, LiveASRSnapshot) async -> Void)? = nil
+    ) async throws -> LiveASRProgress {
+        try Task.checkCancellation()
+        guard !finalized else { return currentProgress() }
         beginWork()
         defer { endWork() }
 
         try await registerPendingSegments(segments)
         try Task.checkCancellation()
-        guard !finalized else {
-            return currentProgress()
-        }
+        guard !finalized, !attemptFailed, !processing else { return currentProgress() }
 
-        let pendingSegments = segments.filter { segment in
-            registeredSegmentIDs.contains(segment.segmentID)
-                && !finishedSegmentIDs.contains(segment.segmentID)
+        let pendingSegments = segmentStatuses.compactMap { status in
+            finishedSegmentIDs.contains(status.segmentID) ? nil : registeredSegments[status.segmentID]
         }
-        guard !pendingSegments.isEmpty else {
-            return currentProgress()
-        }
+        guard !pendingSegments.isEmpty else { return currentProgress() }
+
+        processing = true
+        defer { processing = false }
 
         try await ensureRunStarted()
+        try Task.checkCancellation()
+        guard !finalized, !attemptFailed else { return currentProgress() }
 
-        if !prepared {
-            try await asr.prepare()
-            try Task.checkCancellation()
-            prepared = true
-        }
-
-        let loader = ASRAudioLoader(
-            reader: try ProcessingTimelineReader(
-                directory: processingDirectory,
-                checkpoint: checkpoint,
-                sessionURL: sessionURL
-            )
-        )
         let coordinator = PipelineCoordinator(
             sessionID: sessionID,
             segmentationRunID: segmentationRunID,
             asrRunID: asrRunID,
             writer: writer,
             asr: asr,
-            loader: loader,
+            loader: ASRAudioLoader(reader: reader),
             pacingMode: .normal,
             sleep: { try await Task.sleep(for: $0) },
             shouldPause: { nil }
@@ -257,7 +319,7 @@ public actor LiveASRSession {
                 segments: pendingSegments,
                 pendingSince: pendingSince,
                 existingEvents: [],
-                prepareModel: false,
+                prepareModel: !prepared,
                 stopOnPersistenceFailure: true,
                 shouldContinue: { await self.canExecuteSegment() },
                 onSegmentPersisted: { segment, event in
@@ -266,6 +328,7 @@ public actor LiveASRSession {
                     await onSegmentFinished?(status, currentSnapshot)
                 }
             )
+            if !attemptFailed { prepared = true }
         } catch is ASRRunCancellation {
             throw CancellationError()
         }
@@ -401,7 +464,7 @@ public actor LiveASRSession {
     }
 
     private func canExecuteSegment() -> Bool {
-        !finalized
+        !finalized && !attemptFailed
     }
 
     private func applyPersistedSegment(
@@ -425,7 +488,7 @@ public actor LiveASRSession {
             )
         } else {
             failedCount += 1
-            finishedSegmentIDs.insert(segment.segmentID)
+            attemptFailed = true
             status = LiveASRSegmentStatus(
                 segmentID: segment.segmentID,
                 startFrame: segment.startFrame,
@@ -472,9 +535,9 @@ public actor LiveASRSession {
         }
     }
 
-    // Finished IDs are a subset of durably registered IDs, including failed ASR.
+    // Successfully completed IDs are a subset of durably registered IDs.
     private var currentPendingCount: Int {
-        registeredSegmentIDs.count - finishedSegmentIDs.count
+        registeredSegments.count - finishedSegmentIDs.count
     }
 
 

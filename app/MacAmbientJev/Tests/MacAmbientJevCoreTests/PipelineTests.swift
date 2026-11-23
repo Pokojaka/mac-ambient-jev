@@ -339,22 +339,27 @@ private func asrEventPayloads(in root: URL) throws -> [String: [String: Any]] {
     return payloads
 }
 
-@Test
-func asrEventsPersistRecognitionOutcomeAndFailureKind() async throws {
+@Test(arguments: [ASRFailureKind.transcriptionFailed, .audioUnreadable])
+func asrEventsPersistRecognitionOutcomeAndFailureKind(
+    _ firstFailureKind: ASRFailureKind
+) async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let processing = root.appending(path: "audio/processing")
     let audioWriter = try DurableAudioWriter(directory: processing, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate, sessionURL: root)
-    try await audioWriter.append(samples: Array(repeating: 0.25, count: 30))
+    try await audioWriter.append(samples: Array(repeating: 0.25, count: 40))
     let checkpoint = try await audioWriter.finish()
+    if firstFailureKind == .audioUnreadable {
+        try FileManager.default.removeItem(at: processing.appending(path: "chunk-000002.f32le"))
+    }
     let coordinator = try makeCoordinator(
         root: root, processing: processing, checkpoint: checkpoint,
-        asr: ScriptedPipelineASR(results: ["話した内容", " \n", nil], prepareFails: false),
+        asr: ScriptedPipelineASR(results: ["話した内容", " \n", nil, "後続区間は処理されない"], prepareFails: false),
         pacingMode: .normal, sleep: noSleep, shouldPause: neverPause
     )
 
     let input = segments([
-        ("spoken", 0, 10), ("silent", 10, 20), ("failed", 20, 30), ("unreadable", 20, 40)
+        ("spoken", 0, 10), ("silent", 10, 20), ("firstFailure", 20, 30), ("later", 30, 40)
     ])
     let result = try await coordinator.run(segments: input, pendingSince: pendingNow(input), existingEvents: [])
 
@@ -363,12 +368,12 @@ func asrEventsPersistRecognitionOutcomeAndFailureKind() async throws {
         Issue.record("failed segments must fail the run")
         return
     }
-    #expect(failure.failureCounts == [.transcriptionFailed: 1, .audioUnreadable: 1])
+    #expect(failure.failureCounts == [firstFailureKind: 1])
     let payloads = try asrEventPayloads(in: root)
     #expect(payloads["spoken"]?["outcome"] as? String == "recognized")
     #expect(payloads["silent"]?["outcome"] as? String == "empty")
-    #expect(payloads["failed"]?["kind"] as? String == "transcription_failed")
-    #expect(payloads["unreadable"]?["kind"] as? String == "audio_unreadable")
+    #expect(payloads["firstFailure"]?["kind"] as? String == firstFailureKind.rawValue)
+    #expect(payloads["later"] == nil)
 }
 
 @Test
@@ -385,7 +390,7 @@ func asrPreparationFailureIsPersistedAsEngineUnavailable() async throws {
         pacingMode: .normal, sleep: noSleep, shouldPause: neverPause
     )
 
-    let input = segments([("s1", 0, 10)])
+    let input = segments([("s1", 0, 10), ("s2", 10, 20)])
     let result = try await coordinator.run(segments: input, pendingSince: pendingNow(input), existingEvents: [])
 
     #expect(result.disposition == .failed(ASRRunFailure(
@@ -394,7 +399,9 @@ func asrPreparationFailureIsPersistedAsEngineUnavailable() async throws {
         firstRecognitionMessage: PipelineTestError.failed.localizedDescription,
         persistenceFailure: nil
     )))
-    #expect(try asrEventPayloads(in: root)["s1"]?["kind"] as? String == "engine_unavailable")
+    let payloads = try asrEventPayloads(in: root)
+    #expect(payloads["s1"]?["kind"] as? String == "engine_unavailable")
+    #expect(payloads["s2"] == nil)
 }
 
 @Test
