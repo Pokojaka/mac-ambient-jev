@@ -130,6 +130,25 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
+      - name: Select the pinned ClauseTagger model
+        id: clause-tagger
+        run: |
+          python3 - <<'PY'
+          import os
+          import sys
+          sys.path.insert(0, 'scripts')
+          import fetch_clause_tagger as tagger
+
+          manifest = tagger.load_manifest('coreml')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'commit={manifest.source.commit}\n')
+          PY
+      - name: Restore ClauseTagger CoreML cache
+        id: clause-tagger-model
+        uses: actions/cache/restore@v4
+        with:
+          path: .build/clause-tagger/${{ steps.clause-tagger.outputs.commit }}
+          key: clause-tagger-coreml-${{ steps.clause-tagger.outputs.commit }}
       - name: Swift toolchain fingerprint
         id: toolchain
         run: |
@@ -201,6 +220,12 @@ jobs:
         run: python3 -B scripts/fetch_onnxruntime.py
       - name: Verify V1 app
         run: bash scripts/verify_v1_app.sh
+      - name: Save ClauseTagger CoreML cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.clause-tagger-model.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .build/clause-tagger/${{ steps.clause-tagger.outputs.commit }}
+          key: ${{ steps.clause-tagger-model.outputs.cache-primary-key }}
       - name: Save ONNX Runtime SDK cache
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.onnxruntime-sdk.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4

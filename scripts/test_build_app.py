@@ -63,6 +63,67 @@ class BuildAppTests(unittest.TestCase):
             python_calls.index(f"-B {environment['EXPECTED_FETCHER']} --format coreml"),
         )
         self.assertTrue((root / "swift.log").is_file())
+        sdk_lib_dir = root / ".build/onnxruntime/1.31.0/osx-arm64/lib"
+        sdk_dylib = sdk_lib_dir / "libonnxruntime.1.dylib"
+        bundled_dylib = root / ".build/MacAmbientJev.app/Contents/Frameworks/libonnxruntime.1.dylib"
+        self.assertEqual(bundled_dylib.read_bytes(), b"fake ONNX Runtime dylibsigned")
+        self.assertEqual(sdk_dylib.read_bytes(), b"fake ONNX Runtime dylib")
+        self.assertEqual(
+            (root / ".build/MacAmbientJev.app/Contents/Resources/onnxruntime/LICENSE").read_bytes(),
+            b"fake ONNX Runtime license\n",
+        )
+        self.assertEqual(
+            (root / ".build/MacAmbientJev.app/Contents/Resources/onnxruntime/ThirdPartyNotices.txt").read_bytes(),
+            b"fake third-party notices\n",
+        )
+        self.assertEqual(
+            (root / "install_name_tool.log").read_text(),
+            f"call\n<-delete_rpath>\n<{sdk_lib_dir}>\n<{root / '.build/MacAmbientJev.app/Contents/MacOS/MacAmbientJev'}>\n---\n",
+        )
+        identity = "MacAmbientJev Local Signing"
+        app = root / ".build/MacAmbientJev.app"
+        self.assertEqual(
+            (root / "codesign.log").read_text(),
+            "\n".join(
+                (
+                    "<--force>",
+                    "<--sign>",
+                    f"<{identity}>",
+                    f"<{bundled_dylib}>",
+                    "---",
+                    "<--force>",
+                    "<--sign>",
+                    f"<{identity}>",
+                    "<--entitlements>",
+                    f"<{root / 'app/MacAmbientJev/Entitlements/MacAmbientJev.entitlements'}>",
+                    f"<{app}>",
+                    "---",
+                    "",
+                )
+            ),
+        )
+
+    def test_runtime_linkage_failures_stop_before_signing(self) -> None:
+        cases = (
+            ("install_name_tool_failure", "install_name_tool: SDK rpath not found"),
+            ("missing_ort_dependency", "App is missing dependency @rpath/libonnxruntime.1.dylib"),
+            ("wrong_ort_dependency", "App is missing dependency @rpath/libonnxruntime.1.dylib"),
+            ("missing_framework_rpath", "App is missing rpath @executable_path/../Frameworks"),
+            ("wrong_framework_rpath", "App is missing rpath @executable_path/../Frameworks"),
+            ("repository_local_rpath", "App contains repository-local runtime path:"),
+        )
+        for scenario, diagnostic in cases:
+            with self.subTest(scenario=scenario):
+                root, environment = self.make_fake_repository()
+                environment["OTOOL_SCENARIO"] = scenario
+                if scenario == "install_name_tool_failure":
+                    environment["INSTALL_NAME_STATUS"] = "1"
+
+                result = self.run_build(root, environment)
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(diagnostic, result.stderr)
+                self.assertFalse((root / "codesign.log").exists())
 
     def test_invalid_fetch_results_stop_before_swift_and_publication(self) -> None:
         cases = (
@@ -116,21 +177,27 @@ class BuildAppTests(unittest.TestCase):
     def make_fake_repository(self) -> tuple[Path, dict[str, str]]:
         temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
-        root = Path(temporary_directory.name) / "repo"
+        root = Path(temporary_directory.name) / "repo with spaces"
         scripts = root / "scripts"
         package = root / "app/MacAmbientJev"
         stub_bin = root / "stub-bin"
         fake_bin = root / "fake-bin"
         tagger_directory = root / "fetched/clause-tagger"
+        sdk_lib_directory = root / ".build/onnxruntime/1.31.0/osx-arm64/lib"
         scripts.mkdir(parents=True)
         (package / "Assets").mkdir(parents=True)
         (package / "Entitlements").mkdir(parents=True)
+        sdk_lib_directory.mkdir(parents=True)
         stub_bin.mkdir()
         (fake_bin / "MacAmbientJev_MacAmbientJevRuntime.bundle/Contents/Resources/Resources").mkdir(parents=True)
         tagger_directory.mkdir(parents=True)
         shutil.copy2(BUILD_SCRIPT, scripts / "build_app.sh")
         shutil.copy2(INFO_PLIST_SCRIPT, scripts / "app_info_plist.sh")
         (package / "Assets/AppIcon.png").write_bytes(b"fake icon")
+        (sdk_lib_directory / "libonnxruntime.1.dylib").write_bytes(b"fake ONNX Runtime dylib")
+        sdk_root = sdk_lib_directory.parent
+        (sdk_root / "LICENSE").write_bytes(b"fake ONNX Runtime license\n")
+        (sdk_root / "ThirdPartyNotices.txt").write_bytes(b"fake third-party notices\n")
         (fake_bin / "MacAmbientJev").write_bytes(b"fake executable")
         (fake_bin / "MacAmbientJev_MacAmbientJevRuntime.bundle/Contents/Resources/Resources/fluid_vad_model.json").write_bytes(b"fake model")
         (tagger_directory / "ClauseTagger.mlpackage").mkdir()
@@ -178,8 +245,62 @@ fi
             "security": '''#!/bin/bash
 exit 0
 ''',
+            "install_name_tool": '''#!/bin/bash
+printf 'call\\n' >> "$INSTALL_NAME_LOG"
+printf '<%s>\\n' "$@" >> "$INSTALL_NAME_LOG"
+printf '%s\\n' '---' >> "$INSTALL_NAME_LOG"
+if [[ "$INSTALL_NAME_STATUS" != "0" ]]; then
+  echo "install_name_tool: SDK rpath not found" >&2
+  exit "$INSTALL_NAME_STATUS"
+fi
+''',
+            "otool": '''#!/bin/bash
+case "$1" in
+  -L)
+    printf '%s\\n' "/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1.0.0)"
+    case "$OTOOL_SCENARIO" in
+      missing_ort_dependency) ;;
+      wrong_ort_dependency) printf '%s\\n' "@rpath/libonnxruntime.wrong.dylib (compatibility version 1.0.0, current version 1.0.0)" ;;
+      success|missing_framework_rpath|wrong_framework_rpath|repository_local_rpath) printf '%s\\n' "@rpath/libonnxruntime.1.dylib (compatibility version 1.0.0, current version 1.0.0)" ;;
+      *) echo "unexpected otool scenario: $OTOOL_SCENARIO" >&2; exit 2 ;;
+    esac
+    ;;
+  -l)
+    printf '%s\\n' \
+      'Load command 0' \
+      '          cmd LC_RPATH' \
+      '      cmdsize 40' \
+      '         path /usr/lib/swift (offset 12)' \
+      'Load command 1' \
+      '          cmd LC_RPATH' \
+      '      cmdsize 40' \
+      '         path @loader_path (offset 12)' \
+      'Load command 2' \
+      '          cmd LC_RPATH' \
+      '      cmdsize 96' \
+      '         path /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx (offset 12)'
+    case "$OTOOL_SCENARIO" in
+      missing_framework_rpath) ;;
+      wrong_framework_rpath) printf '%s\\n' 'Load command 3' '          cmd LC_RPATH' '      cmdsize 56' '         path @executable_path/../WrongFrameworks (offset 12)' ;;
+      success|repository_local_rpath) printf '%s\\n' 'Load command 3' '          cmd LC_RPATH' '      cmdsize 56' '         path @executable_path/../Frameworks (offset 12)' ;;
+      *) echo "unexpected otool scenario: $OTOOL_SCENARIO" >&2; exit 2 ;;
+    esac
+    if [[ "$OTOOL_SCENARIO" == "repository_local_rpath" ]]; then
+      printf 'Load command 4\\n          cmd LC_RPATH\\n      cmdsize 80\\n         path %s (offset 12)\\n' "$REPOSITORY_LOCAL_RPATH"
+    fi
+    ;;
+  *)
+    echo "unexpected otool arguments: $*" >&2
+    exit 2
+    ;;
+esac
+''',
             "codesign": '''#!/bin/bash
-exit 0
+printf '<%s>\\n' "$@" >> "$CODESIGN_LOG"
+printf '%s\\n' '---' >> "$CODESIGN_LOG"
+if [[ "$4" == "$EXPECTED_BUNDLED_DYLIB" ]]; then
+  printf 'signed' >> "$EXPECTED_BUNDLED_DYLIB"
+fi
 ''',
         }
         for name, contents in stubs.items():
@@ -200,6 +321,12 @@ exit 0
                 "TAGGER_DIRECTORY": str(tagger_directory),
                 "SWIFT_LOG": str(root / "swift.log"),
                 "FAKE_BIN": str(fake_bin),
+                "INSTALL_NAME_LOG": str(root / "install_name_tool.log"),
+                "INSTALL_NAME_STATUS": "0",
+                "OTOOL_SCENARIO": "success",
+                "REPOSITORY_LOCAL_RPATH": str(root / ".build/repository-local-runtime"),
+                "EXPECTED_BUNDLED_DYLIB": str(root / ".build/MacAmbientJev.app/Contents/Frameworks/libonnxruntime.1.dylib"),
+                "CODESIGN_LOG": str(root / "codesign.log"),
             }
         )
         return root, environment
