@@ -320,25 +320,120 @@ public struct EventLogTranscriptReader: Sendable {
         return events.sorted { $0.eventSeq < $1.eventSeq }
     }
 
-    static func clauseEvents(boundary: ClauseEventLog.BoundaryRun, priority: ClauseEventLog.PriorityRun) -> [TranscriptEvent] {
+    static func clauseEvents(boundary: ClauseEventLog.BoundaryRun?, priority: ClauseEventLog.PriorityRun?) -> [TranscriptEvent] {
         var events: [TranscriptEvent] = []
-        for (seq, input) in boundary.inputs {
-            switch input.state {
-            case .assessed(let assessment):
-                events.append(.clause(seq: seq, runID: boundary.runID, kind: .clauseBoundaryAssessed(assessment)))
-            case .pending(let reason, let message):
-                events.append(.clause(seq: seq, runID: boundary.runID, kind: .clauseBoundaryPending(
-                    ClauseBoundaryPendingPayload(source: input.source, reason: reason, message: message)
-                )))
+        if let boundary {
+            for (seq, input) in boundary.inputs {
+                switch input.state {
+                case .assessed(let assessment):
+                    events.append(.clause(seq: seq, runID: boundary.runID, kind: .clauseBoundaryAssessed(assessment)))
+                case .pending(let reason, let message):
+                    events.append(.clause(seq: seq, runID: boundary.runID, kind: .clauseBoundaryPending(
+                        ClauseBoundaryPendingPayload(source: input.source, reason: reason, message: message)
+                    )))
+                }
+            }
+            for (seq, unit) in boundary.clauses {
+                events.append(.clause(seq: seq, runID: boundary.runID, kind: .clauseClosed(unit)))
             }
         }
-        for (seq, unit) in boundary.clauses {
-            events.append(.clause(seq: seq, runID: boundary.runID, kind: .clauseClosed(unit)))
-        }
-        for (seq, payload) in priority.events {
-            events.append(.clause(seq: seq, runID: priority.runID, kind: .contentPriorityAssigned(payload)))
+        if let priority {
+            for (seq, payload) in priority.events {
+                events.append(.clause(seq: seq, runID: priority.runID, kind: .contentPriorityAssigned(payload)))
+            }
         }
         return events
+    }
+}
+
+/// Reconstructs one explicitly selected incremental decision session from its durable event log.
+public struct DecisionSessionRecovery: Sendable {
+    public let events: [TranscriptEvent], handledSources: [SegmentTextReference]
+    public let assembly: ClauseBoundaryAssembly, composer: ClauseTextComposer
+    public let unsavedClauses: [ClauseUnit], unassignedClauses: [ClauseUnit]
+    public let startedRuns: Set<ProcessingStage>, completedRuns: Set<ProcessingStage>
+    public let boundaryCounts: (assessed: Int, pending: Int), priorityCounts: (classified: Int, pending: Int)
+    public let pendingTargets: Set<DecisionPendingTarget>
+
+    public init(eventsURL: URL, sessionID: UUID, segmentationRunID: String, asrRunID: String, boundaryRunID: String,
+                priorityRunID: String) throws {
+        guard boundaryRunID != priorityRunID, boundaryRunID != segmentationRunID,
+              boundaryRunID != asrRunID, priorityRunID != segmentationRunID, priorityRunID != asrRunID else {
+            throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: boundaryRunID, reason: "判定 run ID が他の run ID と重複しています")
+        }
+        let lines = try EventLogLine.decode(SessionRecovery.recoverJSONL(SessionWriter.readDurableLog(eventsURL: eventsURL)).lines)
+        let log = try ClauseEventLog(lines: lines, selectedRuns: [segmentationRunID, asrRunID, boundaryRunID, priorityRunID], sessionID: sessionID)
+        for (id, stage) in [(boundaryRunID, ProcessingStage.clauseBoundary), (priorityRunID, .contentPriority)] where log.runs[id] != nil {
+            guard let run = log.runs[id], run.stage == stage, run.mode == "live" else {
+                throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: id, reason: "選択した判定 run の段階または mode が一致しません")
+            }
+        }
+        for line in lines where [ClauseEventType.boundaryAssessed, ClauseEventType.boundaryPending,
+                                 ClauseEventType.clauseClosed, ClauseEventType.priorityAssigned].contains(line.header.eventType) {
+            guard let id = line.header.processingRunID, id == boundaryRunID || id == priorityRunID else { continue }
+            let boundaryType = line.header.eventType != ClauseEventType.priorityAssigned
+            guard (id == boundaryRunID) == boundaryType, log.runs[id] != nil else {
+                throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: id, reason: "判定イベントに対応する run の開始記録または event type が一致しません")
+            }
+        }
+        let boundary: ClauseEventLog.BoundaryRun? = try log.runs[boundaryRunID] == nil ? nil : log.boundaryRun(boundaryRunID)
+        let priority: ClauseEventLog.PriorityRun?
+        if log.runs[priorityRunID] == nil { priority = nil }
+        else {
+            guard let boundary else {
+                throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: priorityRunID, reason: "境界判定 run なしに優先度 run があります")
+            }
+            priority = try log.priorityRun(priorityRunID, boundary: boundary)
+        }
+        if let end = log.runs[priorityRunID]?.completionSeq {
+            guard let boundaryEnd = log.runs[boundaryRunID]?.completionSeq,
+                  log.runs[boundaryRunID]?.completed == true, boundaryEnd < end else {
+                throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: priorityRunID, reason: "優先度 run の完了より前に境界 run が完了していません")
+            }
+        }
+        for (seq, input) in boundary?.inputs ?? [] {
+            let source = input.source
+            guard source.segmentationRunID == segmentationRunID, source.asrRunID == asrRunID else {
+                throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: boundaryRunID, reason: "境界判定の原文参照が指定 run と一致しません")
+            }
+            if case .pending(reason: .asrGap, _) = input.state {
+                throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: boundaryRunID, reason: "ASR gap を含む境界判定は recovery に使用できません")
+            }
+            switch log.successor(of: source, before: seq) {
+            case .missing:
+                throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: boundaryRunID, reason: "判定時点で次区間の音声認識結果がありません")
+            case .none:
+                guard case .none = log.successor(of: source) else {
+                    throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: boundaryRunID, reason: "次区間が判定後に登録されています")
+                }
+            case .empty, .recognized: break
+            }
+        }
+        events = EventLogTranscriptReader.clauseEvents(boundary: boundary, priority: priority)
+            .sorted { $0.eventSeq < $1.eventSeq }
+        let inputs = boundary?.inputs ?? []
+        handledSources = inputs.map(\.input.source)
+        assembly = boundary?.assembly ?? ClauseBoundaryAssembly(boundaryRunID: boundaryRunID)
+        composer = boundary?.composer ?? ClauseTextComposer()
+        unsavedClauses = boundary?.unsavedClauses ?? []
+        let assignments = priority?.assignments ?? [:]
+        unassignedClauses = (boundary?.clauses ?? []).compactMap { _, unit in
+            guard assignments[unit.reference] == nil, let text = boundary?.clauseTexts[unit.reference],
+                  !ClauseTextComposer.isBlank(text) else { return nil }
+            return unit
+        }
+        let pendingBoundary = boundary?.pendingSources.count ?? 0
+        let retryCount = assignments.values.filter(\.needsRetry).count
+        var targets = Set((boundary?.pendingSources ?? []).map(DecisionPendingTarget.boundary))
+        for assignment in assignments.values where assignment.needsRetry { targets.insert(.priority(assignment.reference)) }
+        boundaryCounts = (inputs.count - pendingBoundary, pendingBoundary)
+        priorityCounts = (assignments.count - retryCount, retryCount)
+        pendingTargets = targets
+
+        let selected = [(ProcessingStage.clauseBoundary, boundaryRunID), (.contentPriority, priorityRunID)]
+            .filter { log.runs[$0.1]?.stage == $0.0 }
+        startedRuns = Set(selected.map(\.0))
+        completedRuns = Set(selected.filter { log.runs[$0.1]?.completed == true }.map(\.0))
     }
 }
 

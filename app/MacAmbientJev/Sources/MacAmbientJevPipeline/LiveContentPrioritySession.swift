@@ -4,11 +4,15 @@ import MacAmbientJevCore
 public enum LiveContentPriorityError: LocalizedError {
     case unknownSource
     case segmentOrderChanged
+    case unfinishedASR
+    case invalidRecovery
 
     public var errorDescription: String? {
         switch self {
         case .unknownSource: "ライブ文字起こしにない区間を判定に渡そうとしました"
         case .segmentOrderChanged: "ライブ文字起こしの区間順序が判定済みの区間と一致しません"
+        case .unfinishedASR: "未完了の音声認識区間があります"
+        case .invalidRecovery: "保存済みの判定状態とライブ文字起こしが一致しません"
         }
     }
 }
@@ -24,15 +28,9 @@ public actor LiveContentPrioritySession {
     public nonisolated let priorityRunID: String
 
     private struct Step {
-        enum Successor {
-            /// The following segment has no ASR result, so the boundary cannot be requested.
-            case gap
-            /// nil ends the text stream.
-            case head(NextSegmentHead?)
-        }
         let source: SegmentTextReference
         let text: String
-        let successor: Successor
+        let successor: NextSegmentHead?
     }
 
     private let sessionID: UUID
@@ -48,12 +46,14 @@ public actor LiveContentPrioritySession {
     private var composer = ClauseTextComposer()
     private var sourceTexts: [SegmentTextReference: String] = [:]
     private var startedRuns: Set<ProcessingStage> = []
+    private var completedRuns: Set<ProcessingStage> = []
     private var boundaryProvenance: RunProvenance?
     private var priorityProvenance: RunProvenance?
-    private var completedRuns = false
     private var boundaryCounts = (assessed: 0, pending: 0)
     private var priorityCounts = (classified: 0, pending: 0)
     private var recordedPendingTargets: Set<DecisionPendingTarget> = []
+    private var unsavedClauses: [ClauseUnit] = []
+    private var unassignedClauses: [ClauseUnit] = []
     private var onStatus: StatusHandler?
     private var onUpdate: UpdateHandler?
     private(set) var worker: Task<Void, Never>?
@@ -79,6 +79,73 @@ public actor LiveContentPrioritySession {
         self.assembly = ClauseBoundaryAssembly(boundaryRunID: boundaryRunID)
     }
 
+    public static func open(
+        sessionID: UUID, boundaryRunID: String, priorityRunID: String, writer: SessionWriter,
+        liveASR: LiveASRSession,
+        makeDecisions: @escaping NativeSessionProcessor.DecisionCoordinatorFactory,
+        usageCounter: DecisionUsageCounter, onStatus: @escaping StatusHandler, onUpdate: @escaping UpdateHandler
+    ) async throws -> LiveContentPrioritySession {
+        let eventsURL = await writer.eventsURL
+        let recovery = try DecisionSessionRecovery(
+            eventsURL: eventsURL, sessionID: sessionID,
+            segmentationRunID: liveASR.segmentationRunID, asrRunID: liveASR.asrRunID,
+            boundaryRunID: boundaryRunID, priorityRunID: priorityRunID
+        )
+        let session = LiveContentPrioritySession(
+            sessionID: sessionID, boundaryRunID: boundaryRunID, priorityRunID: priorityRunID,
+            writer: writer, liveASR: liveASR, makeDecisions: makeDecisions, usageCounter: usageCounter
+        )
+        try await session.hydrate(recovery, onStatus: onStatus, onUpdate: onUpdate)
+        return session
+    }
+
+    private func hydrate(
+        _ recovery: DecisionSessionRecovery, onStatus: @escaping StatusHandler, onUpdate: @escaping UpdateHandler
+    ) async throws {
+        try update(await liveASR.snapshot().segments)
+        var recoveredSourceIndex = 0
+        recoveryScan: while handledCount < segments.count {
+            switch segments[handledCount].outcome {
+            case .pending, .failed:
+                break recoveryScan
+            case .recognized(let source, let text):
+                guard ASRRecognitionOutcome(text: text) == .recognized else {
+                    handledCount += 1
+                    continue recoveryScan
+                }
+                guard recoveredSourceIndex < recovery.handledSources.count else {
+                    break recoveryScan
+                }
+                guard recovery.handledSources[recoveredSourceIndex] == source else {
+                    throw LiveContentPriorityError.invalidRecovery
+                }
+                recoveredSourceIndex += 1
+                handledCount += 1
+            }
+        }
+        guard recoveredSourceIndex == recovery.handledSources.count,
+              !recovery.completedRuns.contains(.clauseBoundary) || handledCount == segments.count else {
+            throw LiveContentPriorityError.invalidRecovery
+        }
+
+        assembly = recovery.assembly
+        composer = recovery.composer
+        startedRuns = recovery.startedRuns
+        completedRuns = recovery.completedRuns
+        boundaryCounts = recovery.boundaryCounts
+        priorityCounts = recovery.priorityCounts
+        recordedPendingTargets = recovery.pendingTargets
+        unsavedClauses = recovery.unsavedClauses
+        unassignedClauses = recovery.unassignedClauses
+        _ = try await liveASR.applyClauseEvents(recovery.events)
+        if !recordedPendingTargets.isEmpty {
+            await usageCounter.recordDeferred(sessionID: sessionID, targets: recordedPendingTargets)
+        }
+        self.onStatus = onStatus
+        self.onUpdate = onUpdate
+        startWorker()
+    }
+
     /// Notes a newly saved ASR segment and returns without waiting for decision results.
     public func enqueue(
         source: SegmentTextReference,
@@ -96,18 +163,19 @@ public actor LiveContentPrioritySession {
         startWorker()
     }
 
-    /// Notes a segment that ended without text to queue (a failed ASR), so a segment
-    /// waiting for this successor is marked boundary-pending rather than bridged.
+    /// Notes ASR progress so the queue can continue when a waiting successor becomes available.
     public func observe(snapshot: LiveASRSnapshot) async throws {
         guard !stopped else { return }
         try update(snapshot.segments)
         startWorker()
     }
 
-    /// The text stream ended: the last segment is judged with no successor and the tail
-    /// already assessed is closed. This only releases the wait for a next segment.
+    /// The caller confirms segmentation and ASR are complete, releasing the final successor wait.
     public func finishInput(snapshot: LiveASRSnapshot) async throws {
         guard !stopped else { return }
+        guard snapshot.segments.allSatisfy({
+            if case .recognized = $0.outcome { true } else { false }
+        }) else { throw LiveContentPriorityError.unfinishedASR }
         try update(snapshot.segments)
         inputFinished = true
         startWorker()
@@ -129,14 +197,13 @@ public actor LiveContentPrioritySession {
     }
 
     private func update(_ statuses: [LiveASRSegmentStatus]) throws {
-        guard statuses.count >= segments.count,
+        guard ((!inputFinished && !completedRuns.contains(.clauseBoundary)) || statuses.count == segments.count),
+              statuses.count >= segments.count,
               zip(statuses, segments).allSatisfy({ current, previous in
                   guard current.segmentID == previous.segmentID, current.startFrame == previous.startFrame else { return false }
                   switch previous.outcome {
-                  case .pending:
+                  case .pending, .failed:
                       return true
-                  case .failed:
-                      return current.outcome == .failed
                   case .recognized(let source, let text):
                       guard case .recognized(let currentSource, let currentText) = current.outcome else { return false }
                       return source == currentSource && text.utf8.elementsEqual(currentText.utf8)
@@ -151,7 +218,7 @@ public actor LiveContentPrioritySession {
     }
 
     private func startWorker() {
-        guard worker == nil, onUpdate != nil, !halted, !stopped, !completedRuns else { return }
+        guard worker == nil, onUpdate != nil, !halted, !stopped else { return }
         worker = Task { await drain() }
     }
 
@@ -160,11 +227,20 @@ public actor LiveContentPrioritySession {
         do {
             while true {
                 try ensureActive()
+                if !unsavedClauses.isEmpty || !unassignedClauses.isEmpty {
+                    let unsaved = unsavedClauses
+                    let unassigned = unassignedClauses
+                    unsavedClauses = []
+                    unassignedClauses = []
+                    try await close(unsaved, preceding: [], alreadyClosed: unassigned)
+                    continue
+                }
                 if let step = try nextStep() {
                     try await handle(step)
                     handledCount += 1
-                } else if inputFinished, handledCount == segments.count, !completedRuns {
+                } else if inputFinished, handledCount == segments.count {
                     try await completeRuns()
+                    return
                 } else {
                     return
                 }
@@ -178,16 +254,13 @@ public actor LiveContentPrioritySession {
         }
     }
 
-    /// The next segment whose successor is known, skipping segments without text.
+    /// Consumes successful text in order and waits at every unfinished ASR status.
     private func nextStep() throws -> Step? {
         while handledCount < segments.count {
             let segment = segments[handledCount]
             switch segment.outcome {
-            case .pending:
-                guard inputFinished else { return nil }
-                handledCount += 1
-            case .failed:
-                handledCount += 1
+            case .pending, .failed:
+                return nil
             case .recognized(let source, let text):
                 guard ASRRecognitionOutcome(text: text) == .recognized else {
                     _ = try assembly.endTextStream()
@@ -196,20 +269,18 @@ public actor LiveContentPrioritySession {
                 }
                 let successorIndex = handledCount + 1
                 guard successorIndex < segments.count else {
-                    return inputFinished ? Step(source: source, text: text, successor: .head(nil)) : nil
+                    return inputFinished ? Step(source: source, text: text, successor: nil) : nil
                 }
                 switch segments[successorIndex].outcome {
-                case .pending:
-                    return inputFinished ? Step(source: source, text: text, successor: .gap) : nil
-                case .failed:
-                    return Step(source: source, text: text, successor: .gap)
+                case .pending, .failed:
+                    return nil
                 case .recognized(let nextSource, let nextText):
                     guard ASRRecognitionOutcome(text: nextText) == .recognized else {
-                        return Step(source: source, text: text, successor: .head(nil))
+                        return Step(source: source, text: text, successor: nil)
                     }
-                    return Step(source: source, text: text, successor: .head(try NextSegmentHead(
+                    return Step(source: source, text: text, successor: try NextSegmentHead(
                         source: nextSource, text: String(nextText.prefix(ClauseBoundaryPolicy.nextHeadCharacterLimit))
-                    )))
+                    ))
                 }
             }
         }
@@ -251,19 +322,14 @@ public actor LiveContentPrioritySession {
 
     private func handle(_ step: Step) async throws {
         let state: ClauseBoundaryState
-        switch step.successor {
-        case .gap:
-            state = .pending(reason: .asrGap, message: DecisionPendingMessage.asrGap)
-        case .head(let next):
-            switch availableDecisions(stage: .clauseBoundary) {
-            case .pending(let reason, let message):
-                state = .pending(reason: reason, message: message)
-            case .available(let decisions):
-                await report(UserFacingStatus.classifyingContent.text)
-                state = try await ClauseBoundaryStep.assess(
-                    source: step.source, text: step.text, next: next, decisions: decisions
-                )
-            }
+        switch availableDecisions(stage: .clauseBoundary) {
+        case .pending(let reason, let message):
+            state = .pending(reason: reason, message: message)
+        case .available(let decisions):
+            await report(UserFacingStatus.classifyingContent.text)
+            state = try await ClauseBoundaryStep.assess(
+                source: step.source, text: step.text, next: step.successor, decisions: decisions
+            )
         }
         try ensureActive()
 
@@ -281,24 +347,17 @@ public actor LiveContentPrioritySession {
                                            kind: .clauseBoundaryPending(payload)))
             boundaryCounts.pending += 1
             try await recordPending([.boundary(step.source)])
-            if reason != .asrGap { await reportPending(message: message) }
-        }
-        if handledCount > 0 {
-            switch segments[handledCount - 1].outcome {
-            case .failed, .pending:
-                _ = try assembly.beginAfterASRGap()
-            case .recognized:
-                break
-            }
+            await reportPending(message: message)
         }
         let delta = try assembly.consume(ClauseAssemblyInput(source: step.source, text: step.text, state: state))
-        try await close(delta.closed, preceding: events)
+        try await close(delta.closed, preceding: events, alreadyClosed: [])
     }
 
     private func completeRuns() async throws {
         let finished = try assembly.finish().closed
-        try await close(finished, preceding: [])
-        for stage in [ProcessingStage.clauseBoundary, .contentPriority] where startedRuns.contains(stage) {
+        try await close(finished, preceding: [], alreadyClosed: [])
+        for stage in [ProcessingStage.clauseBoundary, .contentPriority]
+        where startedRuns.contains(stage) && !completedRuns.contains(stage) {
             let counts = stage == .clauseBoundary
                 ? (completed: boundaryCounts.assessed, failed: boundaryCounts.pending)
                 : (completed: priorityCounts.classified, failed: priorityCounts.pending)
@@ -310,14 +369,15 @@ public actor LiveContentPrioritySession {
                     stage: stage, succeeded: true, completedCount: counts.completed, failedCount: counts.failed
                 )
             ))
+            completedRuns.insert(stage)
         }
-        completedRuns = true
     }
 
-    /// Saves newly closed clauses, shows them, then classifies the non-blank ones in batches of 40.
+    /// Saves new clauses, shows only new events, then classifies unassigned text in batches of 40.
     private func close(
         _ units: [ClauseUnit],
-        preceding: [TranscriptEvent]
+        preceding: [TranscriptEvent],
+        alreadyClosed: [ClauseUnit]
     ) async throws {
         var events = preceding
         var targets: [(reference: ClauseReference, text: String)] = []
@@ -325,6 +385,8 @@ public actor LiveContentPrioritySession {
             for unit in units {
                 events.append(try await append(ClauseEventType.clauseClosed, stage: .clauseBoundary, payload: unit,
                                                kind: .clauseClosed(unit)))
+            }
+            for unit in alreadyClosed + units {
                 let text = try composer.text(of: unit.parts) { source in
                     guard let text = self.sourceTexts[source] else { throw LiveContentPriorityError.unknownSource }
                     return text
@@ -373,6 +435,7 @@ public actor LiveContentPrioritySession {
         payload: Payload,
         kind: TranscriptEventKind
     ) async throws -> TranscriptEvent {
+        guard !completedRuns.contains(stage) else { throw LiveContentPriorityError.invalidRecovery }
         let runID = stage == .clauseBoundary ? boundaryRunID : priorityRunID
         if !startedRuns.contains(stage) {
             let provenance: RunProvenance

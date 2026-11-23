@@ -237,7 +237,7 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 | `not_requested` | 公開済みの境界判定 run がなく、判定していない |
 | `initialization_failed` | モデルを初期化できなかった |
 | `request_failed` | 判定呼出しが失敗した |
-| `asr_gap` | 次区間の ASR が失敗した |
+| `asr_gap` | batch 確定・再試行で次区間の ASR 結果が利用できない状態を表す。ライブで ASR 成功なしを待機中には出力しない |
 
 `clauses.closed` の payload:
 
@@ -304,11 +304,11 @@ CancellationError または取り消し済み task を一時停止とするの�
 | contentPriority | `coreml-clause-tagger`（Mac）または `onnx-clause-tagger`（Linux / Windows）/ 外部 model ID Pokojaka/modernbert-ja-30m-utterance-tagger / version = model の64桁 state-hash revision | 実際の `model_id` / `model_revision`、`unit_policy=btsj-utterance-sentence`、`mode` は `live`、`final`、`retry`、`minimum_demotion_confidence=0.9`、`maximum_targets=40`、`encoding_revision=1`、`max_tokens=192`、`compute_units=cpu-only`、`text_policy=filler-backchannel-removed-neutral-punctuation-piecewise` |
 | decision unavailable | `unavailable` / `model=nil` / version `1` | `mode=live`、`unit_policy=btsj-utterance-sentence` |
 
-判定 run の `model`、configuration の `model_id` / `model_revision`、`version` は実際にロードした外部 model ID と state-hash revision です。`unavailable` は、ライブ run の開始時にモデルを読み込めなかった、または ASR gap などでモデルを取得しないまま run を始めた場合です。成功 request record はモデルを記録せず、その run の provenance が request を処理したモデルを示します。
+判定 run の `model`、configuration の `model_id` / `model_revision`、`version` は実際にロードした外部 model ID と state-hash revision です。`unavailable` は、ライブ run の開始時にモデルを読み込めなかった場合です。成功 request record はモデルを記録せず、その run の provenance が request を処理したモデルを示します。
 
 保存済み transcript の読込・materialization は保存済み run を使い、現在の `model_id` とは照合しません。利用者の再試行は保留対象だけを再判定し、成功済み判定を source record として引き継ぎます。確定処理は、live 優先度 run と確定処理の state-hash `model_revision` が一致するときに、各 run の保存済み `filler_ranges` を適用した発話文本文の UTF-8 byte 列が完全一致する判定を再利用し、`model_id` は照合しません。全量再処理は境界と優先度を再計算し、この条件を満たす live 優先度だけを再利用します。
 
-ライブの境界判定 run と優先度 run は判定結果を逐次保存し、対象列の終端で完了イベントを出します。確定処理への移行で取り消した run は完了イベントなしでも保存済み結果を保持します。ライブ run は metadata の `active_runs` に選ばず、確定処理は独立した境界・優先度 run の pointer を公開します。CLI の `ContentPriorityAccess.disabled` は Core ML tagger による判定を無効にし、必須の segmentation・ASR を実行した上で、任意の decision run を実行しません。ライブ ASR は完了イベントへ engine / model を記録しますが、確定処理と同じ started provenance を各 ASR run に出すわけではありません。
+ライブの境界判定 run と優先度 run は判定結果を逐次保存し、呼出元が segmentation を完了し全 ASR 結果を正常に保存した後で明示的に `finishInput` した場合に限り完了イベントを出します。成功した空の ASR 結果がテキスト列を区切っても、明示的な input EOF にはなりません。確定処理への移行で取り消した run は完了イベントなしでも保存済み結果を保持します。ライブ run は metadata の `active_runs` に選ばず、確定処理は独立した境界・優先度 run の pointer を公開します。CLI の `ContentPriorityAccess.disabled` は Core ML tagger による判定を無効にし、必須の segmentation・ASR を実行した上で、任意の decision run を実行しません。ライブ ASR は完了イベントへ engine / model を記録しますが、確定処理と同じ started provenance を各 ASR run に出すわけではありません。
 
 根拠: [RunProvenance.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/RunProvenance.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FinalTranscriptPipeline.swift)、[FluidFinalTranscriptVADSegmenter.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidFinalTranscriptVADSegmenter.swift)、[SileroFinalTranscriptVADSegmenter.swift](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/SileroFinalTranscriptVADSegmenter.swift)、[HaasASREngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevHaasASR/HaasASREngine.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)。
 
@@ -390,6 +390,8 @@ chunk を atomic write して synchronize した後、その index を append / 
 `EventLogTranscriptReader` は全行の header（`schema_version` を含む）を読み、必要な既知イベントの run ID を要求します。非 active run や未知イベントの payload は解釈せず、active run の必要フィールド欠落・型違いはエラーです。ASR outcome と text の不一致もエラーです。発話文判定イベントは reader、再試行分析（`DecisionRetryAnalyzer`）、ライブ再利用、保存済み一覧が共通 decoder で検証します。保存済み境界判定から発話文を再組み立てし、保存結果と比較します。完了 run は全ての非空区間を覆い、組み立て結果と完全一致しなければなりません。未完了のライブ run は組み立て結果の先頭部分であれば読めます。候補・次区間先頭・範囲・参照・引き継ぎ元の不一致はエラーです。読み取り・検証で判定を再実行しません。
 
 `EventLogTranscriptReader` は header・ローカル transcript の decoding を担当し、発話文イベントの共有解析・source/carry 検証・組み立て replay は [ClauseEventLog.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseEventLog.swift) にあります。公開済み run の完了・pending 整合は [PublishedTranscriptValidation.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/PublishedTranscriptValidation.swift)、再試行対象の検証と計数は [DecisionRetryAnalyzer.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionRetryAnalyzer.swift) が担当します。reader・再試行・catalog・ライブ再利用は同じ `ClauseEventLog` を使い、独立した発話文 decoder を持ちません。
+
+[DecisionSessionRecovery](../app/MacAmbientJev/Sources/MacAmbientJevCore/EventLogTranscriptReader.swift) は、明示された segmentation / ASR / boundary / priority run ID を durable JSONL に照合し、共通 `ClauseEventLog` replay から有効な durable prefix、処理済み入力、未完了 parts、未記録の `clauses.closed` record の決定的な末尾分、および未割当の非空 clause を返します。保存済み outcome（pending を含む）は再 request しません。`LiveContentPrioritySession` actor は `open` 時に返された closure を永続化し、未割当の非空 clause だけを分類します。reader は replay と結果返却のみを担います。新しい event/schema を追加せず、公開 metadata や起動時 recovery の仕様も変えません。
 
 `TranscriptMaterializer` が公開 run の区間・ASR・発話文境界・優先度を適用します。materialization はモデルを読み込み・実行せず、保存済み assessment の `filler_ranges`（F・B除去範囲）だけを原文へ投影します。assessment がない区間、境界 pending / failed、判定を無効にした CLI では F・B除去範囲を使わず原文を基にし、どの場合も表示本文の最終段階で数字表記変換を適用します。assessment がある区間は F・B除去範囲を適用した後、保存済み LOW の clause slice をさらに除去します。CLI の `segments.json` は配列で、各 object の全キーは次のとおりです。
 
