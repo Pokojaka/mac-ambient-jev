@@ -53,10 +53,10 @@ struct SettingsView: View {
                     }
                     .disabled(appState.modelPreparation.phase == .downloading
                         || appState.modelPreparation.phase == .loading)
-                    .help("音声認識・発話区間検出のモデル（合計約2.5 GB）をダウンロードして確認する。失敗したときの再試行にも使う")
+                    .help("音声認識・発話区間検出のモデル（合計約670 MB）をダウンロードして確認する。失敗したときの再試行にも使う")
                 }
 
-                Text("モデルは合計約2.5 GBで、アプリ内にダウンロードします。モデルがなくても録音は保存され、そろった時点で文字起こしが自動で始まります。")
+                Text("モデルは合計約670 MBで、アプリ内にダウンロードします。モデルがなくても録音は保存され、そろった時点で文字起こしが自動で始まります。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

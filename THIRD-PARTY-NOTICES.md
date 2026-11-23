@@ -12,11 +12,30 @@ Used for local voice activity detection only. Preserve the upstream license and 
 
 FluidAudio 0.15.8 は Apache License, Version 2.0 です（<https://www.apache.org/licenses/LICENSE-2.0>）。ライセンス全文は <https://github.com/FluidInference/FluidAudio/blob/v0.15.8/LICENSE> にあります。上流の LICENSE は著作権者名を記載していません。
 
-## speech-swift
+## Haas-ja-v1.0 ONNX model
 
-Repository: `soniqo/speech-swift`
+The original Haas-ja-v1.0 model by [Third Intelligence](https://huggingface.co/third-intelligence/Haas-ja-v1.0) is licensed under the Apache License, Version 2.0 (<https://www.apache.org/licenses/LICENSE-2.0>). [Sanami/haas-ja-onnx](https://huggingface.co/Sanami/haas-ja-onnx/tree/354baedfd9612b00e74cc1ae87dff7f2c558db6f) at commit `354baedfd9612b00e74cc1ae87dff7f2c558db6f` is an unofficial ONNX export and quantization of that model by Sanami; it was not created or endorsed by Third Intelligence. The pinned repository's [LICENSE](https://huggingface.co/Sanami/haas-ja-onnx/resolve/354baedfd9612b00e74cc1ae87dff7f2c558db6f/LICENSE) and [NOTICE](https://huggingface.co/Sanami/haas-ja-onnx/resolve/354baedfd9612b00e74cc1ae87dff7f2c558db6f/NOTICE) are also retained in the test resources as [`haas_tokenizer.LICENSE.txt`](app/MacAmbientJev/Tests/MacAmbientJevHaasASRTests/Resources/haas_tokenizer.LICENSE.txt) and [`haas_tokenizer.NOTICE.txt`](app/MacAmbientJev/Tests/MacAmbientJevHaasASRTests/Resources/haas_tokenizer.NOTICE.txt).
 
-Used for the local Qwen3-ASR implementation. The upstream repository identifies its license as Apache-2.0. Preserve its license and notices for the pinned revision.
+The app downloads seven files from that pinned snapshot for its `int8dyn` ASR model: `int8dyn/encoder.onnx`, `int8dyn/encoder.onnx.data`, `int8dyn/decoder_joint.onnx`, `int8dyn/decoder_joint.onnx.data`, `tokenizer.model`, `LICENSE`, and `NOTICE`. The app runs Haas-ja-v1.0 `int8dyn` ASR with the CPU Execution Provider in ONNX Runtime 1.31.0. The complete pinned NOTICE is reproduced verbatim below.
+
+```text
+Haas-ja-v1.0 ONNX
+Copyright 2026 Sanami
+
+This repository contains:
+
+1. Model weights (fp32/, fp16/, int8dyn_mm/, int8dyn/, int8wo/, int4/, tokenizer.model)
+   Derived from Haas-ja-v1.0 by Third Intelligence
+   (https://huggingface.co/third-intelligence/Haas-ja-v1.0), licensed under Apache-2.0.
+   Modifications by Sanami: exported from .nemo to ONNX and quantized
+   (fp16 / INT8 / INT4). See TECHNICAL.md for the method.
+   This is an unofficial conversion, not created or endorsed by Third Intelligence.
+
+2. Code (haas_ort.py, rust/, scripts/)
+   Copyright 2026 Sanami, licensed under Apache-2.0.
+
+Both are distributed under the Apache License, Version 2.0 (see LICENSE).
+```
 
 ## Qwen3-ASR tokenizer
 
@@ -67,7 +86,7 @@ SOFTWARE.
 サイズ: `159626085` bytes; SHA-256: `7e35fdb4f5adb62f01e60798e2e5ed05108f5fbbe1cca03fbcc37903cf7c5e3b`
 展開先 root の `LICENSE` と `ThirdPartyNotices.txt` は保持します。固定情報と取得手順は [docs/windows.md#onnx-runtime](docs/windows.md#onnx-runtime) を参照してください。
 
-macOS arm64 の wrapper build / tests と Linux / Windows の製品実行では、ONNX Runtime C API の CPU Execution Provider を使います。macOS app は dylib を bundle せず、runtime ASR 経路にも使いません。
+macOS app の Haas-ja-v1.0 `int8dyn` ASR と、Linux / Windows portable engine の Qwen3-ASR、Silero VAD、clause tagger は ONNX Runtime C API の CPU Execution Provider を使います。
 
 ```text
 MIT License

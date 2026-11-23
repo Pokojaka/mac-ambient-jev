@@ -15,7 +15,7 @@
 - 追加した range の終了が segment 先頭 range の開始から30秒を超えると、追加前の segment を閉じて新しい segment を開きます。release 後に報告された range は次の segment に入ります。音声末尾では `finish` が開いた segment を閉じます。
 - 4096 sample chunk ごとの `settledFrame` heuristic は、`settledFrame` の値が先頭 range 開始 + 30秒以上になった時点で開いた segment を release します。0.75秒の無音終了と2 chunk 分の余裕、および静かな分割位置を見込む実用上の判定であり、遅れて届く発話終了時刻を保証しません。
 - 長い連続発話では、最初の speech frame から segment release まで約31〜32秒を見込みますが、普遍的な保証ではありません。表示には ASR・checkpoint overhead が加わります。短い発話も蓄積または無音終了による release まで待つことがあり、残りは停止時に flush します。
-- 0.5 秒未満で独立した speech range は ASR に送りません。Qwen3-ASR は連結後の ASR 入力が 20 ms 未満なら推論せず空本文を返します。この 20 ms 条件は各 speech range ではなく、結合した ASR 入力に対するものです。
+- 0.5 秒未満で独立した speech range は ASR に送りません。Haas-ja-v1.0 は連結後の ASR 入力が 20 ms 未満なら推論せず空本文を返します。この 20 ms 条件は各 speech range ではなく、結合した ASR 入力に対するものです。
 
 ファイル replay は capture device を開かず、ファイルまたは指定した device 相当形式を原速で ingress に投入します。replay input と保存形式は別で、durable timeline とイベント frame 座標は常に 16 kHz mono です。詳細は[原速 replay のライブ遅延計測](testing.md#原速-replay-のライブ遅延計測)を参照してください。
 - 検出した区間は ASR の待ち行列に入れる前に `segment.created` として保存します。ライブ経路は `asr.pending` を書きません。このイベントは確定処理の ASR 待ち状態に使います。
@@ -24,7 +24,7 @@
 
 `LiveTranscriptionState.enqueue` の前提条件は、区間が空でなく、失敗が記録されていないことです。VAD が空の終端区間を返す場合、coordinator は enqueue 前に空を除外します。`await registerLiveSegments` の待機中に ASR 認識失敗が記録されることがあり、登録完了後に coordinator は失敗状態を再確認し、失敗済みならキューへ追加しません。認識失敗が記録されると、既存の待機バッチも破棄します。一方、区間登録の永続化失敗は失敗を記録しても既存の未処理キューを空にせず保持します。未処理キューが残る間はアイドル時のモデル解放条件を満たさず、確定処理または取消時の後始末までモデルは解放されません。
 
-ASR は Qwen3-ASR をローカルで実行し、言語指定は日本語（ja）です。実エンジン名は qwen3-asr-swift、モデル ID は aufklarer/Qwen3-ASR-1.7B-MLX-8bit です。この ID はモデル配布元の識別子であり、リポジトリ内のパスではありません。モデルは [mac_models.json](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/Resources/mac_models.json) に固定した commit のファイルだけを使い、全ファイルの byte 数と SHA-256 が一致しなければ読み込みません（別の版へ切り替えません）。
+Mac の ASR は日本語専用 Haas-ja-v1.0 を ONNX Runtime の CPU で実行し、演算スレッド数は固定 4 です。実エンジン名は `onnxruntime-haas-tdt`、モデル ID は [Sanami/haas-ja-onnx/int8dyn](https://huggingface.co/Sanami/haas-ja-onnx/tree/354baedfd9612b00e74cc1ae87dff7f2c558db6f/int8dyn) です。このモデルへの Mac の呼び出しに言語引数はありません。[Haas ASR manifest](../app/MacAmbientJev/Sources/MacAmbientJevHaasASR/Resources/haas_asr_model.json) は commit `354baedfd9612b00e74cc1ae87dff7f2c558db6f` の7ファイルを固定し、model store が全ファイルの byte 数と SHA-256 を検証したディレクトリから読み込みます。
 
 ### モデルが揃うまで
 
@@ -118,7 +118,7 @@ VAD の失敗時は「録音は継続しています。発話検出を停止し�
 
 ## ライブ遅延の計測範囲
 
-`scripts/measure_live_latency.sh` は既存音声を原速で durable timeline へ供給し、ライブ VAD と ASR の更新を計測します。マイク録音や GUI の起動は行いません。Qwen3-ASR と VAD のキャッシュ済みモデルが必要です。
+`scripts/measure_live_latency.sh` は既存音声を原速で durable timeline へ供給し、ライブ VAD と ASR の更新を計測します。マイク録音や GUI の起動は行いません。取得済みの Haas ASR と FluidVAD のモデルが必要です。
 
 入力音声と明示 root の絶対パスを設定して実行する。`--match-default-input` は検証時に指定しない。
 
@@ -133,7 +133,7 @@ bash scripts/measure_live_latency.sh --sessions-root "$SESSIONS_ROOT" "$AUDIO_FI
 ## 実装の根拠
 
 - [区間組み立て](../app/MacAmbientJev/Sources/MacAmbientJevCore/Segmentation.swift)、[VAD 設定](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/VADSegmentation.swift)、[Mac の VAD engine](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidVADSegmentationEngine.swift)、[durable timeline の VAD 読取](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/VADTimelineProcessor.swift)、[FluidAudio 0.15.8 のストリーミング VAD](https://raw.githubusercontent.com/FluidInference/FluidAudio/87a39dfe4068fef0f1c69bfe704b2b3ef4fbc5bc/Sources/FluidAudio/VAD/VadManager+Streaming.swift)
-- [録音・確認周期](../app/MacAmbientJev/Sources/MacAmbientJevCore/LiveTranscriptionCadence.swift)、[ライブ ASR セッションと durable `segment.created` 登録](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveASRSession.swift)、[Qwen3-ASR](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/NativeQwen3ASREngine.swift)、[モデル ID](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASR.swift)
+- [録音・確認周期](../app/MacAmbientJev/Sources/MacAmbientJevCore/LiveTranscriptionCadence.swift)、[ライブ ASR セッションと durable `segment.created` 登録](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveASRSession.swift)、[HaasASREngine](../app/MacAmbientJev/Sources/MacAmbientJevHaasASR/HaasASREngine.swift)、[Haas ASR manifest](../app/MacAmbientJev/Sources/MacAmbientJevHaasASR/Resources/haas_asr_model.json)
 - [ライブ ASR の所有・VAD polling 停止・thermal polling](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveTranscriptionCoordinator.swift)、[FIFO 待ち行列の状態](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveTranscriptionState.swift)、[アプリ側の UI 効果のみ](../app/MacAmbientJev/Sources/MacAmbientJev/AppState+LiveTranscription.swift)、[熱監視と Windows の監視なし方針](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/ThermalMonitoring.swift)（Mac は [MacThermalMonitor](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/MacThermalMonitor.swift)、[Windows の熱状態](windows.md#熱状態)）、[ライブ熱状態ポリシー](../app/MacAmbientJev/Sources/MacAmbientJevCore/LiveASRThermalPolicy.swift)、[ライブ判定キュー](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveContentPrioritySession.swift)、[停止と確定への引き継ぎ](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)。関連テスト: [停止中の poll registration 完了と poll/final 両 segment の drain](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/LiveTranscriptionCoordinatorTests.swift)、[durable append 後の registration 完了](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/LiveASRSessionTests.swift)
 - [表示 materialization](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift)、[保存済み F・B除去範囲から表示本文への projection](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptTextProjection.swift)、[token span から raw UTF-16 F・B除去範囲への projection](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTaggerSpanProjection.swift)、[Core ML 境界・継続・優先度判定](../app/MacAmbientJev/Sources/MacAmbientJevAppleSupport/LocalClauseTagger.swift)、[画面の表示](../app/MacAmbientJev/Sources/MacAmbientJev/LiveTranscriptView.swift)、[ASR の構造化結果](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)
 - [遅延計測 CLI](../app/MacAmbientJev/Sources/MacAmbientJevMeasureLiveLatency/main.swift)、[実行スクリプト](../scripts/measure_live_latency.sh)

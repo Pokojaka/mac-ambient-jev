@@ -8,10 +8,10 @@ import Synchronization
 import Testing
 
 @Test
-func nativeQwenRejectsNoncanonicalRateBeforeModelLoading() async throws {
+func productionASRRejectsNoncanonicalRateBeforeModelLoading() async throws {
     let paths = AppPaths(applicationSupportURL: URL(fileURLWithPath: "/tmp/unused-support"),
         cacheURL: URL(fileURLWithPath: "/tmp/unused-cache"), sessionsRootOverride: nil)
-    let engine = NativeQwen3ASREngine(models: try MacModelStore(paths: paths))
+    let engine = SessionProcessingEngines.production(models: try MacModelStore(paths: paths)).asr
     await #expect(throws: CanonicalAudioError.self) {
         _ = try await engine.transcribe(ASRAudioInput(samples: [0], sampleRate: 48000))
     }

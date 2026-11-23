@@ -7,7 +7,7 @@ from pathlib import Path
 import pinned_download
 
 MANIFEST = Path(__file__).resolve().parent.parent / (
-    "app/MacAmbientJev/Sources/MacAmbientJevRuntime/Resources/mac_models.json"
+    "app/MacAmbientJev/Sources/MacAmbientJevRuntime/Resources/fluid_vad_model.json"
 )
 # The VAD model's directory under `models`; `MacModel.vad.relativeDirectory` in MacModelStore.swift
 # is the same string, and the VAD parity test fails when they differ.
@@ -15,9 +15,9 @@ VAD_DIRECTORY = "fluidaudio-silero-vad"
 
 
 def fetch() -> Path:
-    """Downloads the pinned VAD files named in mac_models.json and returns the application-support
+    """Downloads the pinned VAD files named in fluid_vad_model.json and returns the application-support
     root that `MAC_AMBIENT_JEV_TEST_APP_SUPPORT` takes."""
-    entry = json.loads(MANIFEST.read_text(encoding="utf-8"))["vad"]
+    entry = json.loads(MANIFEST.read_text(encoding="utf-8"))
     repository = Path(__file__).resolve().parent.parent
     root = pinned_download.ensure_repository_directory(
         repository, repository / ".build" / "mac-test-models" / entry["commit"]

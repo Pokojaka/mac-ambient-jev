@@ -1,6 +1,6 @@
 import Foundation
 
-/// The models the Mac app downloads, pinned in `Resources/mac_models.json`.
+/// The Mac app downloads these models; their model providers own the pins.
 public enum MacModel: String, CaseIterable, Sendable {
     case asr
     case vad

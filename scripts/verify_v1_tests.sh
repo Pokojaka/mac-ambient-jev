@@ -10,15 +10,20 @@ python3 -B "$ROOT/scripts/check_test_time_limits.py"
 
 if [[ "${RUN_MODEL_TESTS:-0}" == "1" ]]; then
   : "${ASR_SMOKE_AUDIO:?RUN_MODEL_TESTS=1 requires ASR_SMOKE_AUDIO to name an absolute WAV file}"
+  : "${MAC_AMBIENT_JEV_TEST_APP_SUPPORT:?RUN_MODEL_TESTS=1 requires an explicit isolated MAC_AMBIENT_JEV_TEST_APP_SUPPORT root}"
   if [[ "$ASR_SMOKE_AUDIO" != /* ]]; then
     echo "ASR_SMOKE_AUDIO must be an absolute path: $ASR_SMOKE_AUDIO" >&2
+    exit 1
+  fi
+  if [[ "$MAC_AMBIENT_JEV_TEST_APP_SUPPORT" != /* ]]; then
+    echo "MAC_AMBIENT_JEV_TEST_APP_SUPPORT must be an absolute path: $MAC_AMBIENT_JEV_TEST_APP_SUPPORT" >&2
     exit 1
   fi
   if [[ ! -f "$ASR_SMOKE_AUDIO" || ! -r "$ASR_SMOKE_AUDIO" ]]; then
     echo "ASR_SMOKE_AUDIO must be a readable file: $ASR_SMOKE_AUDIO" >&2
     exit 1
   fi
-  export RUN_MODEL_TESTS ASR_SMOKE_AUDIO
+  export RUN_MODEL_TESTS ASR_SMOKE_AUDIO MAC_AMBIENT_JEV_TEST_APP_SUPPORT
 fi
 
 python3 -B "$ROOT/scripts/fetch_onnxruntime.py"
@@ -43,20 +48,9 @@ swift build \
   --product MacAmbientJevEvaluateSession
 
 if [[ "${RUN_MODEL_TESTS:-0}" == "1" ]]; then
-  MODEL_TESTS="$(swift test --package-path "$PACKAGE" list)"
-  if ! grep -Fq "ASRIntegrationTests" <<< "$MODEL_TESTS"; then
-    echo "No ASR integration smoke tests were discovered." >&2
-    exit 1
-  fi
-
-  BIN_DIR="$(swift build --package-path "$PACKAGE" --show-bin-path)"
-  TEST_BUNDLE="$BIN_DIR/MacAmbientJevRuntimeTests.xctest"
-  if [[ ! -d "$TEST_BUNDLE" ]]; then
-    echo "Runtime test bundle was not built: $TEST_BUNDLE" >&2
-    exit 1
-  fi
-
-  DYLD_FRAMEWORK_PATH="$BIN_DIR" xcrun xctest "$TEST_BUNDLE"
+  MODEL_EVENT_PATH="$ROOT/.build/test-events/macos-asr-smoke-$(python3 -c 'import uuid; print(uuid.uuid4())').jsonl"
+  printf 'Runtime ASR smoke event stream: %s\n' "$MODEL_EVENT_PATH"
+  python3 -B "$ROOT/scripts/run_swift_tests.py" --package-path "$PACKAGE" --skip-build --filter ASRIntegrationTests --event-stream-output-path "$MODEL_EVENT_PATH"
 fi
 
 echo "V1 tests verification passed"

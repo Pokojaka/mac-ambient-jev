@@ -364,14 +364,6 @@ dependencies += [
     .package(
         url: "https://github.com/FluidInference/FluidAudio.git",
         exact: "0.15.8"
-    ),
-    .package(
-        url: "https://github.com/soniqo/speech-swift.git",
-        revision: "c4c2fabbe825a9290c19e2f45d54ca3eae96b003"
-    ),
-    .package(
-        url: "https://github.com/ml-explore/mlx-swift.git",
-        exact: "0.31.6"
     )
 ]
 
@@ -394,11 +386,11 @@ targets += [
             "MacAmbientJevCore",
             "MacAmbientJevPipeline",
             "MacAmbientJevAppleSupport",
-            .product(name: "FluidAudio", package: "FluidAudio"),
-            .product(name: "Qwen3ASR", package: "speech-swift"),
-            .product(name: "MLX", package: "mlx-swift")
+            "MacAmbientJevHaasASR",
+            .product(name: "FluidAudio", package: "FluidAudio")
         ],
-        resources: [.copy("Resources")]
+        resources: [.copy("Resources")],
+        swiftSettings: onnxRuntimeIncludeSwiftSettings
     ),
     .executableTarget(
         name: "MacAmbientJev",
@@ -408,7 +400,8 @@ targets += [
             "MacAmbientJevAppleSupport",
             "MacAmbientJevCapture",
             "MacAmbientJevRuntime"
-        ]
+        ],
+        swiftSettings: onnxRuntimeIncludeSwiftSettings
     ),
     .executableTarget(
         name: "MacAmbientJevCaptureSystemAudio",
@@ -417,9 +410,9 @@ targets += [
             "MacAmbientJevPipeline",
             "MacAmbientJevCapture",
             "MacAmbientJevRuntime",
-            "MacAmbientJevAppleSupport",
-            .product(name: "MLX", package: "mlx-swift")
-        ]
+            "MacAmbientJevAppleSupport"
+        ],
+        swiftSettings: onnxRuntimeIncludeSwiftSettings
     ),
     .executableTarget(
         name: "MacAmbientJevMeasureLiveLatency",
@@ -428,11 +421,13 @@ targets += [
             "MacAmbientJevPipeline",
             "MacAmbientJevAppleSupport",
             "MacAmbientJevRuntime"
-        ]
+        ],
+        swiftSettings: onnxRuntimeIncludeSwiftSettings
     ),
     .testTarget(
         name: "MacAmbientJevMeasureLiveLatencyTests",
-        dependencies: ["MacAmbientJevMeasureLiveLatency", "MacAmbientJevPipeline"]
+        dependencies: ["MacAmbientJevMeasureLiveLatency", "MacAmbientJevPipeline"],
+        swiftSettings: onnxRuntimeIncludeSwiftSettings
     ),
     .testTarget(
         name: "MacAmbientJevAppTests",
@@ -442,7 +437,8 @@ targets += [
             "MacAmbientJevPipeline",
             "MacAmbientJevCapture",
             "MacAmbientJevAppleSupport"
-        ]
+        ],
+        swiftSettings: onnxRuntimeIncludeSwiftSettings
     ),
     .testTarget(
         name: "MacAmbientJevCaptureTests",
@@ -458,7 +454,8 @@ targets += [
             "MacAmbientJevCaptureSystemAudio",
             "MacAmbientJevCore",
             "MacAmbientJevPipeline"
-        ]
+        ],
+        swiftSettings: onnxRuntimeIncludeSwiftSettings
     ),
     .testTarget(
         name: "MacAmbientJevAppleSupportTests",
@@ -477,9 +474,11 @@ targets += [
             "MacAmbientJevPipeline",
             "MacAmbientJevAppleSupport",
             "MacAmbientJevRuntime",
+            "MacAmbientJevHaasASR",
             "MacAmbientJevVADFixtures",
             .product(name: "FluidAudio", package: "FluidAudio")
-        ]
+        ],
+        swiftSettings: onnxRuntimeIncludeSwiftSettings
     )
 ]
 targets += [
@@ -510,8 +509,7 @@ var processRecordingTestDependencies: [Target.Dependency] = [
 #if os(macOS)
 processRecordingDependencies += [
     "MacAmbientJevAppleSupport",
-    "MacAmbientJevRuntime",
-    .product(name: "MLX", package: "mlx-swift")
+    "MacAmbientJevRuntime"
 ]
 processRecordingTestDependencies.append("MacAmbientJevRuntime")
 #else

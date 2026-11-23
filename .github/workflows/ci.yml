@@ -62,7 +62,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .build/mac-test-models
-          key: mac-vad-model-${{ hashFiles('app/MacAmbientJev/Sources/MacAmbientJevRuntime/Resources/mac_models.json') }}
+          key: mac-vad-model-${{ hashFiles('app/MacAmbientJev/Sources/MacAmbientJevRuntime/Resources/fluid_vad_model.json') }}
       - name: Select the pinned ONNX Runtime SDK
         id: onnxruntime
         run: |
@@ -146,8 +146,6 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"version={digest}\n")
           PY
-      - name: Install the Metal toolchain
-        run: xcodebuild -downloadComponent MetalToolchain
       - name: Create the local signing certificate
         run: |
           WORK="$RUNNER_TEMP/signing"

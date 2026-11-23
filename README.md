@@ -1,6 +1,6 @@
 # Mac Ambient Jev
 
-macOS で講義や会話を録音し、音声ファイルも読み込める文字起こしアプリ。録音中は暫定の本文を表示し、停止後に発話区間・本文を確定する。ローカル必須処理は発話区間検出・音声認識の2段階。音声認識は Qwen3-ASR、発話区間検出（VAD）は FluidAudio を使い、音声処理はローカルで実行する。
+macOS で講義や会話を録音し、音声ファイルも読み込める文字起こしアプリ。録音中は暫定の本文を表示し、停止後に発話区間・本文を確定する。ローカル必須処理は発話区間検出・音声認識の2段階。音声認識は Haas-ja-v1.0（ONNX int8dyn）を ONNX Runtime の CPU で実行し、発話区間検出（VAD）は FluidAudio を使う。音声処理はローカルで実行する。
 
 判定の単位は BTSJ 発話文です。境界判定は ASR 原文と次区間の先頭最大60文字、優先度判定は最大40件の発話文を入力にし、app bundle に同梱した Core ML モデルがネットワーク接続なしでこの Mac 上で判定します。
 
@@ -10,7 +10,7 @@ macOS で講義や会話を録音し、音声ファイルも読み込める文�
 
 発話文判定モデル（ClauseTagger.mlpackage と tokenizer.json）は、公開 Hugging Face リポジトリ [Pokojaka/modernbert-ja-30m-utterance-tagger](https://huggingface.co/Pokojaka/modernbert-ja-30m-utterance-tagger/tree/5c0213592cf8d59fc0b665183ab7536ddde05d1f) の commit `5c0213592cf8d59fc0b665183ab7536ddde05d1f` から取得します。Core ML と ONNX の全ファイルの byte count と SHA-256 は、単一の共有 [resource manifest](app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/Resources/clause_tagger_model.json) に固定されています。`scripts/build_app.sh` は `python3 scripts/fetch_clause_tagger.py --format coreml` を実行し、ClauseTagger.mlpackage、tokenizer.json、LICENSE.md を app bundle の Contents/Resources/clause-tagger に同梱します。
 
-取得物は `.build/clause-tagger/5c0213592cf8d59fc0b665183ab7536ddde05d1f/clause-tagger` にキャッシュし、毎回のビルドで全ファイルの構成・byte count・SHA-256 を検証します。取得失敗や不一致はビルドを停止し、再試行やフォールバックはしません。公開リポジトリからのダウンロードに認証トークンは不要です。アプリは bundle 内のモデルだけを読みます。Qwen3-ASR などの音声処理モデルは別のモデルで、初回利用時に取得してローカルにロードします。
+取得物は `.build/clause-tagger/5c0213592cf8d59fc0b665183ab7536ddde05d1f/clause-tagger` にキャッシュし、毎回のビルドで全ファイルの構成・byte count・SHA-256 を検証します。取得失敗や不一致はビルドを停止し、再試行やフォールバックはしません。公開リポジトリからのダウンロードに認証トークンは不要です。アプリは bundle 内のモデルだけを読みます。音声認識・発話区間検出などの音声処理モデルは、初回利用時に取得してローカルにロードします。
 
 仕様とモデルの更新手順は [発話文判定](docs/decision-engine.md)、実モデル parity テストは [検証と計測](docs/testing.md) を参照してください。
 
@@ -27,7 +27,7 @@ macOS で講義や会話を録音し、音声ファイルも読み込める文�
    ```
 
 4. 録音を始めるとマイクの許可を、システム音声モードではシステム音声録音の許可を求められるので許可する。
-5. 音声認識（Qwen3-ASR）・発話区間検出のモデル（合計約2.5 GB）は app に同梱されていない。録音を始めたとき、保存済みの録音の確定処理が始まるとき、設定の「モデルを取得」を押したときにダウンロードする（最初の一回はインターネット接続が必要）。取得するのは固定した版で、ファイルごとに byte 数と SHA-256 を照合する。モデルがなくても録音は保存でき、「モデルの取得後に文字起こしします」と表示してライブ文字起こしだけ止める。モデルがそろうと確定処理が自動で始まる。発話文判定モデルは app に同梱されている。
+5. 音声認識（Haas-ja-v1.0、ONNX int8dyn）・発話区間検出（VAD）のモデル（合計約670 MB）は app に同梱されていない。録音を始めたとき、保存済みの録音の確定処理が始まるとき、設定の「モデルを取得」を押したときにダウンロードする（最初の一回はインターネット接続が必要）。取得するのは固定した版で、ファイルごとに byte 数と SHA-256 を照合する。モデルがなくても録音は保存でき、「モデルの取得後に文字起こしします」と表示してライブ文字起こしだけ止める。モデルがそろうと確定処理が自動で始まる。発話文判定モデルは app に同梱されている。
 
 ## Windows 版（配布版）を使う
 
