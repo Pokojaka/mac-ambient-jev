@@ -113,6 +113,7 @@ public actor LiveASRSession {
     private var segmentStatusIndex: [String: Int] = [:]
     private var registeredSegmentIDs: Set<String> = []
     private var registeringSegmentIDs: Set<String> = []
+    private var pendingSince: [String: Date] = [:]
     private var finishedSegmentIDs: Set<String> = []
     private var completedCount = 0
     private var failedCount = 0
@@ -193,6 +194,7 @@ public actor LiveASRSession {
             try materializer.appendSourceEvent(event)
             transcriptEvents.append(event)
             registeredSegmentIDs.insert(segment.segmentID)
+            pendingSince[segment.segmentID] = created.createdAt
             setStatus(LiveASRSegmentStatus(segmentID: segment.segmentID, startFrame: segment.startFrame, outcome: .pending))
         }
     }
@@ -239,69 +241,33 @@ public actor LiveASRSession {
                 sessionURL: sessionURL
             )
         )
-
-        for segment in pendingSegments {
-            try Task.checkCancellation()
-            guard !finalized else { break }
-
-            let input: ASRAudioInput
-            do {
-                input = try loader.load(segment: segment)
-            } catch {
-                try Task.checkCancellation()
-                if error is CancellationError { throw error }
-                let failed = try await appendFailure(segment: segment, kind: .audioUnreadable, error: error)
-                await onSegmentFinished?(failed, snapshot())
-                continue
-            }
-
-            let result: ASRResult
-            do {
-                result = try await asr.transcribe(input)
-            } catch {
-                try Task.checkCancellation()
-                if error is CancellationError { throw error }
-                let failed = try await appendFailure(segment: segment, kind: .transcriptionFailed, error: error)
-                await onSegmentFinished?(failed, snapshot())
-                continue
-            }
-
-            try Task.checkCancellation()
-            let completed = try await writer.append(EventDraft(
-                eventType: "asr.completed",
-                sessionID: sessionID,
-                processingRunID: asrRunID,
-                segmentationRunID: segmentationRunID,
-                segmentID: segment.segmentID,
-                sourceStartFrame: segment.startFrame,
-                sourceEndFrame: segment.endFrame,
-                payload: ASRCompletedEventPayload(
-                    text: result.text,
-                    detectedLanguage: result.detectedLanguage,
-                    provenance: asr.provenance
-                )
-            ))
-            let event = TranscriptEvent.asrCompleted(
-                seq: completed.eventSeq,
-                runID: asrRunID,
-                segmentationRunID: segmentationRunID,
-                segmentID: segment.segmentID,
-                text: result.text,
-                detectedLanguage: result.detectedLanguage
+        let coordinator = PipelineCoordinator(
+            sessionID: sessionID,
+            segmentationRunID: segmentationRunID,
+            asrRunID: asrRunID,
+            writer: writer,
+            asr: asr,
+            loader: loader,
+            pacingMode: .normal,
+            sleep: { try await Task.sleep(for: $0) },
+            shouldPause: { nil }
+        )
+        do {
+            _ = try await coordinator.execute(
+                segments: pendingSegments,
+                pendingSince: pendingSince,
+                existingEvents: [],
+                prepareModel: false,
+                stopOnPersistenceFailure: true,
+                shouldContinue: { await self.canExecuteSegment() },
+                onSegmentPersisted: { segment, event in
+                    let status = try await self.applyPersistedSegment(segment, event: event)
+                    let currentSnapshot = await self.snapshot()
+                    await onSegmentFinished?(status, currentSnapshot)
+                }
             )
-            try materializer.appendSourceEvent(event)
-            transcriptEvents.append(event)
-            completedCount += 1
-            finishedSegmentIDs.insert(segment.segmentID)
-            guard let source = try event.asrSource() else {
-                preconditionFailure("an asr.completed event always has a text reference")
-            }
-            let status = LiveASRSegmentStatus(
-                segmentID: segment.segmentID, startFrame: segment.startFrame,
-                outcome: .recognized(source, result.text)
-            )
-            setStatus(status)
-            await onSegmentFinished?(status, snapshot())
+        } catch is ASRRunCancellation {
+            throw CancellationError()
         }
 
         return currentProgress()
@@ -434,29 +400,38 @@ public actor LiveASRSession {
         }
     }
 
-    /// A segment counts as finished only once its failure is durable; an unwritable log stops the live run.
-    private func appendFailure(
-        segment: SegmentReference,
-        kind: ASRFailureKind,
-        error: any Error
-    ) async throws -> LiveASRSegmentStatus {
-        try Task.checkCancellation()
-        _ = try await writer.append(EventDraft(
-            eventType: "asr.failed",
-            sessionID: sessionID,
-            processingRunID: asrRunID,
-            segmentationRunID: segmentationRunID,
-            segmentID: segment.segmentID,
-            sourceStartFrame: segment.startFrame,
-            sourceEndFrame: segment.endFrame,
-            payload: ASRFailedEventPayload(
-                kind: kind,
-                message: error.localizedDescription
+    private func canExecuteSegment() -> Bool {
+        !finalized
+    }
+
+    private func applyPersistedSegment(
+        _ segment: SegmentReference,
+        event: TranscriptEvent?
+    ) throws -> LiveASRSegmentStatus {
+        let status: LiveASRSegmentStatus
+        if let event {
+            try materializer.appendSourceEvent(event)
+            transcriptEvents.append(event)
+            completedCount += 1
+            finishedSegmentIDs.insert(segment.segmentID)
+            guard case .asrCompleted(let result) = event.kind,
+                  let source = try event.asrSource() else {
+                preconditionFailure("an asr.completed event always has a text reference")
+            }
+            status = LiveASRSegmentStatus(
+                segmentID: segment.segmentID,
+                startFrame: segment.startFrame,
+                outcome: .recognized(source, result.text)
             )
-        ))
-        failedCount += 1
-        finishedSegmentIDs.insert(segment.segmentID)
-        let status = LiveASRSegmentStatus(segmentID: segment.segmentID, startFrame: segment.startFrame, outcome: .failed)
+        } else {
+            failedCount += 1
+            finishedSegmentIDs.insert(segment.segmentID)
+            status = LiveASRSegmentStatus(
+                segmentID: segment.segmentID,
+                startFrame: segment.startFrame,
+                outcome: .failed
+            )
+        }
         setStatus(status)
         return status
     }

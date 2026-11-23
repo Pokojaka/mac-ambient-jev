@@ -881,3 +881,77 @@ func measureLiveRegistrationCost() async throws {
         previous = count
     }
 }
+
+@Test
+func liveAndStoredExecutionSaveTheSameSegmentResults() async throws {
+    let fixture = try await makeLiveASRFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let segments = [
+        SegmentReference(
+            segmentationRunID: "seg_live_test", segmentID: "seg_000001",
+            speechRanges: [0..<2_000, 3_000..<4_000]
+        ),
+        SegmentReference(
+            segmentationRunID: "seg_live_test", segmentID: "seg_000002",
+            speechRanges: [4_000..<8_000]
+        )
+    ]
+    let liveEventsURL = fixture.root.appending(path: "events.jsonl")
+    let first = try await fixture.session.process(segments: [segments[0]], checkpoint: fixture.checkpoint)
+    #expect(first.completedCount == 1)
+    #expect(!String(decoding: try Data(contentsOf: liveEventsURL), as: UTF8.self).contains("processing.run.completed"))
+    let second = try await fixture.session.process(segments: [segments[1]], checkpoint: fixture.checkpoint)
+    #expect(second.completedCount == 2)
+    #expect(!String(decoding: try Data(contentsOf: liveEventsURL), as: UTF8.self).contains("processing.run.completed"))
+    let liveCompletion = try await fixture.session.finish()
+    #expect(liveCompletion.completedCount == 2)
+    #expect(liveCompletion.materializedSegments.map(\.text) == ["segment-1", "segment-2"])
+
+    let storedRoot = fixture.root.appending(path: "stored")
+    try FileManager.default.createDirectory(at: storedRoot, withIntermediateDirectories: true)
+    let storedWriter = try SessionWriter(sessionURL: storedRoot)
+    let storedSessionID = UUID()
+    let storedEngine = CountingASREngine()
+    _ = try await storedWriter.append(EventDraft(
+        eventType: "processing.run.started", sessionID: storedSessionID,
+        processingRunID: "asr_live_test",
+        payload: ProcessingRunStartedPayload(stage: .asr, provenance: storedEngine.provenance)
+    ))
+    var pendingSince: [String: Date] = [:]
+    for segment in segments {
+        _ = try await storedWriter.append(.segmentCreated(sessionID: storedSessionID, segment: segment))
+        let pending = try await storedWriter.append(EventDraft(
+            eventType: "asr.pending", sessionID: storedSessionID, processingRunID: "asr_live_test",
+            segmentationRunID: "seg_live_test", segmentID: segment.segmentID,
+            sourceStartFrame: segment.startFrame, sourceEndFrame: segment.endFrame, payload: EmptyPayload()
+        ))
+        pendingSince[segment.segmentID] = pending.createdAt
+    }
+    let reader = try ProcessingTimelineReader(
+        directory: fixture.root, checkpoint: fixture.checkpoint, sessionURL: fixture.root
+    )
+    let coordinator = PipelineCoordinator(
+        sessionID: storedSessionID, segmentationRunID: "seg_live_test", asrRunID: "asr_live_test",
+        writer: storedWriter, asr: storedEngine, loader: ASRAudioLoader(reader: reader),
+        pacingMode: .normal, sleep: { try await Task.sleep(for: $0) }, shouldPause: { nil }
+    )
+    let stored = try await coordinator.run(segments: segments, pendingSince: pendingSince, existingEvents: [])
+    if case .completed = stored.disposition { } else { Issue.record("stored ASR run did not complete") }
+    #expect(stored.completedCount == 2)
+
+    func savedResults(at root: URL) throws -> [NSDictionary] {
+        let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: root.appending(path: "events.jsonl")))
+        return try recovered.lines.compactMap { line in
+            var event = try #require(JSONSerialization.jsonObject(with: line) as? [String: Any])
+            guard event["event_type"] as? String == "asr.completed" else { return nil }
+            for key in ["event_seq", "event_id", "created_at", "session_id"] { event.removeValue(forKey: key) }
+            return event as NSDictionary
+        }
+    }
+    let liveResults = try savedResults(at: fixture.root)
+    let storedResults = try savedResults(at: storedRoot)
+    #expect(liveResults.count == 2)
+    #expect(storedResults.count == 2)
+    #expect(liveResults == storedResults)
+    #expect(liveResults.compactMap { ($0["payload"] as? NSDictionary)?["text"] as? String } == ["segment-1", "segment-2"])
+}

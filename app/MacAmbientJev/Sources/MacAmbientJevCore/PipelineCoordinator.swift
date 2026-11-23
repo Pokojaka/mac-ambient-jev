@@ -140,7 +140,7 @@ public enum PipelineCoordinatorError: Error, LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .missingPendingTime(let segmentID):
-            "区間 \(segmentID) の asr.pending 記録時刻がありません"
+            "区間 \(segmentID) の永続化された登録時刻がありません"
         }
     }
 }
@@ -156,12 +156,12 @@ private struct FailureTally {
     }
 }
 
-/// Runs one ASR run over segments whose `asr.pending` events are already persisted.
+/// Executes ASR for durably registered segments and owns stored run completion.
 public actor PipelineCoordinator {
     private let sessionID: UUID
     private let segmentationRunID: String
     private let asrRunID: String
-    private let writer: SessionWriter
+    private let writer: any SessionEventAppending
     private let asr: any ASREngine
     private let loader: ASRAudioLoader
     private let pacingMode: ASRPacingMode
@@ -172,7 +172,7 @@ public actor PipelineCoordinator {
         sessionID: UUID,
         segmentationRunID: String,
         asrRunID: String,
-        writer: SessionWriter,
+        writer: any SessionEventAppending,
         asr: any ASREngine,
         loader: ASRAudioLoader,
         pacingMode: ASRPacingMode,
@@ -190,11 +190,69 @@ public actor PipelineCoordinator {
         self.shouldPause = shouldPause
     }
 
-    /// - Parameter pendingSince: the `created_at` of each segment's `asr.pending` event.
+    /// - Parameter pendingSince: the durable registration timestamp for each segment.
     public func run(
         segments: [SegmentReference],
         pendingSince: [String: Date],
         existingEvents: [TranscriptEvent]
+    ) async throws -> ASRRunResult {
+        var metrics = ASRBatchMetrics.zero
+        do {
+            let result = try await execute(
+                segments: segments,
+                pendingSince: pendingSince,
+                existingEvents: existingEvents,
+                prepareModel: true,
+                stopOnPersistenceFailure: false,
+                shouldContinue: { true },
+                onSegmentPersisted: { _, _ in }
+            )
+            metrics = result.metrics
+            let failure: ASRRunFailure?
+            switch result.disposition {
+            case .completed: failure = nil
+            case .failed(let runFailure): failure = runFailure
+            case .paused: return result
+            }
+
+            try Task.checkCancellation()
+            do {
+                try await writer.append(EventDraft(
+                    eventType: "processing.run.completed", sessionID: sessionID,
+                    processingRunID: asrRunID,
+                    payload: ProcessingRunCompletedPayload(stage: .asr, succeeded: failure == nil,
+                        completedCount: result.completedCount, failedCount: failure?.failedSegmentCount ?? 0
+                    )
+                ))
+                try Task.checkCancellation()
+                return result
+            } catch let cancellation as CancellationError { throw cancellation } catch {
+                try Task.checkCancellation()
+                return ASRRunResult(
+                    events: result.events, completedCount: result.completedCount,
+                    metrics: result.metrics, disposition: .failed(ASRRunFailure(
+                        failedSegmentCount: failure?.failedSegmentCount ?? 0,
+                        failureCounts: failure?.failureCounts ?? [:],
+                        firstRecognitionMessage: failure?.firstRecognitionMessage,
+                        persistenceFailure: failure?.persistenceFailure ?? error.localizedDescription
+                    ))
+                )
+            }
+        } catch is CancellationError {
+            throw ASRRunCancellation(metrics: metrics)
+        }
+    }
+
+    /// Runs the shared, completion-free ASR batch for stored and live sessions.
+    /// A nil callback event means a durable `asr.failed` event was appended.
+    public func execute(
+        segments: [SegmentReference],
+        pendingSince: [String: Date],
+        existingEvents: [TranscriptEvent],
+        prepareModel: Bool,
+        stopOnPersistenceFailure: Bool,
+        shouldContinue: @escaping @Sendable () async -> Bool,
+        onSegmentPersisted: @escaping @Sendable (SegmentReference, TranscriptEvent?) async throws -> Void
     ) async throws -> ASRRunResult {
         let pendingDates = try segments.map { segment in
             guard let date = pendingSince[segment.segmentID] else {
@@ -213,7 +271,7 @@ public actor PipelineCoordinator {
 
         do {
             var prepared = true
-            if !segments.isEmpty {
+            if prepareModel, !segments.isEmpty {
                 try Task.checkCancellation()
                 let start = clock.now
                 do {
@@ -227,7 +285,11 @@ public actor PipelineCoordinator {
                     try Task.checkCancellation()
                     prepared = false
                     for segment in segments {
-                        try await recordFailure(segment, kind: .engineUnavailable, error: error, in: &tally)
+                        try await recordFailure(
+                            segment, kind: .engineUnavailable, error: error, in: &tally,
+                            stopOnPersistenceFailure: stopOnPersistenceFailure,
+                            onSegmentPersisted: onSegmentPersisted
+                        )
                     }
                 }
             }
@@ -236,6 +298,7 @@ public actor PipelineCoordinator {
             if prepared {
                 for (index, segment) in segments.enumerated() {
                     try Task.checkCancellation()
+                    guard await shouldContinue() else { break }
                     let requestedPauseReason = await shouldPause()
                     try Task.checkCancellation()
                     if let requestedPauseReason {
@@ -255,7 +318,11 @@ public actor PipelineCoordinator {
                         throw cancellation
                     } catch {
                         try Task.checkCancellation()
-                        try await recordFailure(segment, kind: .audioUnreadable, error: error, in: &tally)
+                        try await recordFailure(
+                            segment, kind: .audioUnreadable, error: error, in: &tally,
+                            stopOnPersistenceFailure: stopOnPersistenceFailure,
+                            onSegmentPersisted: onSegmentPersisted
+                        )
                         continue
                     }
                     try Task.checkCancellation()
@@ -274,7 +341,11 @@ public actor PipelineCoordinator {
                             metrics.asrCallSeconds += seconds(start.duration(to: clock.now))
                         }
                         try Task.checkCancellation()
-                        try await recordFailure(segment, kind: .transcriptionFailed, error: error, in: &tally)
+                        try await recordFailure(
+                            segment, kind: .transcriptionFailed, error: error, in: &tally,
+                            stopOnPersistenceFailure: stopOnPersistenceFailure,
+                            onSegmentPersisted: onSegmentPersisted
+                        )
                         continue
                     }
                     if !input.isShorterThanMinimumASRDuration, input.sampleRate > 0 {
@@ -283,8 +354,9 @@ public actor PipelineCoordinator {
                     }
 
                     try Task.checkCancellation()
+                    let completed: EventEnvelope<ASRCompletedEventPayload>
                     do {
-                        let completed = try await writer.append(EventDraft(
+                        completed = try await writer.append(EventDraft(
                             eventType: "asr.completed",
                             sessionID: sessionID,
                             processingRunID: asrRunID,
@@ -298,23 +370,26 @@ public actor PipelineCoordinator {
                                 provenance: asr.provenance
                             )
                         ))
-                        transcriptEvents.append(.asrCompleted(
-                            seq: completed.eventSeq,
-                            runID: asrRunID,
-                            segmentationRunID: segmentationRunID,
-                            segmentID: segment.segmentID,
-                            text: result.text,
-                            detectedLanguage: result.detectedLanguage
-                        ))
-                        completedCount += 1
                     } catch let cancellation as CancellationError {
                         throw cancellation
                     } catch {
                         try Task.checkCancellation()
+                        if stopOnPersistenceFailure { throw error }
                         tally.persistenceFailedCount += 1
                         tally.recordPersistenceFailure(error)
                         continue
                     }
+                    let event = TranscriptEvent.asrCompleted(
+                        seq: completed.eventSeq,
+                        runID: asrRunID,
+                        segmentationRunID: segmentationRunID,
+                        segmentID: segment.segmentID,
+                        text: result.text,
+                        detectedLanguage: result.detectedLanguage
+                    )
+                    transcriptEvents.append(event)
+                    completedCount += 1
+                    try await onSegmentPersisted(segment, event)
 
                     if pacingMode == .lowHeat, index < segments.count - 1 {
                         let start = clock.now
@@ -349,26 +424,6 @@ public actor PipelineCoordinator {
 
             try Task.checkCancellation()
             let failedCount = tally.failureCounts.values.reduce(0, +) + tally.persistenceFailedCount
-            do {
-                try await writer.append(EventDraft(
-                    eventType: "processing.run.completed",
-                    sessionID: sessionID,
-                    processingRunID: asrRunID,
-                    payload: ProcessingRunCompletedPayload(
-                        stage: .asr,
-                        succeeded: failedCount == 0 && tally.persistenceFailure == nil,
-                        completedCount: completedCount,
-                        failedCount: failedCount
-                    )
-                ))
-            } catch let cancellation as CancellationError {
-                throw cancellation
-            } catch {
-                try Task.checkCancellation()
-                tally.recordPersistenceFailure(error)
-            }
-            try Task.checkCancellation()
-
             let disposition: ASRRunDisposition
             if failedCount == 0, tally.persistenceFailure == nil {
                 disposition = .completed
@@ -391,12 +446,14 @@ public actor PipelineCoordinator {
         }
     }
 
-    /// Records a recognition failure and its `asr.failed` event; a failed write is kept as a persistence failure.
+    /// Records a recognition failure; its nil callback follows a durable `asr.failed` write.
     private func recordFailure(
         _ segment: SegmentReference,
         kind: ASRFailureKind,
         error: any Error,
-        in tally: inout FailureTally
+        in tally: inout FailureTally,
+        stopOnPersistenceFailure: Bool,
+        onSegmentPersisted: @Sendable (SegmentReference, TranscriptEvent?) async throws -> Void
     ) async throws {
         try Task.checkCancellation()
         tally.failureCounts[kind, default: 0] += 1
@@ -409,8 +466,11 @@ public actor PipelineCoordinator {
             throw cancellation
         } catch {
             try Task.checkCancellation()
+            if stopOnPersistenceFailure { throw error }
             tally.recordPersistenceFailure(error)
+            return
         }
+        try await onSegmentPersisted(segment, nil)
     }
 
     private func appendFailure(
@@ -432,7 +492,6 @@ public actor PipelineCoordinator {
                 message: error.localizedDescription
             )
         ))
-        try Task.checkCancellation()
     }
 
     private func seconds(_ duration: Duration) -> Double {

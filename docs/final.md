@@ -25,6 +25,8 @@
 
 エンジン入力は **16,000 Hz・mono・float32 PCM** だけを受け付けます。VAD は保存済み floats を直接読み、ASR loader は speech range のサンプルを変更せず連結し、range 間の gap 音声を含めません。Mac の Haas-ja-v1.0（モデル ID [Sanami/haas-ja-onnx/int8dyn](https://huggingface.co/Sanami/haas-ja-onnx/tree/354baedfd9612b00e74cc1ae87dff7f2c558db6f/int8dyn)、engine `onnxruntime-haas-tdt`）は ONNX Runtime の CPU で固定 4 演算スレッドを使い、16,000 Hz の入力を受け取ります。日本語専用モデルです。20 ms 未満の入力は推論せず空本文を返し、30 秒を超える入力は分割せず拒否します。source frame は original や device ではなく保存タイムラインの座標です。
 
+ASR 区間の実行はライブ・ファイル評価と同じ [`PipelineCoordinator.execute`](../app/MacAmbientJev/Sources/MacAmbientJevCore/PipelineCoordinator.swift) を使い、音声読取・認識・pacing・計測・結果保存を共有します。`execute` 自体は段階完了を保存せず、確定処理・ファイル評価では `PipelineCoordinator.run` が実行結果を受けて ASR run の完了を保存します。ライブの段階完了は `LiveASRSession.finish` が所有します。
+
 VAD と ASR には新しい run ID を付け、各段階の `processing.run.started` に、その実行の engine、model、version、configuration を保存します。以前の run の来歴を新しい実行へ引き継ぎません。
 
 検証済み VAD 結果が 0 区間でも segmentation と ASR の run を開始し、両方に `succeeded: true`、`completed_count: 0`、`failed_count: 0` の完了を保存します。ASR の model prepare・推論と判定は実行せず、`ASRBatchMetrics` の数値項目はすべて 0 です。判定 run pointer と保留対象を作らず、空の確定文字起こしを `complete` として公開します。終端表示は「発話区間は検出されませんでした」です。
