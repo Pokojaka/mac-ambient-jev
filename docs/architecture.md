@@ -134,6 +134,8 @@ Core、Pipeline、EngineProtocol、EngineHost は Apple 専用 framework adapter
 
 ライブ / 確定処理は共有の `VADSegmentationState` を使い、発話範囲を最大14秒（必要時は静かな位置で分割）にし、span 最大30秒の外側 segment にまとめます。1 segment が1 ASR・1 transcript row の単位で、ASR はその `speechRanges` だけを順に連結して処理します。segment の最初の speech frame からの release 待ちは約31–32秒というケース依存の目安で、一般的な遅延上限ではありません。
 
+ライブ、確定処理、ファイル評価の ASR 区間実行は Core の [`PipelineCoordinator`](../app/MacAmbientJev/Sources/MacAmbientJevCore/PipelineCoordinator.swift) を共有します。`execute` は音声読取・認識・pacing・計測・結果保存を行い、保存後の callback でライブ行を更新します。バッチ実行は ASR 段階を完了せず、保存音声は `run`、ライブは `LiveASRSession.finish` が完了を保存します。
+
 `LiveASRSession` はセッション内で materialized 行の配列を保持します。`segment.created` の保存と ID による重複登録排除だけでは認識済み行を再構築しません。待ち件数は durable 登録済み ID 数から ASR 完了・失敗が durable になった ID 数を引き、集合差を作らずに求めます。`process` は同じ登録処理を使いますが、登録だけの中間 progress は作りません。行は `asr.completed` / `asr.failed` の保存後、または durable な発話文イベント適用時に `TranscriptMaterializer` で更新します。ASR 完了後は判定応答を待たず原文を表示し、境界 assessment が未保存・保留・失敗なら原文のままです。ライブの境界判定 run と優先度 run はライブセッションの開始時に決まり、そのセッションの active run として扱います。snapshot と completion もこの配列を使い、保存に失敗したイベントは行・件数に反映しません。オフラインの materialization とアプリのライブキュー所有はこのキャッシュとは独立です。
 
 ライブ ASR の結果は保存直後に原文で表示し、区間の順序と結果（空・失敗を含む）を `LiveContentPrioritySession` の独立キューへ渡します。キューは次区間の保存またはテキスト列の終端を待って区間ごとに境界を判定し、成功した assessment の保存後に限り F・B除去範囲を表示へ反映します。`ClauseBoundaryAssembly` で閉じた BTSJ 発話文を保存してから最大40発話文の batch で優先度を判定し、再試行待ちでない保存済み LOW slice を表示から除きます。境界・優先度の待機や失敗は ASR drain・原文表示へ伝播しません。録音停止ではテキスト列の終端をキューに伝え、確定処理は開始時点で保存済みのライブ判定を固定してからキューを取り消します。確定・再試行の優先度再利用では、比較する各 run 自身の保存済み F・B除去範囲をその run の発話文 parts に適用して区切りなしで連結し、UTF-8 byte 列が完全一致する場合だけ再利用します。ライブの F・B除去範囲を確定側・再試行側の原文へ移しません。[ライブ](live.md)・[発話文判定](decision-engine.md)
