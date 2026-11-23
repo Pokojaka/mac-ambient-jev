@@ -70,6 +70,58 @@ struct VADParityFixtureTests {
         #expect(actual.segments == committed.segments)
     }
 
+    @Test(
+        .enabled(
+            if: realModelTestsEnabled || testApplicationSupportIsSet,
+            "RUN_MODEL_TESTS=1 か MAC_AMBIENT_JEV_TEST_APP_SUPPORT があるときだけ実行する（CI は後者でピン留めの VAD モデルを渡す）"
+        )
+    )
+    func savedAudioSegmentationIgnoresAvailabilitySchedule() async throws {
+        let parityCase = try #require(
+            VADParityCase.all.first { $0.name == "pauses_and_long_utterance" }
+        )
+        let samples = parityCase.samples(clip: try SileroTestInputs.speechClipSamples())
+        try #require(samples.count % VadManager.chunkSize != 0, "The fixture must end with a partial VAD chunk.")
+
+        let models = try realModelStore()
+        let manager = try await FluidModelLoading.vadManager(
+            from: models.verifiedDirectory(.vad), config: FluidVADSegmentationEngine.vadConfig
+        )
+        let fullTimeline = try VADParityTimeline(samples: samples)
+
+        func runSchedule(increments: [Int], label: String) async throws -> [SegmentReference] {
+            let engine = FluidVADSegmentationEngine(
+                manager: manager, segmentationRunID: "parity",
+                canonicalSampleRate: CanonicalAudio.sampleRate, measureMicInputLevels: false
+            )
+            let processor = VADTimelineProcessor(engine: engine)
+            var segments: [SegmentReference] = []
+            var availableFrames = 0
+            var incrementIndex = 0
+            while availableFrames < samples.count {
+                availableFrames = min(
+                    samples.count, availableFrames + increments[incrementIndex % increments.count]
+                )
+                let timeline = try VADParityTimeline(samples: Array(samples.prefix(availableFrames)))
+                segments += try await processor.processAvailable(reader: timeline)
+                incrementIndex += 1
+            }
+            segments += try await processor.finish(reader: fullTimeline)
+            #expect(!segments.isEmpty, "\(label) produced no segments")
+            return segments
+        }
+
+        let baseline = try await runSchedule(increments: [8_000], label: "[8000]")
+        for (label, increments) in [
+            ("[16000]", [16_000]),
+            ("[1,4095,8001,127]", [1, 4_095, 8_001, 127]),
+            ("[samples.count]", [samples.count])
+        ] {
+            let actual = try await runSchedule(increments: increments, label: label)
+            #expect(actual == baseline, "\(label) differs from [8000] SegmentReference output")
+        }
+    }
+
     /// Isolates the port from the model: FluidAudio's own probabilities through the ported
     /// state machine must give FluidAudio's speech ranges.
     @Test(arguments: VADParityCase.all)
