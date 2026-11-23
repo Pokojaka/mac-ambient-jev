@@ -5,7 +5,7 @@ import hashlib
 import importlib.util
 import io
 import os
-import tarfile
+import stat
 import tempfile
 import unittest
 import zipfile
@@ -17,70 +17,54 @@ SCRIPT = Path(__file__).with_name("fetch_onnxruntime.py")
 SPEC = importlib.util.spec_from_file_location("fetch_onnxruntime", SCRIPT)
 fetcher = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(fetcher)
-
-
-WINDOWS_FILES = (
-    "include/onnxruntime_c_api.h",
-    "lib/onnxruntime.lib",
-    "lib/onnxruntime.dll",
-    "LICENSE",
-    "ThirdPartyNotices.txt",
+PLATFORM_CASES = (
+    ("Linux", "x86_64", "linux-x64"), ("Linux", "aarch64", "linux-arm64"),
+    ("Windows", "AMD64", "win-x64"), ("Windows", "ARM64", "win-arm64"),
+    ("Darwin", "arm64", "osx-arm64"),
 )
+EXPECTED_NATIVE_FILES = {
+    "linux-x64": (("libonnxruntime.so", "libonnxruntime.so"), ("libonnxruntime_providers_shared.so", "libonnxruntime_providers_shared.so")),
+    "linux-arm64": (("libonnxruntime.so", "libonnxruntime.so"), ("libonnxruntime_providers_shared.so", "libonnxruntime_providers_shared.so")),
+    "osx-arm64": (("libonnxruntime.dylib", "libonnxruntime.1.dylib"),),
+    "win-x64": (("onnxruntime.dll", "onnxruntime.dll"), ("onnxruntime.lib", "onnxruntime.lib"), ("onnxruntime_providers_shared.dll", "onnxruntime_providers_shared.dll"), ("onnxruntime_providers_shared.lib", "onnxruntime_providers_shared.lib")),
+    "win-arm64": (("onnxruntime.dll", "onnxruntime.dll"), ("onnxruntime.lib", "onnxruntime.lib"), ("onnxruntime_providers_shared.dll", "onnxruntime_providers_shared.dll"), ("onnxruntime_providers_shared.lib", "onnxruntime_providers_shared.lib")),
+}
 
 
-def make_zip(root: str, files: tuple[str, ...], extra: tuple[str, ...]) -> bytes:
+def fixture_members() -> dict[str, bytes]:
+    members = {
+        "LICENSE": b"license bytes\x00",
+        "ThirdPartyNotices.txt": b"third party bytes\x00",
+        "build/native/include/onnxruntime_c_api.h": b"/* ONNX Runtime C API */\r\n#ifndef ONNXRUNTIME_C_API_H\r\n#define ONNXRUNTIME_C_API_H\r\n#endif\r\n",
+        "build/native/include/onnxruntime_experimental_c_api.inc": b"ORT_API2_STATUS(ReleaseValue, (OrtValue* value));\r\n",
+        "build/native/include/provider_options.h": b"/* Execution provider options */\r\n",
+        "build/native/include/subdir/ignored.h": b"ignored nested header",
+        "build/native/include/onnxruntime.nuspec": b"ignored metadata",
+        "build/native/lib/netstandard2.0/ignored.dll": b"ignored framework binary",
+        "runtimes/win-x64/lib/netstandard2.0/ignored.dll": b"ignored runtime metadata",
+    }
+    for rid, files in EXPECTED_NATIVE_FILES.items():
+        for source, _ in files:
+            name = f"runtimes/{rid}/native/{source}"
+            members[name] = f"native bytes for {name}".encode()
+    return members
+
+
+def make_package(members: dict[str, bytes], extra: tuple[str, ...] = (), special: tuple[str, ...] = ()) -> bytes:
     result = io.BytesIO()
-    with zipfile.ZipFile(result, "w") as archive:
-        for name in files:
-            archive.writestr(f"{root}/{name}", name.encode())
+    with zipfile.ZipFile(result, "w", compression=zipfile.ZIP_STORED) as archive:
+        for name, data in members.items():
+            info = zipfile.ZipInfo(name)
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16 if name in special else 0
+            archive.writestr(info, data)
+            if name not in special:
+                info.external_attr = 0
         for name in extra:
-            archive.writestr(name, b"extra")
-    return result.getvalue()
-
-
-def make_tar(root: str, extra: tuple[tuple[str, str, str], ...]) -> bytes:
-    result = io.BytesIO()
-    with tarfile.open(fileobj=result, mode="w:gz") as archive:
-        directories = (root, f"{root}/include", f"{root}/lib")
-        for name in directories:
-            item = tarfile.TarInfo(name)
-            item.type = tarfile.DIRTYPE
-            archive.addfile(item)
-        macos = root.startswith("onnxruntime-osx-arm64-")
-        library = f"libonnxruntime.{fetcher.VERSION}.dylib" if macos else f"libonnxruntime.so.{fetcher.VERSION}"
-        files = (
-            f"{root}/include/onnxruntime_c_api.h",
-            f"{root}/LICENSE",
-            f"{root}/ThirdPartyNotices.txt",
-            f"{root}/lib/{library}",
-        )
-        for name in files:
-            data = name.encode()
-            item = tarfile.TarInfo(name)
-            item.size = len(data)
-            archive.addfile(item, io.BytesIO(data))
-        for name, kind, target in extra:
-            item = tarfile.TarInfo(name)
-            if kind == "symlink":
-                item.type = tarfile.SYMTYPE
-                item.linkname = target
-                archive.addfile(item)
-            else:
-                data = target.encode()
-                item.size = len(data)
-                archive.addfile(item, io.BytesIO(data))
-        links = (
-            ((f"{root}/lib/libonnxruntime.1.dylib", library),)
-            if macos else (
-                (f"{root}/lib/libonnxruntime.so.{fetcher.VERSION.split('.')[0]}", f"libonnxruntime.so.{fetcher.VERSION}"),
-                (f"{root}/lib/libonnxruntime.so", f"libonnxruntime.so.{fetcher.VERSION.split('.')[0]}"),
-            )
-        )
-        for name, target in links:
-            item = tarfile.TarInfo(name)
-            item.type = tarfile.SYMTYPE
-            item.linkname = target
-            archive.addfile(item)
+            info = zipfile.ZipInfo(name)
+            info.filename = name
+            info.external_attr = 0
+            archive.writestr(info, b"ignored extra")
+            info.external_attr = 0
     return result.getvalue()
 
 
@@ -88,310 +72,243 @@ class FetchTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.repository = Path(self.temporary.name) / "repository"
-        (self.repository / "scripts").mkdir(parents=True)
 
     @contextlib.contextmanager
-    def configured(self, system: str, machine: str, root_platform: str, suffix: str, data: bytes, expected: str):
-        asset = f"fixture-{system.casefold()}{suffix}"
-        digest = expected
-        cache = self.repository / ".build" / "onnxruntime" / fetcher.VERSION
+    def configured(self, system: str, machine: str, data: bytes, digest: str, size: int):
+        repository = Path(tempfile.mkdtemp(prefix="repository-", dir=self.temporary.name))
+        (repository / "scripts").mkdir()
+        cache = repository / ".build" / "onnxruntime" / fetcher.VERSION
         with contextlib.ExitStack() as stack:
-            stack.enter_context(mock.patch.object(fetcher, "__file__", str(self.repository / "scripts" / "fetch_onnxruntime.py")))
+            stack.enter_context(mock.patch.object(fetcher, "__file__", str(repository / "scripts" / "fetch_onnxruntime.py")))
             stack.enter_context(mock.patch.object(fetcher.platform, "system", return_value=system))
             stack.enter_context(mock.patch.object(fetcher.platform, "machine", return_value=machine))
-            if system.casefold() == "darwin":
-                stack.enter_context(mock.patch.object(fetcher, "MACOS_ARM64_BYTES", len(data)))
-            stack.enter_context(mock.patch.dict(fetcher.ASSETS, {(system.casefold(), machine.casefold()): (root_platform, asset, digest)}))
-            yield asset, cache, self.repository / ".build" / "onnxruntime" / fetcher.VERSION / f"onnxruntime-{root_platform}-{fetcher.VERSION}", data
+            stack.enter_context(mock.patch.object(fetcher, "PACKAGE_SHA256", digest))
+            stack.enter_context(mock.patch.object(fetcher, "PACKAGE_BYTES", size))
+            download = stack.enter_context(mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))))
+            yield cache, cache / fetcher.choose_platform(system, machine), download
 
-    def test_valid_zip_and_tar_archives(self) -> None:
-        windows_root = f"onnxruntime-win-x64-{fetcher.VERSION}"
-        linux_root = f"onnxruntime-linux-x64-{fetcher.VERSION}"
-        macos_root = f"onnxruntime-osx-arm64-{fetcher.VERSION}"
-        for system, machine, root_platform, suffix, data in (
-            ("Windows", "AMD64", "win-x64", ".zip", make_zip(windows_root, WINDOWS_FILES, ())),
-            ("Linux", "x86_64", "linux-x64", ".tgz", make_tar(linux_root, ())),
-            ("Darwin", "arm64", "osx-arm64", ".tgz", make_tar(macos_root, ())),
-        ):
-            with self.subTest(system=system), self.configured(system, machine, root_platform, suffix, data, hashlib.sha256(data).hexdigest()) as (_, cache, destination, _):
-                cache.mkdir(parents=True, exist_ok=True)
-                with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))):
-                    result = fetcher.fetch()
+    def test_platform_inventory_preserves_selected_bytes(self) -> None:
+        members = fixture_members()
+        data = make_package(members)
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            self.assertTrue(all(info.external_attr == 0 for info in archive.infolist()))
+        for system, machine, rid in PLATFORM_CASES:
+            with self.subTest(platform=rid), self.configured(system, machine, data, hashlib.sha256(data).hexdigest(), len(data)) as (cache, destination, _):
+                result = fetcher.fetch()
                 self.assertEqual(result, destination.resolve())
-                self.assertTrue((destination / "include" / "onnxruntime_c_api.h").is_file())
-                self.assertTrue((destination / "LICENSE").is_file())
-                self.assertTrue((destination / "ThirdPartyNotices.txt").is_file())
-                if system == "Windows":
-                    self.assertTrue((destination / "lib" / "onnxruntime.lib").is_file())
-                    self.assertTrue((destination / "lib" / "onnxruntime.dll").is_file())
-                elif system == "Darwin":
-                    self.assertEqual((destination / "lib" / "libonnxruntime.1.dylib").resolve(), (destination / "lib" / f"libonnxruntime.{fetcher.VERSION}.dylib").resolve())
-                    self.assertTrue((destination / "lib" / "libonnxruntime.1.dylib").is_symlink())
-                else:
-                    self.assertEqual((destination / "lib" / "libonnxruntime.so").resolve(), (destination / "lib" / f"libonnxruntime.so.{fetcher.VERSION}").resolve())
+                expected = {"LICENSE", "ThirdPartyNotices.txt", "include/onnxruntime_c_api.h", "include/onnxruntime_experimental_c_api.inc", "include/provider_options.h"}
+                expected.update(f"lib/{output}" for _, output in EXPECTED_NATIVE_FILES[rid])
+                if rid.startswith("linux-"):
+                    expected.add("lib/libonnxruntime.so.1")
+                actual = {path.relative_to(destination).as_posix() for path in destination.rglob("*") if path.is_file() or path.is_symlink()}
+                self.assertEqual(actual, expected)
+                for name in ("LICENSE", "ThirdPartyNotices.txt", "include/onnxruntime_c_api.h", "include/onnxruntime_experimental_c_api.inc", "include/provider_options.h"):
+                    source = name if name in ("LICENSE", "ThirdPartyNotices.txt") else f"build/native/{name}"
+                    self.assertEqual((destination / name).read_bytes(), members[source])
+                for source, output in EXPECTED_NATIVE_FILES[rid]:
+                    member = f"runtimes/{rid}/native/{source}"
+                    self.assertEqual((destination / "lib" / output).read_bytes(), members[member])
+                self.assertEqual((cache / fetcher.PACKAGE_NAME).read_bytes(), data)
+                if rid.startswith("linux-"):
+                    link = destination / "lib" / "libonnxruntime.so.1"
+                    self.assertTrue(link.is_symlink())
+                    self.assertEqual(os.readlink(link), "libonnxruntime.so")
+                    self.assertTrue((destination / "lib" / "libonnxruntime.so").is_file())
+                if rid == "osx-arm64":
+                    self.assertFalse((destination / "lib" / "libonnxruntime.1.dylib").is_symlink())
 
-    def test_tar_rejects_escaping_traversal_and_symlink(self) -> None:
-        root = f"onnxruntime-linux-x64-{fetcher.VERSION}"
-        cases = (
-            ((f"{root}/../../outside", "file", "bad"),),
-            ((f"{root}/lib/escape", "symlink", "../../outside"),),
-        )
-        for extra in cases:
-            data = make_tar(root, extra)
-            with self.subTest(extra=extra), self.configured("Linux", "x86_64", "linux-x64", ".tgz", data, hashlib.sha256(data).hexdigest()) as (asset, cache, destination, _):
-                cache.mkdir(parents=True, exist_ok=True)
-                (cache / asset).write_bytes(data)
-                with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))):
-                    with self.assertRaises((tarfile.TarError, ValueError)):
-                        fetcher.fetch()
+    def test_unsafe_paths_and_selected_special_files_are_rejected(self) -> None:
+        base = fixture_members()
+        cases = ("../outside", "/outside", r"\outside", "C:/outside", "C:\\outside", "safe\\name", "build/native/include/C:outside.h", "build/native/include/header.h:stream.h")
+        for unsafe in cases:
+            data = make_package(base, extra=(unsafe,))
+            with self.subTest(path=unsafe), self.configured("Windows", "AMD64", data, hashlib.sha256(data).hexdigest(), len(data)) as (_, destination, _):
+                with self.assertRaisesRegex(ValueError, "安全でない"):
+                    fetcher.fetch()
                 self.assertFalse(destination.exists())
-                self.assertFalse((cache.parent.parent / "outside").exists())
+        selected = "runtimes/win-x64/native/onnxruntime.dll"
+        data = make_package(base, special=(selected,))
+        with self.configured("Windows", "AMD64", data, hashlib.sha256(data).hexdigest(), len(data)) as (_, destination, _):
+            with self.assertRaisesRegex(ValueError, "通常ファイル"):
+                fetcher.fetch()
+            self.assertFalse(destination.exists())
 
-    def test_zip_absolute_paths_are_rejected_before_extraction(self) -> None:
-        root = f"onnxruntime-win-x64-{fetcher.VERSION}"
-        for unsafe in ("/outside", "\\outside", "C:/outside", "C:\\outside", "\\\\server\\share\\outside"):
-            data = make_zip(root, WINDOWS_FILES, (unsafe,))
-            with self.subTest(name=unsafe), self.configured("Windows", "AMD64", "win-x64", ".zip", data, hashlib.sha256(data).hexdigest()) as (asset, cache, destination, _):
-                cache.mkdir(parents=True, exist_ok=True)
-                (cache / asset).write_bytes(data)
-                with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))), mock.patch.object(zipfile.ZipFile, "extractall", wraps=zipfile.ZipFile.extractall) as extract:
-                    with self.assertRaises(ValueError):
+    def test_missing_headers_licenses_and_native_files_fail(self) -> None:
+        cases = [
+            ("LICENSE", "Windows", "AMD64"),
+            ("ThirdPartyNotices.txt", "Windows", "AMD64"),
+            ("build/native/include/onnxruntime_c_api.h", "Windows", "AMD64"),
+            ("build/native/include/onnxruntime_experimental_c_api.inc", "Windows", "AMD64"),
+        ]
+        for system, machine, rid in PLATFORM_CASES:
+            cases.extend((f"runtimes/{rid}/native/{source}", system, machine) for source, _ in EXPECTED_NATIVE_FILES[rid])
+        for missing, system, machine in cases:
+            members = fixture_members()
+            del members[missing]
+            data = make_package(members)
+            with self.subTest(missing=missing), self.configured(system, machine, data, hashlib.sha256(data).hexdigest(), len(data)) as (_, destination, _):
+                with self.assertRaises(ValueError):
+                    fetcher.fetch()
+                self.assertFalse(destination.exists())
+
+    def test_cached_and_downloaded_hash_mismatches_fail(self) -> None:
+        data = make_package(fixture_members())
+        wrong_digest = hashlib.sha256(b"different pinned package").hexdigest()
+        for cached in (False, True):
+            with self.subTest(cached=cached), self.configured("Windows", "AMD64", data, wrong_digest, len(data)) as (cache, destination, download):
+                if cached:
+                    cache.mkdir(parents=True)
+                    (cache / fetcher.PACKAGE_NAME).write_bytes(data)
+                with self.assertRaisesRegex(ValueError, "SHA-256"):
+                    fetcher.fetch()
+                self.assertFalse(destination.exists())
+                self.assertEqual(list(cache.glob(f".{fetcher.PACKAGE_NAME}.*.download")), [])
+                self.assertEqual((cache / fetcher.PACKAGE_NAME).exists(), cached)
+                if cached:
+                    download.assert_not_called()
+
+    def test_package_size_is_checked_before_extraction_on_every_platform(self) -> None:
+        data = make_package(fixture_members())
+        for system, machine, rid in PLATFORM_CASES:
+            with self.subTest(platform=rid), self.configured(system, machine, data, hashlib.sha256(data).hexdigest(), len(data) + 1) as (_, destination, _):
+                with mock.patch.object(fetcher, "_extract") as extract:
+                    with self.assertRaisesRegex(ValueError, "サイズが一致しません"):
                         fetcher.fetch()
                 extract.assert_not_called()
                 self.assertFalse(destination.exists())
 
-    def test_zip_dotdot_is_normalized_by_zipfile(self) -> None:
-        root = f"onnxruntime-win-x64-{fetcher.VERSION}"
-        files = tuple(f"include/../onnxruntime_c_api.h" if name == "include/onnxruntime_c_api.h" else name for name in WINDOWS_FILES)
-        data = make_zip(root, files, ())
-        with self.configured("Windows", "AMD64", "win-x64", ".zip", data, hashlib.sha256(data).hexdigest()) as (_, cache, destination, _):
-            cache.mkdir(parents=True, exist_ok=True)
-            with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))):
-                result = fetcher.fetch()
-            self.assertEqual(result, destination.resolve())
-            self.assertTrue((destination / "include" / "onnxruntime_c_api.h").is_file())
-            self.assertEqual(list(cache.glob(".extract-*/**/*outside*")), [])
-
-    def test_wrong_multiple_roots_and_missing_required_files_fail(self) -> None:
-        root = f"onnxruntime-win-x64-{fetcher.VERSION}"
-        variants = (
-            (make_zip("unexpected", WINDOWS_FILES, ()), "wrong root"),
-            (make_zip(root, WINDOWS_FILES, ("other/file",)), "multiple roots"),
-            (make_zip(root, tuple(name for name in WINDOWS_FILES if name != "include/onnxruntime_c_api.h"), ()), "header"),
-            (make_zip(root, tuple(name for name in WINDOWS_FILES if name != "lib/onnxruntime.lib"), ()), "library"),
-            (make_zip(root, tuple(name for name in WINDOWS_FILES if name != "LICENSE"), ()), "license"),
-        )
-        for data, label in variants:
-            with self.subTest(case=label), self.configured("Windows", "AMD64", "win-x64", ".zip", data, hashlib.sha256(data).hexdigest()) as (asset, cache, destination, _):
-                cache.mkdir(parents=True, exist_ok=True)
-                (cache / asset).write_bytes(data)
-                with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))):
-                    with self.assertRaises(ValueError):
-                        fetcher.fetch()
-                self.assertFalse(destination.exists())
-
-    def test_macos_tree_requires_runtime_libraries(self) -> None:
-        root = self.repository / "onnxruntime-osx-arm64"
-        for name in ("include/onnxruntime_c_api.h", "LICENSE", "ThirdPartyNotices.txt"):
-            path = root / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("fixture")
-        library = root / "lib"
-        library.mkdir()
-        versioned = library / f"libonnxruntime.{fetcher.VERSION}.dylib"
-        versioned.write_text("fixture")
-        with self.assertRaisesRegex(ValueError, "libonnxruntime"):
-            fetcher._validate_tree(root, False, "osx-arm64")
-        soname = library / "libonnxruntime.1.dylib"
-        soname.write_text("fixture")
-        versioned.unlink()
-        with self.assertRaisesRegex(ValueError, "libonnxruntime"):
-            fetcher._validate_tree(root, False, "osx-arm64")
-
-    def test_macos_download_size_must_match_release(self) -> None:
-        root = f"onnxruntime-osx-arm64-{fetcher.VERSION}"
-        data = make_tar(root, ())
-        with self.configured("Darwin", "arm64", "osx-arm64", ".tgz", data, hashlib.sha256(data).hexdigest()) as (_, cache, destination, _):
-            with mock.patch.object(fetcher, "MACOS_ARM64_BYTES", len(data) + 1), mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))), mock.patch.object(fetcher, "_extract") as extract:
-                with self.assertRaisesRegex(ValueError, "サイズが一致しません"):
-                    fetcher.fetch()
-            extract.assert_not_called()
-            self.assertFalse(destination.exists())
-
-    def test_linux_library_symlink_must_resolve_inside_root_to_file(self) -> None:
-        root = f"onnxruntime-linux-x64-{fetcher.VERSION}"
-        data = make_tar(root, ((f"{root}/other/directory-link", "symlink", "../lib"),))
-        with self.configured("Linux", "x86_64", "linux-x64", ".tgz", data, hashlib.sha256(data).hexdigest()) as (_, cache, destination, _):
-            cache.mkdir(parents=True, exist_ok=True)
-            with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))):
-                with self.assertRaises(ValueError):
-                    fetcher.fetch()
-            self.assertFalse(destination.exists())
-
-    def test_cached_hash_mismatch_never_downloads_or_extracts(self) -> None:
-        root = f"onnxruntime-win-x64-{fetcher.VERSION}"
-        data = make_zip(root, WINDOWS_FILES, ())
-        with self.configured("Windows", "AMD64", "win-x64", ".zip", data, hashlib.sha256(data).hexdigest()) as (asset, cache, destination, _):
-            cache.mkdir(parents=True, exist_ok=True)
-            (cache / asset).write_bytes(b"corrupt cache")
-            with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen") as download, mock.patch.object(zipfile.ZipFile, "extractall") as extract:
-                with self.assertRaises(ValueError):
-                    fetcher.fetch()
-            download.assert_not_called()
-            extract.assert_not_called()
-            self.assertFalse(destination.exists())
-
-    def test_downloaded_hash_mismatch_is_not_extracted_or_published(self) -> None:
-        root = f"onnxruntime-win-x64-{fetcher.VERSION}"
-        data = make_zip(root, WINDOWS_FILES, ())
-        with self.configured("Windows", "AMD64", "win-x64", ".zip", data, expected=hashlib.sha256(b"different").hexdigest()) as (_, cache, destination, _):
-            with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen", return_value=contextlib.closing(io.BytesIO(data))), mock.patch.object(zipfile, "ZipFile") as open_zip:
-                with self.assertRaises(ValueError):
-                    fetcher.fetch()
-            open_zip.assert_not_called()
-            self.assertFalse(destination.exists())
-            self.assertEqual(list(cache.glob("*.zip")), [])
-            self.assertEqual(list(cache.glob("*.download")), [])
-
-    def test_repeated_fetch_reuses_valid_tree_untouched(self) -> None:
-        root = f"onnxruntime-win-x64-{fetcher.VERSION}"
-        data = make_zip(root, WINDOWS_FILES, ())
-        with self.configured("Windows", "AMD64", "win-x64", ".zip", data, hashlib.sha256(data).hexdigest()) as (asset, cache, destination, _):
-            cache.mkdir(parents=True, exist_ok=True)
-            archive = cache / asset
-            archive.write_bytes(data)
+    def test_valid_tree_is_reused_untouched(self) -> None:
+        data = make_package(fixture_members())
+        with self.configured("Windows", "AMD64", data, hashlib.sha256(data).hexdigest(), len(data)) as (cache, destination, _):
             first = fetcher.fetch()
             header = first / "include" / "onnxruntime_c_api.h"
             marker = first / "tree-marker"
-            marker.write_bytes(b"preserved")
-            header_bytes = header.read_bytes()
-            mtime_ns = 1_700_000_000_000_000_000
-            os.utime(header, ns=(mtime_ns, mtime_ns))
-            header_stat = header.stat()
-            marker_bytes = marker.read_bytes()
-            archive.write_bytes(b"corrupt archive must not be checked")
-
-            with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen") as download, mock.patch.object(zipfile.ZipFile, "extractall") as extract:
+            marker.write_bytes(b"preserve")
+            os.utime(header, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+            before = header.stat()
+            (cache / fetcher.PACKAGE_NAME).write_bytes(b"bad cached archive ignored")
+            with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen") as download, mock.patch.object(fetcher, "_extract") as extract:
                 second = fetcher.fetch()
             download.assert_not_called()
             extract.assert_not_called()
             self.assertEqual(first, second)
-            self.assertEqual(second, destination.resolve())
-            self.assertEqual(header.stat(), header_stat)
-            self.assertEqual(header.stat().st_mtime_ns, mtime_ns)
-            self.assertEqual(header.read_bytes(), header_bytes)
-            self.assertEqual(marker.read_bytes(), marker_bytes)
+            self.assertEqual(header.stat(), before)
+            self.assertEqual(marker.read_bytes(), b"preserve")
 
-    def test_invalid_existing_tree_requires_deletion_and_remains_untouched(self) -> None:
-        root = f"onnxruntime-win-x64-{fetcher.VERSION}"
-        data = make_zip(root, WINDOWS_FILES, ())
-        with self.configured("Windows", "AMD64", "win-x64", ".zip", data, hashlib.sha256(data).hexdigest()) as (_, cache, destination, _):
+    def test_invalid_existing_tree_requires_deletion_and_stays_untouched(self) -> None:
+        data = make_package(fixture_members())
+        digest = hashlib.sha256(data).hexdigest()
+        with self.configured("Windows", "AMD64", data, digest, len(data)) as (_, destination, download):
             destination.mkdir(parents=True)
-            marker = destination / "invalid-marker"
-            marker.write_text("keep invalid tree")
-            with mock.patch.object(fetcher.pinned_download.urllib.request, "urlopen") as download, mock.patch.object(zipfile.ZipFile, "extractall") as extract:
-                with self.assertRaises(RuntimeError) as raised:
-                    fetcher.fetch()
+            marker = destination / "keep.txt"
+            marker.write_text("invalid but untouched")
+            with self.assertRaisesRegex(RuntimeError, "削除") as raised:
+                fetcher.fetch()
             self.assertIn(str(destination.resolve()), str(raised.exception))
-            self.assertIn("削除", str(raised.exception))
-            self.assertIsInstance(raised.exception.__cause__, ValueError)
+            self.assertEqual(marker.read_text(), "invalid but untouched")
             download.assert_not_called()
-            extract.assert_not_called()
-            self.assertEqual(marker.read_text(), "keep invalid tree")
 
-    def test_stale_generated_files_are_removed_but_unrelated_files_remain(self) -> None:
-        root = f"onnxruntime-win-x64-{fetcher.VERSION}"
-        data = make_zip(root, WINDOWS_FILES, ())
-        with self.configured("Windows", "AMD64", "win-x64", ".zip", data, hashlib.sha256(data).hexdigest()) as (asset, cache, destination, _):
-            cache.mkdir(parents=True, exist_ok=True)
-            (cache / asset).write_bytes(data)
-            stale_staging = cache / ".extract-stale"
-            stale_staging.mkdir()
-            (stale_staging / "partial").write_text("partial")
-            official_download = cache / f".{fetcher.WINDOWS_X64[1]}.stale.download"
-            official_download.write_bytes(b"partial download")
-            unrelated_file = cache / "keep.txt"
-            unrelated_file.write_text("keep")
-            unrelated_download = cache / ".unrelated.download"
-            unrelated_download.write_bytes(b"keep")
+        for corruption, target in (("escaping", None), ("directory", "../include"), ("dangling", "missing.so")):
+            with self.subTest(linux_soname=corruption), self.configured("Linux", "x86_64", data, digest, len(data)) as (_, destination, _):
+                fetcher.fetch()
+                marker = destination / "keep.txt"
+                marker.write_text("valid tree marker")
+                soname = destination / "lib" / "libonnxruntime.so.1"
+                soname.unlink()
+                if corruption == "escaping":
+                    outside = Path(self.temporary.name) / "outside-soname-target.so"
+                    outside.write_bytes(b"outside target")
+                    target = str(outside)
+                soname.symlink_to(target)
+                before_link = os.readlink(soname)
+                with self.assertRaisesRegex(RuntimeError, "削除") as raised:
+                    fetcher.fetch()
+                self.assertIn(str(destination.resolve()), str(raised.exception))
+                self.assertEqual(marker.read_text(), "valid tree marker")
+                self.assertTrue(soname.is_symlink())
+                self.assertEqual(os.readlink(soname), before_link)
 
-            result = fetcher.fetch()
+        with self.subTest(macos="unexpected symlink"), self.configured("Darwin", "arm64", data, digest, len(data)) as (_, destination, _):
+            fetcher.fetch()
+            marker = destination / "keep.txt"
+            marker.write_text("valid tree marker")
+            unexpected = destination / "lib" / "unexpected-link"
+            unexpected.symlink_to("libonnxruntime.1.dylib")
+            with self.assertRaisesRegex(RuntimeError, "削除") as raised:
+                fetcher.fetch()
+            self.assertIn(str(destination.resolve()), str(raised.exception))
+            self.assertEqual(marker.read_text(), "valid tree marker")
+            self.assertTrue(unexpected.is_symlink())
+            self.assertEqual(os.readlink(unexpected), "libonnxruntime.1.dylib")
 
-            self.assertEqual(result, destination.resolve())
-            self.assertFalse(stale_staging.exists())
-            self.assertFalse(official_download.exists())
-            self.assertEqual(unrelated_file.read_text(), "keep")
-            self.assertEqual(unrelated_download.read_bytes(), b"keep")
+    def test_only_current_package_temporaries_and_staging_are_cleaned(self) -> None:
+        data = make_package(fixture_members())
+        with self.configured("Windows", "AMD64", data, hashlib.sha256(data).hexdigest(), len(data)) as (cache, destination, _):
+            cache.mkdir(parents=True)
+            (cache / fetcher.PACKAGE_NAME).write_bytes(data)
+            staging = cache / ".extract-stale"
+            staging.mkdir()
+            (staging / "partial").write_bytes(b"partial")
+            temporary = cache / f".{fetcher.PACKAGE_NAME}.stale.download"
+            temporary.write_bytes(b"partial")
+            unrelated = cache / ".microsoft.ml.onnxruntime.1.30.0.nupkg.stale.download"
+            unrelated.write_bytes(b"retain")
+            fetcher.fetch()
+            self.assertFalse(staging.exists())
+            self.assertFalse(temporary.exists())
+            self.assertEqual(unrelated.read_bytes(), b"retain")
+            self.assertTrue(destination.is_dir())
 
-    def test_publication_failure_cleans_staging_without_creating_destination(self) -> None:
-        root = f"onnxruntime-win-x64-{fetcher.VERSION}"
-        data = make_zip(root, WINDOWS_FILES, ())
-        with self.configured("Windows", "AMD64", "win-x64", ".zip", data, hashlib.sha256(data).hexdigest()) as (asset, cache, destination, _):
-            cache.mkdir(parents=True, exist_ok=True)
-            (cache / asset).write_bytes(data)
-            real_replace = os.replace
-            replace_calls: list[tuple[Path, Path]] = []
-
-            def fail_publication(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> None:
-                source_path, target_path = Path(source), Path(target)
-                replace_calls.append((source_path, target_path))
-                if source_path.parent.name.startswith(".extract-"):
-                    raise OSError("injected publication failure")
-                real_replace(source, target)
-
-            with mock.patch.object(fetcher.os, "replace", side_effect=fail_publication):
+    def test_failed_publication_cleans_staging(self) -> None:
+        data = make_package(fixture_members())
+        with self.configured("Windows", "AMD64", data, hashlib.sha256(data).hexdigest(), len(data)) as (cache, destination, _):
+            cache.mkdir(parents=True)
+            (cache / fetcher.PACKAGE_NAME).write_bytes(data)
+            with mock.patch.object(fetcher.os, "replace", side_effect=OSError("injected publication failure")):
                 with self.assertRaisesRegex(OSError, "injected publication failure"):
                     fetcher.fetch()
-            self.assertEqual(len(replace_calls), 1)
-            self.assertTrue(replace_calls[0][0].parent.name.startswith(".extract-"))
-            self.assertEqual(replace_calls[0][1].resolve(), destination.resolve())
             self.assertFalse(destination.exists())
             self.assertEqual(list(cache.glob(".extract-*")), [])
 
-    def test_cli_requires_python_312_before_fetch(self) -> None:
+    def test_package_identity_platform_mapping_and_cli(self) -> None:
+        self.assertEqual(fetcher.VERSION, "1.31.0")
+        self.assertEqual(fetcher.PACKAGE_NAME, "microsoft.ml.onnxruntime.1.31.0.nupkg")
+        self.assertEqual(fetcher.PACKAGE_URL, "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.31.0/microsoft.ml.onnxruntime.1.31.0.nupkg")
+        self.assertEqual(fetcher.PACKAGE_BYTES, 159626085)
+        self.assertEqual(fetcher.PACKAGE_SHA256, "7e35fdb4f5adb62f01e60798e2e5ed05108f5fbbe1cca03fbcc37903cf7c5e3b")
+        for system, machine, rid in PLATFORM_CASES + (("Linux", "arm64", "linux-arm64"), ("Windows", "x86_64", "win-x64"), ("Windows", "aarch64", "win-arm64")):
+            with self.subTest(platform=(system, machine)):
+                self.assertEqual(fetcher.choose_platform(system, machine), rid)
+        with self.assertRaises(RuntimeError) as unsupported:
+            fetcher.choose_platform("Darwin", "x86_64")
+        self.assertEqual(str(unsupported.exception), "未対応の実行環境です: platform.system()='Darwin', platform.machine()='x86_64'。Linux x86_64/aarch64/arm64、Windows AMD64/x86_64/ARM64/aarch64、macOS arm64 のみ対応します。")
+        expected = Path(self.temporary.name) / "published"
         with mock.patch.object(fetcher.sys, "version_info", (3, 11, 0)), mock.patch.object(fetcher.sys, "argv", ["fetch_onnxruntime.py"]), mock.patch.object(fetcher, "fetch") as fetch:
-            stdout, stderr = io.StringIO(), io.StringIO()
-            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                code = fetcher.main()
-            self.assertEqual(code, 1)
-            self.assertEqual(stdout.getvalue(), "")
-            self.assertIn("Python 3.12 以上", stderr.getvalue())
+            output, error = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+                self.assertEqual(fetcher.main(), 1)
+            self.assertEqual(output.getvalue(), "")
+            self.assertIn("Python 3.12 以上", error.getvalue())
             fetch.assert_not_called()
-
-    def test_cli_stdout_errors_and_arguments(self) -> None:
-        expected = Path(self.temporary.name) / "published-root"
-        with mock.patch.object(fetcher.sys, "version_info", (3, 12, 0)), mock.patch.object(fetcher.sys, "argv", ["fetch_onnxruntime.py"]), mock.patch.object(fetcher, "fetch", return_value=expected):
-            stdout, stderr = io.StringIO(), io.StringIO()
-            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                code = fetcher.main()
-            self.assertEqual(code, 0)
-            self.assertEqual(stdout.getvalue(), f"{expected}\n")
-            self.assertEqual(stderr.getvalue(), "")
-
-        with mock.patch.object(fetcher.sys, "version_info", (3, 12, 0)), mock.patch.object(fetcher.sys, "argv", ["fetch_onnxruntime.py"]), mock.patch.object(fetcher, "fetch", side_effect=RuntimeError("失敗")):
-            stdout, stderr = io.StringIO(), io.StringIO()
-            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                code = fetcher.main()
-            self.assertEqual(code, 1)
-            self.assertEqual(stdout.getvalue(), "")
-            self.assertIn("失敗", stderr.getvalue())
-
         with mock.patch.object(fetcher.sys, "version_info", (3, 12, 0)), mock.patch.object(fetcher.sys, "argv", ["fetch_onnxruntime.py", "--extra"]), mock.patch.object(fetcher, "fetch") as fetch:
-            stdout, stderr = io.StringIO(), io.StringIO()
-            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                code = fetcher.main()
-            self.assertEqual(code, 2)
-            self.assertEqual(stdout.getvalue(), "")
-            self.assertNotEqual(stderr.getvalue(), "")
+            output, error = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+                self.assertEqual(fetcher.main(), 2)
+            self.assertEqual(output.getvalue(), "")
+            self.assertIn("引数", error.getvalue())
             fetch.assert_not_called()
-
-    def test_supported_platform_machine_spellings(self) -> None:
-        for system, machine in (("Linux", "x86_64"), ("Linux", "aarch64"), ("Linux", "arm64"), ("Windows", "AMD64"), ("Windows", "x86_64"), ("Windows", "ARM64"), ("Windows", "aarch64"), ("Darwin", "arm64")):
-            with self.subTest(system=system, machine=machine):
-                self.assertEqual(len(fetcher.choose_asset(system, machine)), 3)
-        with self.assertRaisesRegex(RuntimeError, "macOS arm64"):
-            fetcher.choose_asset("Darwin", "x86_64")
+        with mock.patch.object(fetcher.sys, "version_info", (3, 12, 0)), mock.patch.object(fetcher.sys, "argv", ["fetch_onnxruntime.py"]), mock.patch.object(fetcher, "fetch", return_value=expected):
+            output, error = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+                self.assertEqual(fetcher.main(), 0)
+            self.assertEqual(output.getvalue(), f"{expected}\n")
+            self.assertEqual(error.getvalue(), "")
+        with mock.patch.object(fetcher.sys, "version_info", (3, 12, 0)), mock.patch.object(fetcher.sys, "argv", ["fetch_onnxruntime.py"]), mock.patch.object(fetcher, "fetch", side_effect=RuntimeError("失敗")):
+            output, error = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+                self.assertEqual(fetcher.main(), 1)
+            self.assertEqual(output.getvalue(), "")
+            self.assertIn("失敗", error.getvalue())
 
 
 if __name__ == "__main__":

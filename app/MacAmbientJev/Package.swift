@@ -146,7 +146,7 @@ let onnxRuntimePlatform: String
 #if arch(x86_64)
 onnxRuntimePlatform = "linux-x64"
 #elseif arch(arm64)
-onnxRuntimePlatform = "linux-aarch64"
+onnxRuntimePlatform = "linux-arm64"
 #else
 fatalError("ONNX Runtime \(onnxRuntimeVersion) は Linux x86_64 / arm64 のみ対応します。")
 #endif
@@ -174,7 +174,7 @@ let onnxRuntimeRoot = repositoryRoot
     .appendingPathComponent(".build", isDirectory: true)
     .appendingPathComponent("onnxruntime", isDirectory: true)
     .appendingPathComponent(onnxRuntimeVersion, isDirectory: true)
-    .appendingPathComponent("onnxruntime-\(onnxRuntimePlatform)-\(onnxRuntimeVersion)", isDirectory: true)
+    .appendingPathComponent(onnxRuntimePlatform, isDirectory: true)
 let onnxRuntimeIncludeDirectory = onnxRuntimeRoot.appendingPathComponent("include", isDirectory: true)
 let onnxRuntimeHeader = onnxRuntimeIncludeDirectory.appendingPathComponent("onnxruntime_c_api.h")
 let onnxRuntimeLibraryDirectory = onnxRuntimeRoot.appendingPathComponent("lib", isDirectory: true)
@@ -183,21 +183,23 @@ let onnxRuntimeLibrary = onnxRuntimeLibraryDirectory.appendingPathComponent("onn
 let requiredONNXRuntimeFiles = [
     onnxRuntimeHeader,
     onnxRuntimeLibrary,
-    onnxRuntimeLibraryDirectory.appendingPathComponent("onnxruntime.dll")
+    onnxRuntimeLibraryDirectory.appendingPathComponent("onnxruntime.dll"),
+    onnxRuntimeLibraryDirectory.appendingPathComponent("onnxruntime_providers_shared.dll"),
+    onnxRuntimeLibraryDirectory.appendingPathComponent("onnxruntime_providers_shared.lib")
 ]
 #elseif os(macOS)
-let onnxRuntimeLibrary = onnxRuntimeLibraryDirectory.appendingPathComponent("libonnxruntime.\(onnxRuntimeVersion).dylib")
+let onnxRuntimeLibrary = onnxRuntimeLibraryDirectory.appendingPathComponent("libonnxruntime.1.dylib")
 let requiredONNXRuntimeFiles = [
     onnxRuntimeHeader,
-    onnxRuntimeLibrary,
-    onnxRuntimeLibraryDirectory.appendingPathComponent("libonnxruntime.1.dylib")
+    onnxRuntimeLibrary
 ]
 #else
-let onnxRuntimeLibrary = onnxRuntimeLibraryDirectory.appendingPathComponent("libonnxruntime.so.\(onnxRuntimeVersion)")
+let onnxRuntimeLibrary = onnxRuntimeLibraryDirectory.appendingPathComponent("libonnxruntime.so")
 let requiredONNXRuntimeFiles = [
     onnxRuntimeHeader,
     onnxRuntimeLibrary,
-    onnxRuntimeLibraryDirectory.appendingPathComponent("libonnxruntime.so.1")
+    onnxRuntimeLibraryDirectory.appendingPathComponent("libonnxruntime.so.1"),
+    onnxRuntimeLibraryDirectory.appendingPathComponent("libonnxruntime_providers_shared.so")
 ]
 #endif
 let missingONNXRuntimeFiles = requiredONNXRuntimeFiles

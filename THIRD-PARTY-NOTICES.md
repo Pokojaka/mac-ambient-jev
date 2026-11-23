@@ -61,13 +61,13 @@ SOFTWARE.
 
 ## ONNX Runtime
 
-リポジトリ: [`microsoft/onnxruntime`](https://github.com/microsoft/onnxruntime)
+公式 NuGet パッケージ: [Microsoft.ML.OnnxRuntime 1.31.0](https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime/1.31.0)
 
-固定リリース: [1.31.0](https://github.com/microsoft/onnxruntime/releases/tag/v1.31.0)
+取得 URL: <https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.31.0/microsoft.ml.onnxruntime.1.31.0.nupkg>
+サイズ: `159626085` bytes; SHA-256: `7e35fdb4f5adb62f01e60798e2e5ed05108f5fbbe1cca03fbcc37903cf7c5e3b`
+展開先 root の `LICENSE` と `ThirdPartyNotices.txt` は保持します。固定情報と取得手順は [docs/windows.md#onnx-runtime](docs/windows.md#onnx-runtime) を参照してください。
 
-ソース: [LICENSE](https://raw.githubusercontent.com/microsoft/onnxruntime/v1.31.0/LICENSE)
-
-macOS arm64 の wrapper build / tests と Linux / Windows の製品実行では、ONNX Runtime C API の CPU Execution Provider を使います。macOS app は dylib を bundle せず、runtime ASR 経路にも使いません。SDK archive 内の `LICENSE` と `ThirdPartyNotices.txt` は展開先に保持します。各 platform の archive の SHA-256 は [ONNX Runtime 取得手順](docs/windows.md#onnx-runtime) を参照してください。
+macOS arm64 の wrapper build / tests と Linux / Windows の製品実行では、ONNX Runtime C API の CPU Execution Provider を使います。macOS app は dylib を bundle せず、runtime ASR 経路にも使いません。
 
 ```text
 MIT License
