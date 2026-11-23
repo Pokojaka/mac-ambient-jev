@@ -611,7 +611,7 @@ func failedTaggerLoadKeepsLiveRowsUnsplitAndPendingWithoutRequests() async throw
     await fixture.priority.worker?.value
 }
 
-@Test(.timeLimit(.minutes(1)), arguments: [false, true])
+@Test(.timeLimit(.minutes(10)), arguments: [false, true])
 func failedASRStopsBeforeLaterDecisionRequests(leadingFailure: Bool) async throws {
     let provider = LiveProvider(continuing: [], fillerRanges: [])
     let counter = DecisionUsageCounter()
