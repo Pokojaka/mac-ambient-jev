@@ -921,3 +921,432 @@ private struct FixedResponseProvider: DecisionProvider {
         return PriorityBatchResponse(decisions: decisions, inputTokens: 17)
     }
 }
+
+/// Boundaries after `。`, continuation for the listed segments, PRIMARY for every clause; named results
+/// can be made to fail, and failures can be switched off to model a later retry.
+private actor RetryProvider: DecisionProvider {
+    private let continuing: Set<String>
+    private var failingBoundarySegments: Set<String>
+    private var failsPriority: Bool
+    private(set) var boundarySegmentIDs: [String] = []
+    private(set) var priorityTexts: [[String]] = []
+
+    init(continuing: Set<String> = [], failingBoundarySegments: Set<String> = [], failsPriority: Bool = false) {
+        self.continuing = continuing
+        self.failingBoundarySegments = failingBoundarySegments
+        self.failsPriority = failsPriority
+    }
+
+    private var answersNaN = false
+
+    func recover() {
+        failingBoundarySegments = []
+        failsPriority = false
+    }
+
+    /// Replaces the error answers with a response whose probabilities are NaN.
+    func answerWithNaN() {
+        failingBoundarySegments = []
+        answersNaN = true
+    }
+
+    func assessBoundaries(_ request: ClauseBoundaryRequest) async throws -> ClauseBoundaryResponse {
+        boundarySegmentIDs.append(request.source.segmentID)
+        if failingBoundarySegments.contains(request.source.segmentID) { throw DecisionResponseError.missingAnswer }
+        return ClauseBoundaryResponse(
+            probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, answersNaN ? Double.nan : 0.9) }),
+            continuationProbability: request.next.map { _ in continuing.contains(request.source.segmentID) ? 0.9 : 0.1 },
+            fillerRanges: [], inputTokens: 3
+        )
+    }
+
+    func classifyPriorities(_ targets: [PriorityTextTarget]) async throws -> PriorityBatchResponse {
+        priorityTexts.append(targets.map(\.text))
+        if failsPriority { throw DecisionResponseError.missingAnswer }
+        let decision = try ContentPriorityDecision(
+            priority: .primary, confidence: 0.95, probabilities: ["PRIMARY": 0.975, "LOW_PRIORITY": 0.025]
+        )
+        return PriorityBatchResponse(
+            decisions: Dictionary(uniqueKeysWithValues: targets.map { ($0.key, decision) }), inputTokens: 7
+        )
+    }
+}
+
+/// A finished live decision pair for `texts`, and the saved log a retry reads.
+private func finishedDecisions(
+    texts: [String], provider: RetryProvider
+) async throws -> (fixture: LiveDecisionFixture, stored: StoredTranscriptEvents) {
+    let counter = DecisionUsageCounter()
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    let fixture = try await LiveDecisionFixture(texts: texts, makeDecisions: { decisions }, counter: counter)
+    for index in texts.indices { try await fixture.recognize(index) }
+    try await fixture.priority.finishInput(snapshot: await fixture.asr.snapshot())
+    try await fixture.priority.waitForDrain()
+    return (fixture, try savedDecisions(fixture))
+}
+
+private func savedDecisions(_ fixture: LiveDecisionFixture) throws -> StoredTranscriptEvents {
+    try #require(try EventLogTranscriptReader().read(
+        eventsURL: fixture.root.appending(path: "events.jsonl"), sessionID: fixture.sessionID
+    ))
+}
+
+/// What a retry does: a replacement pair over the saved ASR results, then the event selecting it.
+private func replaceDecisions(
+    _ fixture: LiveDecisionFixture, stored: StoredTranscriptEvents, provider: RetryProvider,
+    boundaryTargets: Set<SegmentTextReference>, clauseTargets: Set<ClauseReference>, select: Bool = true
+) async throws -> (session: LiveContentPrioritySession, boundaryRunID: String, priorityRunID: String) {
+    let suffix = UUID().uuidString.lowercased()
+    let keepsBoundaryRun = boundaryTargets.isEmpty
+    let boundaryRunID = keepsBoundaryRun ? try #require(stored.state.runs.clauseBoundary) : "boundary_\(suffix)"
+    let priorityRunID = "priority_\(suffix)"
+    let source = try StoredTranscriptSource(state: stored.state, boundaryRunID: boundaryRunID, priorityRunID: priorityRunID)
+    let counter = DecisionUsageCounter()
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    let writer = try SessionWriter(sessionURL: fixture.root)
+    let session = try await LiveContentPrioritySession.openReplacement(
+        sessionID: fixture.sessionID, writer: writer, source: source,
+        plan: ReplacementPlan(
+            boundaryRunID: boundaryRunID, priorityRunID: priorityRunID,
+            boundaryTargets: boundaryTargets, clauseTargets: clauseTargets,
+            carry: ReplacementCarry(events: stored.events, runs: stored.state.runs),
+            keepsBoundaryRun: keepsBoundaryRun
+        ),
+        makeDecisions: { decisions }, usageCounter: counter, onStatus: { _ in }, onUpdate: { _ in }
+    )
+    try await session.replace(snapshot: await source.snapshot())
+    if select {
+        try await writer.append(DecisionRunReplacement(
+            generationID: stored.state.generation.id,
+            previous: DecisionRunIDs(
+                boundary: try #require(stored.state.runs.clauseBoundary),
+                priority: try #require(stored.state.runs.contentPriority)
+            ),
+            replacement: DecisionRunIDs(boundary: boundaryRunID, priority: priorityRunID)
+        ).selectionEvent(sessionID: fixture.sessionID))
+    }
+    return (session, boundaryRunID, priorityRunID)
+}
+
+private func runEvents(_ fixture: LiveDecisionFixture, _ runID: String) throws -> [[String: Any]] {
+    try SessionRecovery.recoverJSONL(Data(contentsOf: fixture.root.appending(path: "events.jsonl"))).lines
+        .map { try #require(try JSONSerialization.jsonObject(with: $0) as? [String: Any]) }
+        .filter { $0["processing_run_id"] as? String == runID }
+}
+
+@Test(.timeLimit(.minutes(10)))
+func stopRetainsSavedDecisionsAndProcessesOnlyRemainingTargets() async throws {
+    let provider = LiveProvider(continuing: [], fillerRanges: [])
+    let counter = DecisionUsageCounter()
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    let fixture = try await LiveDecisionFixture(texts: ["一。二。", "三。"], makeDecisions: { decisions }, counter: counter)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    try await fixture.recognize(0)
+    try await fixture.recognize(1)
+    // Recording stopped here: the first segment's decisions are saved, the last one still waits for its successor.
+    let firstWorker = await fixture.priority.worker
+    await firstWorker?.value
+    await fixture.priority.stop()
+    let savedBeforeStop = try fixture.eventObjects(from: await fixture.eventLog())
+    #expect(savedBeforeStop.filter { $0["event_type"] as? String == ClauseEventType.priorityAssigned }.count == 1)
+    #expect(await provider.priorityRequests == [["一。", "二。"]])
+
+    let writer = try SessionWriter(sessionURL: fixture.root)
+    let reopenedASR = try await LiveASRSession.open(
+        sessionID: fixture.sessionID, sessionURL: fixture.root, writer: writer, asr: ScriptedASR([])
+    )
+    let reopened = try await LiveContentPrioritySession.open(
+        sessionID: fixture.sessionID, writer: writer, liveASR: reopenedASR,
+        makeDecisions: { decisions }, usageCounter: counter, onStatus: { _ in }, onUpdate: { _ in }
+    )
+    try await reopened.finishInput(snapshot: await reopenedASR.snapshot())
+    try await reopened.waitForDrain()
+
+    #expect(await provider.boundaryRequests.map(\.source.segmentID) == ["seg_1", "seg_2"])
+    #expect(await provider.priorityRequests == [["一。", "二。"], ["三。"]])
+    let stored = try savedDecisions(fixture)
+    #expect(stored.pendingDecisions.pendingTargets.isEmpty)
+    let objects = try fixture.eventObjects(from: await fixture.eventLog())
+    #expect(objects.filter { $0["event_type"] as? String == ClauseEventType.priorityAssigned }.count == 2)
+    #expect(objects.filter {
+        $0["event_type"] as? String == "processing.run.completed"
+            && ($0["payload"] as? [String: Any])?["stage"] as? String == "contentPriority"
+    }.count == 1)
+}
+
+@Test(.timeLimit(.minutes(10)))
+func aPriorityRetryRequestsOnlyItsTargetsKeepsTheBoundaryRunAndCarriesTheRest() async throws {
+    let provider = RetryProvider(failsPriority: true)
+    let (fixture, stored) = try await finishedDecisions(texts: ["一。二。三"], provider: provider)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let pending = stored.pendingDecisions.clauses
+    #expect(pending.count == 3)
+    let boundaryRunID = try #require(stored.state.runs.clauseBoundary)
+    let boundaryEventCount = try runEvents(fixture, boundaryRunID).count
+    await provider.recover()
+    let requestsBefore = await provider.priorityTexts.count
+
+    let retry = try await replaceDecisions(
+        fixture, stored: stored, provider: provider, boundaryTargets: [], clauseTargets: [pending[1]]
+    )
+
+    #expect(await provider.boundarySegmentIDs == ["seg_1"])
+    #expect(await provider.priorityTexts.dropFirst(requestsBefore).map { $0 } == [["二。"]])
+    #expect(retry.boundaryRunID == boundaryRunID)
+    #expect(try runEvents(fixture, boundaryRunID).count == boundaryEventCount)
+    let after = try savedDecisions(fixture)
+    #expect(after.state.runs.contentPriority == retry.priorityRunID)
+    // Pending results that were not requested stay pending; they are never turned into results.
+    #expect(after.pendingDecisions.clauses == [pending[0], pending[2]])
+    let rows = try TranscriptMaterializer(sampleRate: after.state.generation.sampleRate)
+        .materialize(events: after.events, activeRuns: after.state.runs)
+    #expect(rows.first?.clauseSlices.map(\.needsRetry) == [true, false, true])
+    // A reopened decision session would resume the generation's first pair, not the selected one.
+    #expect(throws: (any Error).self) {
+        try DecisionSessionRecovery(eventsURL: fixture.root.appending(path: "events.jsonl"), sessionID: fixture.sessionID)
+    }
+}
+
+@Test(.timeLimit(.minutes(10)))
+func aBoundaryRetryCarriesSavedAssessmentsAndRequestsOnlyThePendingSource() async throws {
+    let provider = RetryProvider(continuing: ["seg_1", "seg_2"], failingBoundarySegments: ["seg_2"])
+    let (fixture, stored) = try await finishedDecisions(texts: ["前。続く", "途中", "終わり。後"], provider: provider)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let pending = stored.pendingDecisions.boundarySegments
+    #expect(pending.map(\.segmentID) == ["seg_2"])
+    await provider.recover()
+    let boundaryRequestsBefore = await provider.boundarySegmentIDs.count
+    let priorityRequestsBefore = await provider.priorityTexts.count
+
+    let retry = try await replaceDecisions(
+        fixture, stored: stored, provider: provider, boundaryTargets: Set(pending), clauseTargets: []
+    )
+
+    #expect(await provider.boundarySegmentIDs.dropFirst(boundaryRequestsBefore).map { $0 } == ["seg_2"])
+    // Clauses that do not touch the re-requested source keep their saved priority.
+    let requested = await provider.priorityTexts.dropFirst(priorityRequestsBefore).flatMap { $0 }
+    #expect(requested.allSatisfy { $0.contains("途中") })
+    #expect(!requested.isEmpty)
+    let kinds = try runEvents(fixture, retry.boundaryRunID)
+        .filter { $0["event_type"] as? String == ClauseEventType.boundaryAssessed }
+        .compactMap { (($0["payload"] as? [String: Any])?["source_decision"] as? [String: Any])?["kind"] as? String }
+    #expect(kinds == ["carried_over", "assessed", "carried_over"])
+    let after = try savedDecisions(fixture)
+    #expect(after.pendingDecisions.pendingTargets.isEmpty)
+    #expect(after.state.runs.clauseBoundary == retry.boundaryRunID)
+}
+
+@Test(.timeLimit(.minutes(10)))
+func aFailedRetryEndsItsStartedRunsAndSelectsNothing() async throws {
+    let provider = RetryProvider(failsPriority: true)
+    let (fixture, stored) = try await finishedDecisions(texts: ["一。二。三"], provider: provider)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let pending = stored.pendingDecisions.clauses
+    let writer = try SessionWriter(sessionURL: fixture.root)
+    let source = try StoredTranscriptSource(
+        state: stored.state, boundaryRunID: try #require(stored.state.runs.clauseBoundary), priorityRunID: "priority_x"
+    )
+    let counter = DecisionUsageCounter()
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    let session = try await LiveContentPrioritySession.openReplacement(
+        sessionID: fixture.sessionID, writer: writer, source: source,
+        plan: ReplacementPlan(
+            boundaryRunID: try #require(stored.state.runs.clauseBoundary), priorityRunID: "priority_x",
+            boundaryTargets: [], clauseTargets: Set(pending),
+            carry: ReplacementCarry(events: stored.events, runs: stored.state.runs), keepsBoundaryRun: true
+        ),
+        makeDecisions: { decisions }, usageCounter: counter, onStatus: { _ in }, onUpdate: { _ in }
+    )
+    do {
+        try await session.replace(snapshot: await source.snapshot())
+        Issue.record("a retry whose request fails must not complete")
+    } catch {
+        #expect(try await session.recordFailure(originalError: error))
+    }
+
+    let events = try runEvents(fixture, "priority_x")
+    #expect(events.filter { $0["event_type"] as? String == "processing.run.started" }.count == 1)
+    #expect(!events.contains { $0["event_type"] as? String == ClauseEventType.priorityAssigned })
+    let completion = try #require(events.first { $0["event_type"] as? String == "processing.run.completed" }?["payload"] as? [String: Any])
+    #expect(completion["succeeded"] as? Bool == false)
+    // The three clauses of the failed request count as failed.
+    #expect(completion["completed_count"] as? Int == 0)
+    #expect(completion["failed_count"] as? Int == 3)
+    #expect(try !DecisionRetryAnalyzer().hasUnpublishedDecisionRun(
+        lines: SessionRecovery.recoverJSONL(Data(contentsOf: fixture.root.appending(path: "events.jsonl"))).lines,
+        sessionID: fixture.sessionID
+    ))
+    #expect(try savedDecisions(fixture).state.runs == stored.state.runs)
+}
+
+@Test(.timeLimit(.minutes(10)), arguments: [false, true])
+func aFailedBoundaryRequestCountsAsFailedAndSelectsNothing(malformedProbability: Bool) async throws {
+    let provider = RetryProvider(failingBoundarySegments: ["seg_1"])
+    let (fixture, stored) = try await finishedDecisions(texts: ["前。後"], provider: provider)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let pending = stored.pendingDecisions.boundarySegments
+    #expect(pending.count == 1)
+    // The retry's answer is either an error or a response with a NaN probability.
+    if malformedProbability { await provider.answerWithNaN() }
+    let source = try StoredTranscriptSource(state: stored.state, boundaryRunID: "boundary_x", priorityRunID: "priority_x")
+    let counter = DecisionUsageCounter()
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    let session = try await LiveContentPrioritySession.openReplacement(
+        sessionID: fixture.sessionID, writer: try SessionWriter(sessionURL: fixture.root), source: source,
+        plan: ReplacementPlan(
+            boundaryRunID: "boundary_x", priorityRunID: "priority_x", boundaryTargets: Set(pending), clauseTargets: [],
+            carry: ReplacementCarry(events: stored.events, runs: stored.state.runs), keepsBoundaryRun: false
+        ),
+        makeDecisions: { decisions }, usageCounter: counter, onStatus: { _ in }, onUpdate: { _ in }
+    )
+
+    do {
+        try await session.replace(snapshot: await source.snapshot())
+        Issue.record("a retry whose request fails must not complete")
+    } catch {
+        #expect(try await session.recordFailure(originalError: error))
+    }
+
+    let completions = try runEvents(fixture, "boundary_x").filter { $0["event_type"] as? String == "processing.run.completed" }
+    let payload = try #require(completions.first?["payload"] as? [String: Any])
+    #expect(completions.count == 1 && payload["succeeded"] as? Bool == false)
+    #expect(payload["failed_count"] as? Int == 1)
+}
+
+@Test(.timeLimit(.minutes(10)))
+func aCarriedPriorityIsRejectedOnReloadWhenItsOriginHasOtherParts() async throws {
+    let provider = RetryProvider()
+    // Two clauses with identical text and different parts.
+    let (fixture, stored) = try await finishedDecisions(texts: ["あ。", "あ。"], provider: provider)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let retry = try await replaceDecisions(fixture, stored: stored, provider: provider, boundaryTargets: [], clauseTargets: [])
+    let eventsURL = fixture.root.appending(path: "events.jsonl")
+    _ = try #require(try EventLogTranscriptReader().read(eventsURL: eventsURL, sessionID: fixture.sessionID))
+
+    var lines = try SessionRecovery.recoverJSONL(Data(contentsOf: eventsURL)).lines
+    let index = try #require(lines.firstIndex { line in
+        let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any]
+        return object?["event_type"] as? String == ClauseEventType.priorityAssigned
+            && object?["processing_run_id"] as? String == retry.priorityRunID
+    })
+    var object = try #require(try JSONSerialization.jsonObject(with: lines[index]) as? [String: Any])
+    var payload = try #require(object["payload"] as? [String: Any])
+    var assignments = try #require(payload["assignments"] as? [[String: Any]])
+    try #require(assignments.count == 2)
+    assignments[1]["decision"] = assignments[0]["decision"]
+    payload["assignments"] = assignments
+    object["payload"] = payload
+    lines[index] = try JSONSerialization.data(withJSONObject: object)
+    try lines.reduce(into: Data()) { $0.append($1); $0.append(0x0A) }.write(to: eventsURL)
+
+    #expect(throws: (any Error).self) {
+        try EventLogTranscriptReader().read(eventsURL: eventsURL, sessionID: fixture.sessionID)
+    }
+}
+
+@Test(.timeLimit(.minutes(10)))
+func aSecondSelectionFromTheSamePreflightStateFailsAndWritesNothing() async throws {
+    let provider = RetryProvider(failsPriority: true)
+    let (fixture, stored) = try await finishedDecisions(texts: ["一。二"], provider: provider)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    await provider.recover()
+    let pending = Set(stored.pendingDecisions.clauses)
+    let first = try await replaceDecisions(
+        fixture, stored: stored, provider: provider, boundaryTargets: [], clauseTargets: pending, select: false
+    )
+    let second = try await replaceDecisions(
+        fixture, stored: stored, provider: provider, boundaryTargets: [], clauseTargets: pending, select: false
+    )
+    let previous = DecisionRunIDs(
+        boundary: try #require(stored.state.runs.clauseBoundary), priority: try #require(stored.state.runs.contentPriority)
+    )
+    func selection(_ run: (session: LiveContentPrioritySession, boundaryRunID: String, priorityRunID: String)) -> DecisionRunReplacement {
+        DecisionRunReplacement(
+            generationID: stored.state.generation.id, previous: previous,
+            replacement: DecisionRunIDs(boundary: run.boundaryRunID, priority: run.priorityRunID)
+        )
+    }
+    let writer = try SessionWriter(sessionURL: fixture.root)
+    try await writer.appendSelection(selection(first), sessionID: fixture.sessionID)
+    let eventsURL = fixture.root.appending(path: "events.jsonl")
+    let logAfterFirst = try Data(contentsOf: eventsURL)
+
+    await #expect(throws: DecisionEnrichmentError.selectionConflict) {
+        try await writer.appendSelection(selection(second), sessionID: fixture.sessionID)
+    }
+
+    #expect(try Data(contentsOf: eventsURL) == logAfterFirst)
+    #expect(try savedDecisions(fixture).state.runs.contentPriority == first.priorityRunID)
+}
+
+/// Appends every event, and fails after the first `processing.run.completed` has reached the log.
+private actor CompletionThrowingWriter: DecisionEventWriting {
+    struct AmbiguousWrite: Error {}
+    private let writer: SessionWriter
+    nonisolated let eventsURL: URL
+    private var thrown = false
+
+    init(writer: SessionWriter, eventsURL: URL) {
+        self.writer = writer
+        self.eventsURL = eventsURL
+    }
+
+    func append<Payload: Codable & Sendable>(_ draft: EventDraft<Payload>) async throws -> EventEnvelope<Payload> {
+        let envelope = try await writer.append(draft)
+        if draft.eventType == "processing.run.completed", !thrown {
+            thrown = true
+            throw AmbiguousWrite()
+        }
+        return envelope
+    }
+
+    func appendSelection(_ selection: DecisionRunReplacement, sessionID: UUID) async throws {
+        try await writer.appendSelection(selection, sessionID: sessionID)
+    }
+
+    func appendFailedRetryCompletion(
+        _ draft: EventDraft<ProcessingRunCompletedPayload>
+    ) async throws -> EventEnvelope<ProcessingRunCompletedPayload> {
+        try await writer.appendFailedRetryCompletion(draft)
+    }
+}
+
+@Test(.timeLimit(.minutes(10)))
+func aCompletionWriteThatFailsAfterReachingTheLogIsNeverWrittenTwice() async throws {
+    let provider = RetryProvider(failsPriority: true)
+    let (fixture, stored) = try await finishedDecisions(texts: ["一。二"], provider: provider)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    await provider.recover()
+    let writer = try SessionWriter(sessionURL: fixture.root)
+    let source = try StoredTranscriptSource(
+        state: stored.state, boundaryRunID: try #require(stored.state.runs.clauseBoundary), priorityRunID: "priority_x"
+    )
+    let counter = DecisionUsageCounter()
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    let session = try await LiveContentPrioritySession.openReplacement(
+        sessionID: fixture.sessionID, writer: CompletionThrowingWriter(writer: writer, eventsURL: writer.eventsURL),
+        source: source,
+        plan: ReplacementPlan(
+            boundaryRunID: try #require(stored.state.runs.clauseBoundary), priorityRunID: "priority_x",
+            boundaryTargets: [], clauseTargets: Set(stored.pendingDecisions.clauses),
+            carry: ReplacementCarry(events: stored.events, runs: stored.state.runs), keepsBoundaryRun: true
+        ),
+        makeDecisions: { decisions }, usageCounter: counter, onStatus: { _ in }, onUpdate: { _ in }
+    )
+
+    do {
+        try await session.replace(snapshot: await source.snapshot())
+        Issue.record("the failing completion write must surface")
+    } catch {
+        let wroteAnotherCompletion = try await session.recordFailure(originalError: error)
+        #expect(!wroteAnotherCompletion)
+    }
+
+    let completions = try runEvents(fixture, "priority_x").filter { $0["event_type"] as? String == "processing.run.completed" }
+    #expect(completions.count == 1)
+    // The unselected, once-completed run is what recovery rebuilds from; a second completion would block it.
+    #expect(try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(
+        lines: SessionRecovery.recoverJSONL(Data(contentsOf: fixture.root.appending(path: "events.jsonl"))).lines,
+        sessionID: fixture.sessionID
+    ))
+}

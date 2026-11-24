@@ -2,11 +2,6 @@ import Foundation
 import Testing
 @testable import MacAmbientJevCore
 
-private struct ScannerRetryFailure: LocalizedError, Sendable {
-    let message: String
-    var errorDescription: String? { message }
-}
-
 private let recoveryCheckpoint = AudioCheckpoint(
     committedFrames: 4_000,
     sampleRate: CanonicalAudio.sampleRate,
@@ -231,7 +226,7 @@ func completedFinalizationRetriesOnlyItsPublishedPendingDecisionResults() async 
         throw DecisionResponseError.missingAnswer
     })
     let counter = DecisionUsageCounter()
-    let result = try await buildAndPublish(root: url, sessionID: id, provider: provider, scope: .all, counter: counter)
+    let result = try await buildAndPublish(root: url, sessionID: id, provider: provider, counter: counter)
     #expect(await provider.boundaryRequests.map(\.source.segmentID) == ["s01", "s02"])
     let boundaryUsage = await counter.snapshot().boundaryRequests
     #expect(boundaryUsage.sendCount == 2)
@@ -246,68 +241,6 @@ func completedFinalizationRetriesOnlyItsPublishedPendingDecisionResults() async 
 
     let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery
     #expect(candidate?.action == .recoverDecisionRun(boundarySegments: [], clauses: result.pendingPriorityClauses))
-}
-
-@Test(arguments: [(true, false, true), (false, true, false), (true, false, false)])
-func failedRetryInferenceRemainsAManualRetryCandidate(
-    _ initialBoundaryFails: Bool,
-    _ initialPriorityFails: Bool,
-    _ retryBoundaryFails: Bool
-) async throws {
-    let root = temporaryRoot()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let id = UUID()
-    let url = try writeRecording(id: id, root: root)
-    _ = try await writeTranscript(
-        ["本文。"], root: url, sessionID: id,
-        sampleRate: recoveryCheckpoint.sampleRate, frameCount: recoveryCheckpoint.committedFrames
-    )
-    try saveCompletedStatus(root: url, sessionID: id)
-    let initialProvider = ScriptedDecisionProvider(
-        boundary: { request in
-            if initialBoundaryFails { throw DecisionResponseError.missingAnswer }
-            return try punctuationBoundaries(continuing: [], fillerRangesBySegment: [:])(request)
-        },
-        priority: { targets in
-            if initialPriorityFails { throw DecisionResponseError.missingAnswer }
-            return try lowForBackchannel(targets)
-        }
-    )
-    let initial = try await buildAndPublish(root: url, sessionID: id, provider: initialProvider, scope: .all)
-    #expect(initial.pendingBoundarySegments.count == (initialBoundaryFails ? 1 : 0))
-    #expect(initial.pendingPriorityClauses.count == (initialPriorityFails ? 1 : 0))
-    let publishedMetadata = try #require(try ProcessingMetadataStore(sessionURL: url).load())
-    let publishedPending = try readStored(root: url, sessionID: id).pendingDecisions
-
-    let failureMessage = "scanner retry failed deterministically"
-    let retryBoundaryRunID = "scanner_boundary_retry_\(UUID().uuidString.lowercased())"
-    let retryPriorityRunID = "scanner_priority_retry_\(UUID().uuidString.lowercased())"
-    let retryProvider = ScriptedDecisionProvider(
-        boundary: { request in
-            if retryBoundaryFails { throw ScannerRetryFailure(message: failureMessage) }
-            return try punctuationBoundaries(continuing: [], fillerRangesBySegment: [:])(request)
-        },
-        priority: { _ in throw ScannerRetryFailure(message: failureMessage) }
-    )
-    await #expect(throws: DecisionEnrichmentError.retryFailedDurably(failureMessage)) {
-        try await buildAndPublish(
-            root: url, sessionID: id, provider: retryProvider,
-            scope: .retry(
-                boundarySegments: Set(publishedPending.boundarySegments),
-                clauses: Set(publishedPending.clauses)
-            ),
-            boundaryRunID: initial.pendingBoundarySegments.isEmpty ? initial.boundaryRunID : retryBoundaryRunID,
-            priorityRunID: retryPriorityRunID
-        )
-    }
-
-    #expect(try #require(try ProcessingMetadataStore(sessionURL: url).load()) == publishedMetadata)
-    #expect(try !DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: eventLines(url), sessionID: id))
-    let candidate = try #require(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery)
-    #expect(candidate.action == .retryContentPriority(
-        boundarySegments: publishedPending.boundarySegments,
-        clauses: publishedPending.clauses
-    ))
 }
 
 @Test
@@ -326,8 +259,7 @@ func retryAnalyzerDistinguishesFailedCompletedRunFromUnendedAndSuccessfulUnpubli
         provider: ScriptedDecisionProvider(
             boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]),
             priority: lowForBackchannel
-        ),
-        scope: .all
+        )
     )
     let writer = try SessionWriter(sessionURL: url)
     let analyzer = DecisionRetryAnalyzer()
@@ -503,7 +435,7 @@ func recoveryRebuildsAnUnpublishedRetryEvenWhenPublishedPendingIsEmpty() async t
         priority: lowForBackchannel
     )
     let counter = DecisionUsageCounter()
-    _ = try await buildAndPublish(root: url, sessionID: id, provider: provider, scope: .all, counter: counter)
+    _ = try await buildAndPublish(root: url, sessionID: id, provider: provider, counter: counter)
     #expect(await provider.boundaryRequests.map(\.source.segmentID) == ["s01"])
     let boundaryUsage = await counter.snapshot().boundaryRequests
     #expect(boundaryUsage.sendCount == 1)
@@ -524,19 +456,14 @@ func recoveryRebuildsAnUnpublishedRetryEvenWhenPublishedPendingIsEmpty() async t
     #expect(try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: eventLines(url), sessionID: id))
     #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery?.action
         == .recoverDecisionRun(boundarySegments: [], clauses: []))
-    let retryProvider = ScriptedDecisionProvider(
-        boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]),
-        priority: lowForBackchannel
-    )
-    let retryCounter = DecisionUsageCounter()
+    // Selecting a complete pair after the unpublished run ends the recovery.
     _ = try await buildAndPublish(
-        root: url, sessionID: id, provider: retryProvider,
-        scope: .retry(boundarySegments: [], clauses: []), counter: retryCounter
+        root: url, sessionID: id,
+        provider: ScriptedDecisionProvider(
+            boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]),
+            priority: lowForBackchannel
+        )
     )
-    #expect(await retryProvider.boundaryRequests.isEmpty)
-    let retryBoundaryUsage = await retryCounter.snapshot().boundaryRequests
-    #expect(retryBoundaryUsage.sendCount == 0)
-    #expect(retryBoundaryUsage.inputTokens == 0)
     #expect(try !DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: eventLines(url), sessionID: id))
     #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery == nil)
 }
@@ -554,7 +481,7 @@ func recoveryRejectsCorruptionInCurrentEventLog() async throws {
     try saveCompletedStatus(root: url, sessionID: id)
     _ = try await buildAndPublish(root: url, sessionID: id,
                                   provider: ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]),
-                                                                     priority: lowForBackchannel), scope: .all)
+                                                                     priority: lowForBackchannel))
     let eventsURL = url.appending(path: "events.jsonl")
     var objects = try eventObjects(url)
     let index = try #require(objects.firstIndex { $0["event_type"] as? String == ClauseEventType.priorityAssigned })

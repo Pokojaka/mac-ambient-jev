@@ -24,6 +24,7 @@ struct ClauseEventLog {
         let inputs: [(seq: UInt64, input: ClauseAssemblyInput)]
         let clauses: [(seq: UInt64, unit: ClauseUnit)]
         let clauseTexts: [ClauseReference: String]
+        let clauseParts: [ClauseReference: [ClauseSourcePart]]
         let pendingSources: [SegmentTextReference]
         /// Sources unresolved because they touch a pending result, including the pending ones.
         let unresolvedSources: Set<SegmentTextReference>
@@ -433,7 +434,8 @@ struct ClauseEventLog {
         }
         let result = BoundaryRun(
             runID: runID, complete: run.completed, inputs: inputs, clauses: stored,
-            clauseTexts: texts, pendingSources: pending, unresolvedSources: unresolved,
+            clauseTexts: texts, clauseParts: Dictionary(uniqueKeysWithValues: storedUnits.map { ($0.reference, $0.parts) }),
+            pendingSources: pending, unresolvedSources: unresolved,
             assembly: assemblyFinished ? finished : assembly, composer: composer,
             unsavedClauses: Array(afterFinish.dropFirst(storedUnits.count))
         )
@@ -491,8 +493,10 @@ struct ClauseEventLog {
                     guard let originText = originBoundary.clauseTexts[sourceClause] else {
                         throw fail("引き継いだ優先度の元がありません")
                     }
-                    guard ExactClauseTextKey(text: originText) == ExactClauseTextKey(text: text) else {
-                        throw fail("引き継いだ優先度の節本文が一致しません")
+                    guard originText.utf8.elementsEqual(text.utf8),
+                          let originParts = originBoundary.clauseParts[sourceClause],
+                          originParts == boundary.clauseParts[assignment.reference] else {
+                        throw fail("引き継いだ優先度の節本文または節の構成が一致しません")
                     }
                     _ = try priorityRun(sourceRunID, boundary: originBoundary)
                 }
@@ -513,25 +517,5 @@ struct ClauseEventLog {
         validation.priorities[runID] = result
         return result
     }
-
-    /// Validate the caller's frozen reuse selection, not a newer "latest" lookup from the log.
-    func validateReusableDecisions(_ decisions: [ExactClauseTextKey: ReusableClauseDecision]) throws {
-        for (key, reuse) in decisions {
-            let boundary = try boundaryRun(reuse.sourceClause.boundaryRunID)
-            let priority = try priorityRun(reuse.sourcePriorityRunID, boundary: boundary)
-            guard let text = boundary.clauseTexts[reuse.sourceClause],
-                  ExactClauseTextKey(text: text) == key,
-                  let assignment = priority.events.first(where: { $0.seq == reuse.sourceEventSeq })?
-                    .payload.assignments.first(where: { $0.reference == reuse.sourceClause }),
-                  case .classified(_, _, let response) = assignment.decision,
-                  response == reuse.decision, assignment.priority == reuse.visiblePriority,
-                  !assignment.needsRetry else {
-                throw EventLogTranscriptReaderError.inconsistentClauseRun(
-                    runID: reuse.sourcePriorityRunID, reason: "再利用する優先度の保存元が一致しません"
-                )
-            }
-        }
-    }
-
 
 }

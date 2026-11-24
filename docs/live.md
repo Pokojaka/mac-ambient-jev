@@ -78,7 +78,7 @@ source の同一性、境界候補、次区間の原文 head、時間順、組�
 
 判定キューは batch ごとに provider factory から coordinator を取得します。Core ML tagger のロード結果（成功・失敗とも）は factory 内で cache され、アプリを再起動するまで再ロードしません。同時に要求されたロードは一つにまとまります。
 
-モデルの初期化失敗、符号化失敗、または判定結果の検証失敗なら、該当境界／優先度を保留して本文を表示したままにします。境界保留では分割せず、継続を no と偽装しません。優先度だけが保留の発話文も本文を表示します。ライブの後続待ちは、登録済みでも成功結果がない区間（`asr.failed` を含む）を待ち続け、`asr_gap` にも EOF にもしません。成功した空 ASR 区間は現在のテキスト列だけを区切り、それ以前の保留を解決せず、次の列と切り離します。
+モデルの初期化失敗、符号化失敗、または判定結果の検証失敗なら、該当境界／優先度を保留して本文を表示したままにします。境界保留では分割せず、継続を no と偽装しません。優先度だけが保留の発話文も本文を表示します。ライブの後続待ちは、登録済みでも成功結果がない区間（`asr.failed` を含む）を待ち続け、EOF にもしません。成功した空 ASR 区間は現在のテキスト列だけを区切り、それ以前の保留を解決せず、次の列と切り離します。
 
 `LiveContentPrioritySession.open` は録音中と通常 stop/finalization で、同じ選択済み decision run ID 群を開きます。durable な boundary / assignment を再要求せず、cursor・successor wait・open clause parts を復元します。既存 event 間で中断していれば不足する derived closure と未割当の非空 clause だけを続けます。ASR が完了した stop/finalization は `finishInput` を通知して同 worker を drain し、確定専用の新しい batch pass を作りません。
 

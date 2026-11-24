@@ -400,7 +400,7 @@ func catalogReportsCorruptClauseCoverageInsteadOfClassificationPending() async t
         provider: ScriptedDecisionProvider(
             boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]),
             priority: { _ in throw DecisionResponseError.missingAnswer }
-        ), scope: .all
+        )
     )
     let catalog = SavedSessionCatalog(fileManager: .default)
     #expect(try readable(#require(catalog.list(sessionsRoot: root).first)).processingStatus == .classificationPending)

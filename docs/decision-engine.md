@@ -22,11 +22,8 @@
 | --- | --- |
 | 本文のある ASR 結果 | 先頭 60 Character を次区間として入力する |
 | 成功した空の ASR 結果（空白・句読点だけを含む） | 現在のテキスト列の区切り。次区間と継続判定を省く |
-| 確定処理・再試行・保存済み readback の ASR gap | 判定せず境界判定を保留（`asr_gap`）。gap をまたいで本文を推測しない |
 | ライブ incremental: 登録済みだが成功結果なし（未完了・`asr.failed`） | 未完了として待つ。`asr.failed` は diagnostic のみで、gap・EOF・後続区間にしない |
 | ライブ incremental の入力全体 EOF（caller の明示 `finishInput`） | segmentation 完了は caller の責任で API は検証せず、未完了 ASR があれば拒否。全 segment の ASR 成功後だけ EOF にする |
-
-確定処理・再試行・保存済みイベント readback の batch gap では、ASR gap の後に成功した空結果が保存された場合も、そこでテキスト列を区切ります。gap より前の未解決本文は保留のまま残し、空結果の後の本文は独立した列として判定します。空結果の後に別の ASR gap があれば、その直後の本文の先頭は再び未解決です。これは incremental live の待ち規則とは別です。
 
 `LiveContentPrioritySession.open` を同じ decision run IDs と reopen 済み ASR で明示呼出しすると、pending を含む durable boundary / assignment を再要求せず同じ incremental run を復元します。これは明示的な pending retry や新しい decision run の開始ではありません。
 
@@ -167,21 +164,17 @@ tagger は Core ML の出力ごとに、各確率が有限の閉区間 0..1 に�
 
 確定結果の保留は、選択中の判定 run の `clause_boundaries.pending`（境界判定が未成立の区間）と、未成立の優先度の発話文を示す `content_priority.assigned` のイベントから読み取ります。判定は同じ入力に同じ結果を返すため、起動時の復旧は保留を再試行しません。保留を再判定するのは利用者が設定の「保留中の判定を再試行」を押したときだけです。対象・公開済み run・引き継ぎ元を事前に検証し、不整合は明示エラーにします。
 
-- **優先度だけの再試行**: 公開済みの境界判定 run をそのまま使い、指定した発話文だけを最大40件の batch で判定します。新しい優先度 run で、その他の発話文の判定を元 run・イベント・参照付きで引き継ぎます。指定しなかった保留は保留のまま引き継ぎます。
-- **境界を含む再試行**: 新しい境界判定 run を作り、公開済みの成功判定を元 run・イベント参照付きで引き継ぎ、保留区間だけを再判定します。全区間から発話文を組み直し、新 run の assessment と公開済み run それぞれの保存 F・B 除去範囲で各本文を投影してから、UTF-8 byte 列が完全一致する発話文の優先度を元参照の検証付きで引き継ぎます。parts の同一性は本文一致の代用にせず、各 run の投影後本文だけを照合します。新しく閉じた発話文と指定した保留だけを優先度判定します。ASR・VAD は再実行しません。
-- ASR gap で必要な次区間の原文がない保留は、同じ ASR では回復できません。判定前に「次の区間に音声認識結果がないため、境界を再判定できません。録音を再処理してください」とエラーにします。
+再試行は通常の判定と同じ incremental 実装（`LiveContentPrioritySession`）を、置換する判定 pair の run ID で別 session として開き、保存済みの ASR 結果を読み取り専用で渡して動かします。判定を保存した generation の初期 pair と別の pair が選択されている generation では、通常の判定 session を再開できず明示エラーにします。
+
+- **優先度だけの再試行**: 公開済みの境界判定 run をそのまま使い、新しい境界 event は書きません。新しい優先度 run で、指定した発話文だけを最大40件の batch で判定し、その他の発話文の判定を元 run・イベント・参照付きで引き継ぎます。指定しなかった保留は保留のまま引き継ぎます。
+- **境界を含む再試行**: 新しい境界判定 run を作り、公開済みの成功判定を元 run・イベント参照付きで引き継ぎ、指定した保留区間だけを再判定します。全区間から発話文を組み直し、parts が公開済みの発話文と同一で、いずれの part も再判定した区間でない発話文だけ、優先度を元参照の検証付きで引き継ぎます。再判定した区間に触れる発話文と指定した保留は優先度を判定し直し、本文の一致による引き継ぎはしません。ASR・VAD は再実行しません。
+- 判定を保存していない generation の最初の判定 pair は、認識済みの全区間を対象にした再試行だけが作ります。一部の区間だけの対象は「判定の再試行対象がありません」で失敗します。
 
 明示的・復旧の判定再試行で新たに要求した境界または優先度判定が実際に失敗した場合、`NativeSessionProcessor` は元の `localizedDescription` を理由として一つの typed `SessionProcessingResult.failed` を返し、message は `発話文の判定を再試行できませんでした: <reason>` です。同じ処理内で自動再要求せず、ASR・VAD は再実行しません。再試行対象なし（「判定の再試行対象がありません」）、無効な判定 engine（「判定エンジンが利用できません」）、provider factory の初期化失敗（「判定エンジンを初期化できませんでした: <reason>」）も、理由を明示して失敗します。factory 初期化失敗時の UI status は deferred-engine の「発話文の判定を保留しました。判定エンジンを初期化できませんでした: <reason>」のままです。`SessionFileProcessingService` は typed failed result を一度返し、書き出しを行わず、processor の idle resources を解放します。再試行失敗の `onUpdate` で `partialFailure` を通知しません。Engine は実際の失敗 message を保持した一件の background `processing_failure` event と一件の `state.failures` entry を生成し、`severity=error`、`stage=decisions`、`recovery_action=retry_decisions` を使います。失敗した再試行の新規 run は失敗完了の保存を試み、全 run の `succeeded: false` completion が durable に保存された failed end は起動時に自動再実行しません。失敗完了の保存で実 I/O error が起きた場合は元の判定失敗と保存失敗の両方を明示し、その run の durable な終了とは扱いません。未完了の run は起動時に公開済み snapshot から自動 recovery し、未公開 run の部分結果は使いません。durable failed end で残った公開済み保留の再試行は利用者の明示操作に限ります。
 
 CancellationError または取り消し済み task を paused / held として扱い、cancelled warning「処理は中断されました。次回の起動時に再開できます」を通知するのは、durable outcome が成立する前で、失敗終了の cleanup を始める前に限ります。この場合は公開済みの保留を保持し、failed result、background `processing_failure` event、`state.failures` entry、失敗した run 完了イベントを作りません。成功 run の `processing.run.completed` だけでは snapshot の公開ではありません。metadata に新 snapshot が公開される前の中断は、公開済み snapshot を保ったまま保留・復旧の対象です。一方、snapshot の metadata 公開が成立した後は、その結果を completed とし、遅れて届く cancellation や設定変更・shutdown による pause で held / cancelled に戻したり `resumeHeld` で再実行したりしません。失敗終了 cleanup で全ての `succeeded: false` completion が durable に保存された場合も `.failed` を維持し、遅れて届く cancellation や設定変更・shutdown で held / cancelled に戻しません。判定失敗後の cleanup は開始直前に cancellation を一度だけ確認し、開始した後はキャンセルを再確認せず新規 run の失敗完了を保存します。保存時の実 I/O error はキャンセル状態でも失敗として伝播します。provider factory 自身は load closure が throw した CancellationError も factory の寿命中 cache して失敗として返しますが、判定再試行は上記の時点に応じて cancellation を解釈します。factory の cache 規則は変わりません。
 
-新しい境界・優先度 run は、判定再試行の全 snapshot の構築・materialization が成功した後に、一つの `pipeline.decisions.replaced` event で選択します。再試行中に得た部分結果はすべて破棄し、失敗時は置換 snapshot を公開せず、選択中の判定 run を変更しません。run event の保存・完了と選択の扱い、起動時復旧の対象は[保存形式](storage.md#processing_metadatajson)に従います。判定 run の `processing.run.started` は開始時に読み込んだモデルの来歴を記録します。優先度の carry-over のように判定呼出しがない run も、開始時の model identity を記録します。境界 assessment は `source_decision.kind` が `assessed` の場合に成功した判定呼出しの request を必ず持ち、`carried_over` の場合は呼出しを行わず request を持ちません。`request: null` は境界 assessment の `carried_over` と、判定呼出し失敗の優先度イベントや呼出し前保留などに現れます。
-
-## ライブから確定への再利用
-
-確定処理の開始時点でイベントログを読み、その時点で保存済みのライブ優先度 run の classified 判定だけを固定します。その後にライブの判定キューを取り消します。固定より後に保存された結果や未保存の結果は使いません。未完了のライブ run でも保存済みの判定は使えます。再利用するのは、開始 provenance の state-hash `model_revision` が確定処理で判定に使う tagger と一致するライブ run だけです。`model_id` は比較しません。revision が異なるライブ run の判定は引き継がず、確定処理で判定し直します。
-
-確定 run とライブ run それぞれの保存 F・B 除去範囲から作った発話文本文が **UTF-8 byte 列で完全一致**する場合だけ、再判定せず優先度を引き継ぎます。各 run 自身の境界 assessment を使って投影し、parts の同一性を本文一致の代用にしません。trim、空白・句読点・Unicode の正規化、類似一致はしません。F・B 除去範囲の位置だけが違って投影本文が同じなら引き継ぎます。同じ本文の判定が複数あればイベント順で最新の classified を使い、後の保留はそれを無効にしません。発話文の parts と ID は確定 ASR と確定の境界判定のもので、ライブの境界判定は確定区間へ移しません。境界判定が成立しなかった確定区間にライブ結果を持ち込みません。
+新しい境界・優先度 run は、判定再試行の全 snapshot の構築・materialization が成功した後に、一つの `pipeline.decisions.replaced` event で選択します。再試行中に得た部分結果はすべて破棄し、失敗時は置換 snapshot を公開せず、選択中の判定 run を変更しません。選択 event の追記は事前検証時の選択 pair と一致する場合だけ行い、不一致や追記 error は一時停止ではなく `.failed` です。run event の保存・完了と選択の扱い、起動時復旧の対象は[保存形式](storage.md#processing_metadatajson)に従います。判定 run の `processing.run.started` は開始時に読み込んだモデルの来歴を記録します。優先度の carry-over のように判定呼出しがない run も、開始時の model identity を記録します。境界 assessment は `source_decision.kind` が `assessed` の場合に成功した判定呼出しの request を必ず持ち、`carried_over` の場合は呼出しを行わず request を持ちません。`request: null` は境界 assessment の `carried_over` と、判定呼出し失敗の優先度イベントや呼出し前保留などに現れます。
 
 ## 設定と利用状況
 
@@ -199,7 +192,7 @@ CancellationError または取り消し済み task を paused / held として�
 
 ## 実装の根拠
 
-- [共有型・境界閾値・batch 上限](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTypes.swift)、[回答の検証・優先度閾値](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionCoordinator.swift)、[保存 payload](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseRecords.swift)、[発話文の組み立て](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseBoundaryAssembly.swift)、[確定・再試行の snapshot と来歴](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionEnrichmentCoordinator.swift)、[ライブの判定キュー](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveContentPrioritySession.swift)、[ライブ ASR session](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveASRSession.swift)、[保存結果の検証と再利用](../app/MacAmbientJev/Sources/MacAmbientJevCore/EventLogTranscriptReader.swift)、[空の ASR 結果](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)
+- [共有型・境界閾値・batch 上限](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseTypes.swift)、[回答の検証・優先度閾値](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionCoordinator.swift)、[保存 payload](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseRecords.swift)、[発話文の組み立て](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseBoundaryAssembly.swift)、[判定 run の来歴](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionRunProvenance.swift)、[判定キュー（通常の判定と再試行）](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveContentPrioritySession.swift)、[再試行の引き継ぎ](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/DecisionReplacement.swift)、[ライブ ASR session](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveASRSession.swift)、[保存結果の検証と再利用](../app/MacAmbientJev/Sources/MacAmbientJevCore/EventLogTranscriptReader.swift)、[空の ASR 結果](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)
 - [アプリ／CLI の判定アクセス](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)、[確定 transcript pipeline](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FinalTranscriptPipeline.swift)、[アプリの構成](../app/MacAmbientJev/Sources/MacAmbientJev/AppState.swift)、[処理 CLI](../app/MacAmbientJev/Sources/MacAmbientJevProcessRecording/main.swift)、[システム音声 CLI](../app/MacAmbientJev/Sources/MacAmbientJevCaptureSystemAudio/main.swift)、[遅延計測 CLI](../app/MacAmbientJev/Sources/MacAmbientJevMeasureLiveLatency/main.swift)
 - [設定](../app/MacAmbientJev/Sources/MacAmbientJev/SettingsView.swift)、[利用計数](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionUsageCounter.swift)、[診断表示](../app/MacAmbientJev/Sources/MacAmbientJev/DiagnosticsView.swift)
 - [画面と書き出しの行集合・発話文 slice](../app/MacAmbientJev/Sources/MacAmbientJevCore/Materialization.swift)

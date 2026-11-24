@@ -349,6 +349,10 @@ public actor NativeSessionProcessor {
                   !requestedBoundary.isEmpty || !requestedClauses.isEmpty || unpublished else {
                 throw NativeSessionProcessorError.noDecisionRetryTargets
             }
+            // Without a selected pair every recognized source is pending; the first pair must cover them all.
+            guard decisionIDs(stored.state.runs) != nil || requestedBoundary == pendingBoundary else {
+                throw NativeSessionProcessorError.noDecisionRetryTargets
+            }
             guard case .localTagger(let factory, let usageCounter) = contentPriority else {
                 await onStatus(.activity(.decisionDeferred))
                 throw NativeSessionProcessorError.contentPriorityUnavailable
@@ -370,46 +374,77 @@ public actor NativeSessionProcessor {
             }
             await onStatus(.message("保留中の判定を再試行しています（境界 \(boundarySegments.count)区間・優先度 \(clauses.count)節）"))
             await onUpdate(retainedRows, .running)
+            // Opening the writer may repair a trailing record, so cancellation is settled before it.
+            try Task.checkCancellation()
             let suffix = UUID().uuidString.lowercased()
             let boundaryRunID: String
+            let keepsBoundaryRun: Bool
             if requestedBoundary.isEmpty, !unpublished, let current = stored.state.runs.clauseBoundary {
                 boundaryRunID = current
+                keepsBoundaryRun = true
             } else {
                 boundaryRunID = "boundary_\(suffix)"
+                keepsBoundaryRun = false
             }
             let priorityRunID = "priority_\(suffix)"
             let eventWriter = try makeDecisionEventWriter(sessionLayout.sessionURL)
-            let coordinator = DecisionEnrichmentCoordinator(
-                sessionID: sessionID, boundaryRunID: boundaryRunID, priorityRunID: priorityRunID,
-                writer: eventWriter, decisions: decisions, usageCounter: usageCounter,
-                materializer: TranscriptMaterializer(sampleRate: stored.state.generation.sampleRate)
+            let plan = ReplacementPlan(
+                boundaryRunID: boundaryRunID, priorityRunID: priorityRunID,
+                boundaryTargets: requestedBoundary, clauseTargets: requestedClauses,
+                carry: ReplacementCarry(events: stored.events, runs: stored.state.runs),
+                keepsBoundaryRun: keepsBoundaryRun
             )
-            let result = try await coordinator.process(
-                existingEvents: stored.events, activeRuns: stored.state.runs,
-                scope: .retry(boundarySegments: requestedBoundary, clauses: requestedClauses),
-                reusableDecisions: [:], onEvent: nil
+            let source = try StoredTranscriptSource(
+                state: stored.state, boundaryRunID: boundaryRunID, priorityRunID: priorityRunID
             )
-            try Task.checkCancellation()
-            guard let current = try reader.read(eventsURL: sessionLayout.eventsURL, sessionID: sessionID),
-                  current.state.generation.id == stored.state.generation.id,
-                  current.state.runs == stored.state.runs else {
-                throw ProcessingLogStateError.missingGeneration
+            let replacement = try await LiveContentPrioritySession.openReplacement(
+                sessionID: sessionID, writer: eventWriter, source: source, plan: plan,
+                makeDecisions: { decisions }, usageCounter: usageCounter,
+                onStatus: { _ in }, onUpdate: { _ in }
+            )
+            do {
+                try await replacement.replace(snapshot: await source.snapshot())
+            } catch {
+                await replacement.stop()
+                if error is CancellationError || Task.isCancelled { throw CancellationError() }
+                if try await replacement.recordFailure(originalError: error) {
+                    throw DecisionEnrichmentError.retryFailedDurably(error.localizedDescription)
+                }
+                throw error
             }
-            let previous = decisionIDs(stored.state.runs)
-            let replacement = DecisionRunIDs(boundary: result.boundaryRunID, priority: result.priorityRunID)
-            try await eventWriter.append(DecisionRunReplacement(
-                generationID: stored.state.generation.id, previous: previous, replacement: replacement
-            ).selectionEvent(sessionID: sessionID))
-            await coordinator.recordPublished(result, replacing: stored.pendingDecisions.pendingTargets)
-            await onUpdate(result.materializedSegments, .complete)
-            await onStatus(result.pendingTargets.isEmpty
+            // The candidate pair is validated and its rows derived before it is selected; nothing after the
+            // selection event can fail, so a selected retry is never reported as paused or failed.
+            let selection = DecisionRunReplacement(
+                generationID: stored.state.generation.id, previous: decisionIDs(stored.state.runs),
+                replacement: DecisionRunIDs(boundary: boundaryRunID, priority: priorityRunID)
+            )
+            let selected = try reader.validateReplacement(
+                eventsURL: sessionLayout.eventsURL, sessionID: sessionID, frameCount: frameCount, replacement: selection
+            )
+            let selectedRows = try TranscriptMaterializer(sampleRate: selected.state.generation.sampleRate)
+                .materialize(events: selected.events, activeRuns: selected.state.runs)
+            try Task.checkCancellation()
+            do {
+                try await eventWriter.appendSelection(selection, sessionID: sessionID)
+            } catch DecisionEnrichmentError.selectionConflict {
+                throw DecisionEnrichmentError.selectionConflict
+            } catch {
+                // The marker may or may not have reached the log: never report this as a pause.
+                throw DecisionEnrichmentError.selectionOutcomeUnknown(error.localizedDescription)
+            }
+            await usageCounter.clearDeferred(sessionID: sessionID, targets: stored.pendingDecisions.pendingTargets)
+            await usageCounter.recordDeferred(sessionID: sessionID, targets: selected.pendingDecisions.pendingTargets)
+            await onUpdate(selectedRows, .complete)
+            await onStatus(selected.pendingDecisions.pendingTargets.isEmpty
                            ? .message("保留中の判定を更新しました") : .activity(.decisionDeferred))
             return .completed(metrics: nil, noSpeech: false)
         } catch {
             let retained: RetainedTranscript = hasRetainedRows ? .finalized : .nothing
             let isDefinitiveRetryFailure: Bool
             switch error as? DecisionEnrichmentError {
-            case .retryFailedDurably?, .retryCompletionPersistenceFailed?: isDefinitiveRetryFailure = true
+            case .retryFailedDurably?, .retryCompletionPersistenceFailed?, .selectionConflict?,
+                 .selectionOutcomeUnknown?:
+                isDefinitiveRetryFailure = true
             default: isDefinitiveRetryFailure = false
             }
             if !isDefinitiveRetryFailure && (error is CancellationError || Task.isCancelled) {

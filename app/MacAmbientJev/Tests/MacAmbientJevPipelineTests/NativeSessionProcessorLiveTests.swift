@@ -1032,6 +1032,251 @@ func cancellingLiveDecisionsAfterAFailedTaggerLoadClearsItsPendingKeys() async t
     #expect(await counter.snapshot().sendCount == 0)
 }
 
+@Test(.timeLimit(.minutes(10)))
+func aCancelledRetryWritesNoCompletionAndTheNextRetryRebuildsWithFreshRuns() async throws {
+    let counter = DecisionUsageCounter()
+    let provider = NativeClauseProvider(holdPriorityNumber: 2, failedPriorityNumbers: [1])
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    let fixture = try await NativeDecisionFixture(texts: ["再試行する本文。"], factory: { decisions }, counter: counter)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    _ = await fixture.processor.processSession(
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+    )
+    let before = try fixture.stored()
+    let pending = before.pendingDecisions.clauses
+    #expect(pending.count == 1)
+
+    let sessionID = fixture.sessionID, processor = fixture.processor
+    let cancelled = Task {
+        await processor.retryContentPrioritySession(
+            sessionID: sessionID, boundarySegments: [], clauses: pending, onStatus: { _ in }, onUpdate: { _, _ in }
+        )
+    }
+    try await provider.waitUntilHeld()
+    cancelled.cancel()
+    await provider.release()
+    let cancelledResult = await cancelled.value
+
+    #expect(cancelledResult.disposition == .paused)
+    let eventsURL = SessionLayout(sessionURL: fixture.sessionURL).eventsURL
+    let lines = try SessionRecovery.recoverJSONL(Data(contentsOf: eventsURL)).lines
+    #expect(try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: lines, sessionID: fixture.sessionID))
+    #expect(try fixture.stored().state.runs == before.state.runs)
+
+    _ = await fixture.processor.retryContentPrioritySession(
+        sessionID: fixture.sessionID, boundarySegments: [], clauses: pending, onStatus: { _ in }, onUpdate: { _, _ in }
+    )
+    let after = try fixture.stored()
+    #expect(after.state.runs.clauseBoundary != before.state.runs.clauseBoundary)
+    #expect(after.state.runs.contentPriority != before.state.runs.contentPriority)
+    #expect(after.pendingDecisions.pendingTargets.isEmpty)
+    #expect(await provider.requests.count == 3)
+}
+
+@Test
+func retryRejectsATargetThatIsNotPendingAndWritesNothing() async throws {
+    let counter = DecisionUsageCounter()
+    let provider = NativeClauseProvider(holdPriorityNumber: nil, failedPriorityNumbers: [1])
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    let fixture = try await NativeDecisionFixture(texts: ["判定保留中の本文。"], factory: { decisions }, counter: counter)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    _ = await fixture.processor.processSession(
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+    )
+    let eventsURL = SessionLayout(sessionURL: fixture.sessionURL).eventsURL
+    let logBefore = try Data(contentsOf: eventsURL)
+    let notPending = try ClauseReference(boundaryRunID: "boundary_unknown", clauseID: "c1_0")
+
+    let result = await fixture.processor.retryContentPrioritySession(
+        sessionID: fixture.sessionID, boundarySegments: [], clauses: [notPending], onStatus: { _ in }, onUpdate: { _, _ in }
+    )
+
+    #expect(result.disposition == .failed)
+    #expect(result.message == "発話文の判定を再試行できませんでした: 判定の再試行対象がありません")
+    #expect(try Data(contentsOf: eventsURL) == logBefore)
+    #expect(await provider.requests.count == 1)
+}
+
+@Test
+func aFirstDecisionPairMustCoverEveryRecognizedSource() async throws {
+    let counter = DecisionUsageCounter()
+    let provider = NativeClauseProvider(holdPriorityNumber: nil, failedPriorityNumbers: [])
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    let fixture = try await NativeDecisionFixture(texts: ["最初の判定。"], factory: { decisions }, counter: counter)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let decisionsOff = NativeSessionProcessor(
+        paths: fixture.paths,
+        engines: SessionProcessingEngines(asr: fixture.asr, finalTranscriptVAD: LiveProcessorFinalVAD()),
+        audioHandling: RecordingTestAudioHandling(), contentPriority: .disabled, sleep: { _ in }
+    )
+    _ = await decisionsOff.processSession(
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+    )
+    let before = try fixture.stored()
+    #expect(before.state.runs.clauseBoundary == nil)
+    let recognized = before.pendingDecisions.boundarySegments
+    #expect(recognized.count == 1)
+
+    let rejected = await fixture.processor.retryContentPrioritySession(
+        sessionID: fixture.sessionID, boundarySegments: [], clauses: [], onStatus: { _ in }, onUpdate: { _, _ in }
+    )
+    #expect(rejected.disposition == .failed)
+    #expect(try fixture.stored().state.runs.clauseBoundary == nil)
+
+    let accepted = await fixture.processor.retryContentPrioritySession(
+        sessionID: fixture.sessionID, boundarySegments: recognized, clauses: [], onStatus: { _ in }, onUpdate: { _, _ in }
+    )
+    #expect(accepted.disposition == .completed)
+    let after = try fixture.stored()
+    #expect(after.state.runs.clauseBoundary != nil)
+    #expect(after.pendingDecisions.pendingTargets.isEmpty)
+    #expect(try fixture.rows().first?.clauseSlices.map(\.priority) == [.lowPriority])
+}
+
+private actor RetryUpdateGate {
+    private var entered: CheckedContinuation<Void, Never>?
+    private var release: CheckedContinuation<Void, Never>?
+    private var didEnter = false
+
+    func suspend() async {
+        didEnter = true
+        entered?.resume()
+        entered = nil
+        await withCheckedContinuation { release = $0 }
+    }
+
+    func waitUntilEntered() async {
+        guard !didEnter else { return }
+        await withCheckedContinuation { entered = $0 }
+    }
+
+    func open() {
+        release?.resume()
+        release = nil
+    }
+}
+
+@Test(.timeLimit(.minutes(10)))
+func aRetryCancelledBeforeItsDrainWritesNothing() async throws {
+    let counter = DecisionUsageCounter()
+    let provider = NativeClauseProvider(holdPriorityNumber: nil, failedPriorityNumbers: [1])
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    let fixture = try await NativeDecisionFixture(texts: ["再試行する本文。"], factory: { decisions }, counter: counter)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    _ = await fixture.processor.processSession(
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+    )
+    let pending = try fixture.stored().pendingDecisions.clauses
+    let eventsURL = SessionLayout(sessionURL: fixture.sessionURL).eventsURL
+    // A complete final record without its line feed: opening a writer would repair it.
+    let logBefore = try Data(contentsOf: eventsURL).dropLast()
+    try Data(logBefore).write(to: eventsURL)
+    let gate = RetryUpdateGate()
+    let sessionID = fixture.sessionID, processor = fixture.processor
+
+    let retry = Task {
+        await processor.retryContentPrioritySession(
+            sessionID: sessionID, boundarySegments: [], clauses: pending, onStatus: { _ in },
+            onUpdate: { _, state in if state == .running { await gate.suspend() } }
+        )
+    }
+    await gate.waitUntilEntered()
+    retry.cancel()
+    await gate.open()
+    let result = await retry.value
+
+    #expect(result.disposition == .paused)
+    #expect(try Data(contentsOf: eventsURL) == Data(logBefore))
+    #expect(await provider.requests.count == 1)
+}
+
+@Test(.timeLimit(.minutes(10)))
+func aSelectionWriteThatFailsAfterReachingTheLogIsReportedAsAnUnknownOutcomeNeverPaused() async throws {
+    let counter = DecisionUsageCounter()
+    let provider = NativeClauseProvider(holdPriorityNumber: nil, failedPriorityNumbers: [1])
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    let fixture = try await NativeDecisionFixture(
+        texts: ["再試行する本文。"], factory: { decisions }, counter: counter,
+        makeDecisionEventWriter: { try CancelAfterSelectionEventWriter(sessionURL: $0, failsAfterWriting: true) }
+    )
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    _ = await fixture.processor.processSession(
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+    )
+
+    let result = await fixture.processor.retryContentPrioritySession(
+        sessionID: fixture.sessionID, boundarySegments: [], clauses: try fixture.stored().pendingDecisions.clauses,
+        onStatus: { _ in }, onUpdate: { _, _ in }
+    )
+
+    #expect(result.disposition == .failed)
+    #expect(result.message?.contains("セッションを開き直してください") == true)
+}
+
+/// Cancels the running task right after the selection event reached the log, and optionally then fails.
+private actor CancelAfterSelectionEventWriter: DecisionEventWriting {
+    nonisolated let eventsURL: URL
+    private let writer: SessionWriter
+    private let failsAfterWriting: Bool
+
+    init(sessionURL: URL, failsAfterWriting: Bool = false) throws {
+        writer = try SessionWriter(sessionURL: sessionURL)
+        eventsURL = sessionURL.appending(path: "events.jsonl")
+        self.failsAfterWriting = failsAfterWriting
+    }
+
+    func append<Payload: Codable & Sendable>(_ draft: EventDraft<Payload>) async throws -> EventEnvelope<Payload> {
+        try await writer.append(draft)
+    }
+
+    func appendSelection(_ selection: DecisionRunReplacement, sessionID: UUID) async throws {
+        try await writer.appendSelection(selection, sessionID: sessionID)
+        withUnsafeCurrentTask { $0?.cancel() }
+        if failsAfterWriting { throw POSIXError(.EIO) }
+    }
+
+    func appendFailedRetryCompletion(
+        _ draft: EventDraft<ProcessingRunCompletedPayload>
+    ) async throws -> EventEnvelope<ProcessingRunCompletedPayload> {
+        try await writer.appendFailedRetryCompletion(draft)
+    }
+}
+
+@Test(.timeLimit(.minutes(10)))
+func aRetryCancelledAfterItsSelectionIsCompletedWithTheSelectedRows() async throws {
+    let counter = DecisionUsageCounter()
+    let provider = NativeClauseProvider(holdPriorityNumber: nil, failedPriorityNumbers: [1])
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    let fixture = try await NativeDecisionFixture(
+        texts: ["再試行する本文。"], factory: { decisions }, counter: counter,
+        makeDecisionEventWriter: { try CancelAfterSelectionEventWriter(sessionURL: $0) }
+    )
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    _ = await fixture.processor.processSession(
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+    )
+    let before = try fixture.stored()
+    let updates = LiveUpdateRecorder()
+
+    let result = await fixture.processor.retryContentPrioritySession(
+        sessionID: fixture.sessionID, boundarySegments: [], clauses: before.pendingDecisions.clauses,
+        onStatus: { _ in }, onUpdate: { rows, _ in await updates.record(rows) }
+    )
+
+    #expect(result.disposition == .completed)
+    let after = try fixture.stored()
+    #expect(after.state.runs.contentPriority != before.state.runs.contentPriority)
+    #expect(after.pendingDecisions.pendingTargets.isEmpty)
+    #expect(await updates.snapshot() == (try fixture.rows()))
+    #expect(await counter.snapshot().pendingPriorityClauseCount == 0)
+}
+
 private enum PublishedRetryLatePause: CaseIterable {
     case cancellation
     case processingPause
@@ -1276,8 +1521,12 @@ private actor SelectionFailingEventWriter: DecisionEventWriting {
     }
 
     func append<Payload: Codable & Sendable>(_ draft: EventDraft<Payload>) async throws -> EventEnvelope<Payload> {
-        if draft.eventType == "pipeline.decisions.replaced", failure.consume() { throw POSIXError(.EIO) }
-        return try await writer.append(draft)
+        try await writer.append(draft)
+    }
+
+    func appendSelection(_ selection: DecisionRunReplacement, sessionID: UUID) async throws {
+        if failure.consume() { throw POSIXError(.EIO) }
+        try await writer.appendSelection(selection, sessionID: sessionID)
     }
 
     func appendFailedRetryCompletion(

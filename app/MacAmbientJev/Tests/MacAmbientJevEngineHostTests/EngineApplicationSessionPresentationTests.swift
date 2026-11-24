@@ -186,25 +186,21 @@ private actor PresentationDecisionProvider: DecisionProvider {
         let boundaryRunID = "presentation-boundary"
         let priorityRunID = "presentation-priority"
         let writer = try SessionWriter(sessionURL: sessionURL)
-        let coordinator = DecisionEnrichmentCoordinator(
-            sessionID: sessionID,
-            boundaryRunID: boundaryRunID,
-            priorityRunID: priorityRunID,
-            writer: writer,
-            decisions: decisions,
-            usageCounter: usage,
-            materializer: TranscriptMaterializer(sampleRate: stored.state.generation.sampleRate)
+        let source = try StoredTranscriptSource(
+            state: stored.state, boundaryRunID: boundaryRunID, priorityRunID: priorityRunID
         )
-        let result = try await coordinator.process(
-            existingEvents: stored.events,
-            activeRuns: activeRuns,
-            scope: .retry(
-                boundarySegments: Set(stored.pendingDecisions.boundarySegments),
-                clauses: Set(stored.pendingDecisions.clauses)
+        let session = try await LiveContentPrioritySession.openReplacement(
+            sessionID: sessionID, writer: writer, source: source,
+            plan: ReplacementPlan(
+                boundaryRunID: boundaryRunID, priorityRunID: priorityRunID,
+                boundaryTargets: Set(stored.pendingDecisions.boundarySegments),
+                clauseTargets: Set(stored.pendingDecisions.clauses),
+                carry: ReplacementCarry(events: stored.events, runs: activeRuns),
+                keepsBoundaryRun: false
             ),
-            reusableDecisions: [:],
-            onEvent: nil
+            makeDecisions: { decisions }, usageCounter: usage, onStatus: { _ in }, onUpdate: { _ in }
         )
+        try await session.replace(snapshot: await source.snapshot())
         let previous: DecisionRunIDs?
         if let boundary = activeRuns.clauseBoundary, let priority = activeRuns.contentPriority {
             previous = DecisionRunIDs(boundary: boundary, priority: priority)
@@ -213,9 +209,8 @@ private actor PresentationDecisionProvider: DecisionProvider {
         }
         try await writer.append(DecisionRunReplacement(
             generationID: stored.state.generation.id, previous: previous,
-            replacement: DecisionRunIDs(boundary: result.boundaryRunID, priority: result.priorityRunID)
+            replacement: DecisionRunIDs(boundary: boundaryRunID, priority: priorityRunID)
         ).selectionEvent(sessionID: sessionID))
-        await coordinator.recordPublished(result, replacing: stored.pendingDecisions.pendingTargets)
     }
 
     @Test func recordingPresentationMatchesInspectAndTracksExportState() async throws {
