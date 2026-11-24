@@ -103,6 +103,18 @@ public struct SessionLayout: Sendable, Equatable {
     }
 }
 
+extension SessionLayout {
+    /// The source finalization processes. A PCM recording with a valid zero-frame checkpoint is an
+    /// empty recording; one without a checkpoint is an error.
+    public func processingSource(for manifest: SessionManifest) throws -> SessionAudioSource {
+        if let source = try audioSource(for: manifest) { return source }
+        guard let checkpoint = try AudioCheckpoint.loadRecovered(from: processingDirectory, relativeTo: sessionURL) else {
+            throw SessionAudioSourceError.recordingCheckpointMissing
+        }
+        return .recordedPCM(checkpoint)
+    }
+}
+
 public enum SessionAudioSource: Sendable, Equatable {
     /// A recording whose durable PCM chunks are still authoritative.
     case recordedPCM(AudioCheckpoint)
@@ -129,9 +141,12 @@ public enum SessionAudioSourceError: Error, LocalizedError, Equatable {
     case multipleImportedOriginals([String])
     case recordingFLACMissing
     case emptyRecordingFLAC
+    case recordingCheckpointMissing
 
     public var errorDescription: String? {
         switch self {
+        case .recordingCheckpointMissing:
+            "録音の音声チェックポイントがありません"
         case .importedOriginalMissing:
             "取り込んだ元の音声ファイルがありません"
         case .multipleImportedOriginals(let names):

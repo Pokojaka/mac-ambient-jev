@@ -12,16 +12,6 @@ public protocol SessionProcessingExecuting: Sendable {
         onUpdate: @escaping NativeSessionProcessor.UpdateHandler
     ) async -> SessionProcessingResult
 
-    func finishLiveTranscription(
-        sessionID: UUID,
-        checkpoint: AudioCheckpoint,
-        pacingMode: ASRPacingMode,
-        shouldPause: @escaping NativeSessionProcessor.PauseCheck,
-        onPhase: @escaping NativeSessionProcessor.PhaseHandler,
-        onStatus: @escaping NativeSessionProcessor.StatusHandler,
-        onUpdate: @escaping NativeSessionProcessor.UpdateHandler
-    ) async -> SessionProcessingResult
-
     func retryContentPrioritySession(
         sessionID: UUID,
         boundarySegments: [SegmentTextReference],
@@ -31,6 +21,9 @@ public protocol SessionProcessingExecuting: Sendable {
     ) async -> SessionProcessingResult
 
     func cancelLiveTranscription(sessionID: UUID) async
+
+    /// True when the session's generation holds a durable ASR failure that processing reports as failed.
+    func hasUnresolvedASRFailure(sessionID: UUID) async throws -> Bool
 }
 
 extension NativeSessionProcessor: SessionProcessingExecuting {}
@@ -303,6 +296,11 @@ public final class SessionProcessingCoordinator {
         }
     }
 
+    private func discardLiveWorker(sessionID: UUID) async {
+        await processor.cancelLiveTranscription(sessionID: sessionID)
+        requiredEffects.cleanupLiveASRState(sessionID: sessionID)
+    }
+
     private func releaseHeldResources() async {
         guard let resourceHolds else {
             preconditionFailure("リソース監視中の一時停止に解放処理が設定されていません")
@@ -323,47 +321,10 @@ public final class SessionProcessingCoordinator {
         while !effects.pausesProcessing,
               !Task.isCancelled,
               let request = effects.processingQueue.dequeue() {
-            if request.finalizesTranscript, !effects.modelsReady {
-                switch request {
-                case .finishLive(let sessionID, _):
-                    // Live recognition waits only while the models load, so it is over when they are not ready.
-                    // The request is in no list while it waits, so it is the current session.
-                    effects.processingQueue.begin(request)
-                    await effects.waitForLiveASRDrain(sessionID: sessionID)
-                    if effects.modelsReady {
-                        effects.processingQueue.completeCurrent()
-                        effects.processingQueue.prepend(request)
-                    } else {
-                        await processor.cancelLiveTranscription(sessionID: sessionID)
-                        effects.cleanupLiveASRState(sessionID: sessionID)
-                        effects.processingQueue.completeCurrent()
-                        holdForModels(.finalize(sessionID: sessionID, metadataPolicy: .reject))
-                    }
-                default:
-                    holdForModels(request)
-                }
-                continue
-            }
             activeResourceHoldReason = nil
-            if request.finalizesTranscript, let reason = holdReasonForAttempt() {
-                let heldRequest: PendingProcessing
-                if case .finishLive(let sessionID, _) = request, reason != .thermal {
-                    // Same order as the model-held path: the live ASR task may still be inside a native call.
-                    effects.processingQueue.begin(request)
-                    await effects.waitForLiveASRDrain(sessionID: sessionID)
-                    await processor.cancelLiveTranscription(sessionID: sessionID)
-                    effects.cleanupLiveASRState(sessionID: sessionID)
-                    effects.processingQueue.completeCurrent()
-                    heldRequest = .finalize(sessionID: sessionID, metadataPolicy: .reject)
-                } else {
-                    heldRequest = request
-                }
-                hold(heldRequest)
-                if reason != .thermal {
-                    let statusHandler = effects.processingStatusHandler(sessionID: request.sessionID)
-                    await statusHandler(.paused(reason))
-                    await releaseHeldResources()
-                }
+            // Thermal holds at dequeue and keeps the live worker: a drain that waits for cooling would block the queue.
+            if request.finalizesTranscript, currentHoldReason == .thermal {
+                hold(request)
                 continue
             }
 
@@ -378,66 +339,64 @@ public final class SessionProcessingCoordinator {
             }
 
             var finalization: SessionProcessingResult?
+            var isCurrent = true
             switch request {
             case .finalize(let sessionID, let metadataPolicy):
-                let result = await processor.processSession(
-                    sessionID: sessionID,
-                    pacingMode: .normal,
-                    shouldPause: shouldPause,
-                    onPhase: { _ in },
-                    metadataPolicy: metadataPolicy,
-                    onStatus: statusHandler,
-                    onUpdate: updateHandler
-                )
-                if result.disposition == .paused {
-                    hold(request)
-                } else {
-                    effects.processingQueue.releaseReprocessing(sessionID)
-                }
-                effects.refreshSavedSessions()
-                finalization = result
-            case .finishLive(let sessionID, let checkpoint):
+                // Stop is a drain: a recording's live worker is finished in place, any other input is reopened.
                 await effects.waitForLiveASRDrain(sessionID: sessionID)
-
-                let reason = holdReasonForAttempt()
-                let resourceReason = reason == .thermal ? nil : reason
-                if Task.isCancelled || effects.pausesProcessing || resourceReason != nil {
-                    await processor.cancelLiveTranscription(sessionID: sessionID)
-                    effects.cleanupLiveASRState(sessionID: sessionID)
-                    hold(.finalize(
-                        sessionID: sessionID,
-                        metadataPolicy: .reject
-                    ))
+                if let failure = effects.liveASRFailure(sessionID: sessionID) {
+                    effects.processingDidChange(.liveFailed(failure))
+                }
+                // Admission is decided once, here, after the drain. A durable ASR failure comes first:
+                // processing persists it and reports failed, so no hold hides it.
+                var knownFailure = false
+                if case .reject = metadataPolicy {
+                    do {
+                        knownFailure = try await processor.hasUnresolvedASRFailure(sessionID: sessionID)
+                    } catch {
+                        // Unknown is not a failure: the holds below decide, and processing re-reads the log
+                        // and repairs a torn tail or reports the read error.
+                    }
+                }
+                // The hold inputs are read after the probe, so pressure that arrived during it counts.
+                // A held request moves from current to its hold list in one step before the worker cleanup
+                // awaits: a readiness or resume callback during the cleanup finds it there, and it is never
+                // counted twice.
+                let resourceReason = holdReasonForAttempt().flatMap { $0 == .thermal ? nil : $0 }
+                let stopped = Task.isCancelled || effects.pausesProcessing
+                if !knownFailure, resourceReason == nil, !stopped, !effects.modelsReady {
+                    // Waiting for the models is not an outcome: the request finishes when it really runs.
+                    effects.processingQueue.completeCurrent()
+                    holdForModels(request)
+                    await discardLiveWorker(sessionID: sessionID)
+                    effects.refreshSavedSessions()
+                    continue
+                }
+                if !knownFailure, stopped || resourceReason != nil {
+                    effects.processingQueue.completeCurrent()
+                    isCurrent = false
+                    hold(request)
                     finalization = SessionProcessingResult(
-                        disposition: .paused,
-                        metrics: nil,
-                        message: resourceReason?.finalizationExplanation,
-                        noSpeech: false,
-                        retainedTranscript: nil
+                        disposition: .paused, metrics: nil, message: resourceReason?.finalizationExplanation,
+                        noSpeech: false, retainedTranscript: nil
                     )
-                    if let resourceReason {
-                        await statusHandler(.paused(resourceReason))
-                    }
+                    if let resourceReason { await statusHandler(.paused(resourceReason)) }
+                    await discardLiveWorker(sessionID: sessionID)
                 } else {
-                    if let failure = effects.liveASRFailure(sessionID: sessionID) {
-                        await processor.cancelLiveTranscription(sessionID: sessionID)
-                        effects.processingDidChange(.liveFailed(failure))
-                    }
-                    let result = await processor.finishLiveTranscription(
+                    let result = await processor.processSession(
                         sessionID: sessionID,
-                        checkpoint: checkpoint,
                         pacingMode: .normal,
                         shouldPause: shouldPause,
                         onPhase: { _ in },
+                        metadataPolicy: metadataPolicy,
                         onStatus: statusHandler,
                         onUpdate: updateHandler
                     )
                     effects.cleanupLiveASRState(sessionID: sessionID)
                     if result.disposition == .paused {
-                        hold(.finalize(
-                            sessionID: sessionID,
-                            metadataPolicy: .reject
-                        ))
+                        hold(request)
+                    } else {
+                        effects.processingQueue.releaseReprocessing(sessionID)
                     }
                     finalization = result
                 }
@@ -489,7 +448,7 @@ public final class SessionProcessingCoordinator {
                !effects.pausesProcessing {
                 await effects.autoExportIfEnabled(sessionID: requestSessionID)
             }
-            effects.processingQueue.completeCurrent()
+            if isCurrent { effects.processingQueue.completeCurrent() }
         }
 
         effects.processingDidChange(.willFinishDrain)

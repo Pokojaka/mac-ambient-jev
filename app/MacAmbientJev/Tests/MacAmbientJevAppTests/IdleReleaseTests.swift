@@ -195,7 +195,16 @@ func finalizationWaitsForModelsAndStartsOnReady() async throws {
     let asr = CountingASR()
     let state = makeState(asr: asr, defaults: defaults, root: root, provisioning: provisioning)
     await state.startupMaintenanceTask?.value
+    // The session exists: a finalization of an unreadable session is reported as failed, not held.
     let sessionID = UUID()
+    _ = try SessionBootstrapper(fileManager: .default).createSession(
+        paths: AppPaths(
+            applicationSupportURL: root.appending(path: "support", directoryHint: .isDirectory),
+            cacheURL: root.appending(path: "cache", directoryHint: .isDirectory), sessionsRootOverride: nil
+        ),
+        sessionID: sessionID, source: .recording(.microphone),
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
+    )
 
     state.enqueueProcessing(.finalize(sessionID: sessionID, metadataPolicy: .reject))
     await state.processingCoordinator.waitUntilIdle()

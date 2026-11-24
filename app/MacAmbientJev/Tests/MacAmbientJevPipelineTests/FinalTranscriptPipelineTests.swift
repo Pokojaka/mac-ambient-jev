@@ -653,7 +653,7 @@ func failedASRMarksTheGenerationFailedAndKeepsTheRecognizedRows() async throws {
 }
 
 @Test
-func finishLiveTranscriptionEndsWithFinalizationStatus() async throws {
+func stoppingALiveRecordingEndsWithFinalizationStatus() async throws {
     let sessionID = UUID()
     let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
     defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
@@ -671,19 +671,15 @@ func finishLiveTranscriptionEndsWithFinalizationStatus() async throws {
         contentPriority: .disabled,
         sleep: { _ in }
     )
-    _ = try await processor.startLiveTranscription(
-        sessionID: sessionID,
-        segmentationRunID: "live-seg",
-        sampleRate: checkpoint.sampleRate
-    )
+    _ = try await processor.startLiveTranscription(sessionID: sessionID, sampleRate: checkpoint.sampleRate)
     let statuses = FinalizationStatusRecorder()
 
-    let finish = await processor.finishLiveTranscription(
+    let finish = await processor.processSession(
         sessionID: sessionID,
-        checkpoint: checkpoint,
         pacingMode: .normal,
         shouldPause: { nil },
         onPhase: { _ in },
+        metadataPolicy: .reject,
         onStatus: { await statuses.append($0.text) },
         onUpdate: { _, _ in }
     )
@@ -1188,7 +1184,7 @@ func failedVADDoesNotCompleteSegmentationOrReportNoSpeech() async throws {
     )
     let absent = UUID()
     do {
-        _ = try await processor.startLiveTranscription(sessionID: absent, segmentationRunID: "live", sampleRate: 16_000)
+        _ = try await processor.startLiveTranscription(sessionID: absent, sampleRate: 16_000)
         Issue.record("missing identity must fail")
     } catch {
         #expect(error as? SessionDirectoryLookupError == .notFound(absent))

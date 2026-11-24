@@ -14,14 +14,14 @@ struct LiveModelsNotFetched: Error {}
 
 extension AppState {
     static func fluidLiveVADFactory(models: MacModelStore) -> LiveVADFactory {
-        { processingDirectory, initialCheckpoint, measureMicInputLevels, sessionURL in
+        { processingDirectory, initialCheckpoint, measureMicInputLevels, sessionURL, segmentationRunID in
             try await MacLiveVADSessionFactory.make(
                 models: models,
                 processingDirectory: processingDirectory,
                 sessionURL: sessionURL,
                 initialCheckpoint: initialCheckpoint,
                 measureMicInputLevels: measureMicInputLevels,
-                segmentationRunID: "seg_\(UUID().uuidString.lowercased())"
+                segmentationRunID: segmentationRunID
             )
         }
     }
@@ -33,16 +33,12 @@ extension AppState {
             .resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
         let directory = SessionLayout(sessionURL: sessionURL).processingDirectory
 
-        let vadSession = try await makeLiveVADSession(
-            directory, checkpoint, micInputSessionID == sessionID, sessionURL
-        )
-        guard isCurrentRecording(sessionID) else { return }
-
-        await liveCoordinator.startVAD(
-            sessionID: sessionID,
-            session: vadSession,
-            checkpoint: checkpoint
-        )
+        let measureMicInputLevels = micInputSessionID == sessionID
+        try await liveCoordinator.startVAD(sessionID: sessionID, checkpoint: checkpoint) { segmentationRunID in
+            try await makeLiveVADSession(
+                directory, checkpoint, measureMicInputLevels, sessionURL, segmentationRunID
+            )
+        }
     }
 
     func liveStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler {

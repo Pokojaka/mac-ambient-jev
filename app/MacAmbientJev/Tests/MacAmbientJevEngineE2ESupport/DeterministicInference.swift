@@ -95,30 +95,37 @@ private struct DeterministicFinalTranscriptVAD: FinalTranscriptVADSegmenter {
     )
 
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
-        guard reader.info.committedFrames > 0 else { return [] }
-        return [SegmentReference(
-            segmentationRunID: runID,
-            segmentID: "engine_e2e_final_segment",
-            speechRanges: [0..<reader.info.committedFrames]
-        )]
+        deterministicSegments(runID: runID, frameCount: reader.info.committedFrames)
     }
+}
+
+/// The one segment both VADs report for a recording: all of its audio is speech. A live VAD that
+/// reported none would make a stop that keeps the live worker finalize an empty transcript.
+private func deterministicSegments(runID: String, frameCount: Int64) -> [SegmentReference] {
+    guard frameCount > 0 else { return [] }
+    return [SegmentReference(
+        segmentationRunID: runID,
+        segmentID: "engine_e2e_segment",
+        speechRanges: [0..<frameCount]
+    )]
 }
 
 private struct DeterministicLiveVAD: LiveVADProcessing {
     let segmentationRunID: String
 
     func processAvailable(checkpoint: AudioCheckpoint) async throws -> LiveVADProgress {
-        emptyProgress(committedFrames: checkpoint.committedFrames)
-    }
-
-    func finish(checkpoint: AudioCheckpoint) async throws -> LiveVADProgress {
-        emptyProgress(committedFrames: checkpoint.committedFrames)
-    }
-
-    private func emptyProgress(committedFrames: Int64) -> LiveVADProgress {
         LiveVADProgress(
             emittedSegments: [], totalSegmentCount: 0,
-            committedFrames: committedFrames, micSpeechLevels: []
+            committedFrames: checkpoint.committedFrames, micSpeechLevels: []
+        )
+    }
+
+    /// Reports the segment at the end of the input, once all of it is saved.
+    func finish(checkpoint: AudioCheckpoint) async throws -> LiveVADProgress {
+        let segments = deterministicSegments(runID: segmentationRunID, frameCount: checkpoint.committedFrames)
+        return LiveVADProgress(
+            emittedSegments: segments, totalSegmentCount: segments.count,
+            committedFrames: checkpoint.committedFrames, micSpeechLevels: []
         )
     }
 }

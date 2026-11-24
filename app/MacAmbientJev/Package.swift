@@ -97,7 +97,7 @@ var targets: [Target] = [
     ),
     .testTarget(
         name: "MacAmbientJevEngineHostTests",
-        dependencies: ["MacAmbientJevEngineHost", "MacAmbientJevTestSupport"]
+        dependencies: ["MacAmbientJevEngineHost", "MacAmbientJevTestSupport", "MacAmbientJevEngineE2ESupport"]
     ),
 ]
 

@@ -58,6 +58,8 @@ public actor LiveContentPrioritySession {
     private var onUpdate: UpdateHandler?
     private(set) var worker: Task<Void, Never>?
     private var stopped = false
+    private var writesInFlight = 0
+    private var quiescenceWaiters: [CheckedContinuation<Void, Never>] = []
     private var workerError: Error?
 
     private init(
@@ -167,6 +169,13 @@ public actor LiveContentPrioritySession {
         startWorker()
     }
 
+    /// Redirects status and row updates, e.g. from recording to the stop that drains this session.
+    public func rebind(onStatus: @escaping StatusHandler, onUpdate: @escaping UpdateHandler) {
+        guard !stopped else { return }
+        self.onStatus = onStatus
+        self.onUpdate = onUpdate
+    }
+
     /// Notes ASR progress so the queue can continue when a waiting successor becomes available.
     public func observe(snapshot: LiveASRSnapshot) async throws {
         guard !stopped else { return }
@@ -198,13 +207,17 @@ public actor LiveContentPrioritySession {
     }
 
     /// Cancels the queue immediately, even if a decision engine ignores cancellation. Results already
-    /// saved stay durable; a response that arrives later is neither saved nor shown.
+    /// saved stay durable; a response that arrives later is neither saved nor shown. Returns once the
+    /// writes already started have finished, so the run can be reopened without duplicate events.
     public func stop() async {
         stopped = true
         worker?.cancel()
         worker = nil
         onStatus = nil
         onUpdate = nil
+        if writesInFlight > 0 {
+            await withCheckedContinuation { quiescenceWaiters.append($0) }
+        }
     }
 
     /// Pending targets this session recorded in the usage counter.
@@ -376,8 +389,7 @@ public actor LiveContentPrioritySession {
             let counts = stage == .clauseBoundary
                 ? (completed: boundaryCounts.assessed, failed: boundaryCounts.pending)
                 : (completed: priorityCounts.classified, failed: priorityCounts.pending)
-            try ensureActive()
-            _ = try await writer.append(EventDraft(
+            _ = try await save(EventDraft(
                 eventType: "processing.run.completed", sessionID: sessionID,
                 processingRunID: stage == .clauseBoundary ? boundaryRunID : priorityRunID,
                 payload: ProcessingRunCompletedPayload(
@@ -464,18 +476,31 @@ public actor LiveContentPrioritySession {
             default:
                 preconditionFailure("Live decisions require a boundary or priority stage")
             }
-            try ensureActive()
-            _ = try await writer.append(EventDraft(
+            _ = try await save(EventDraft(
                 eventType: "processing.run.started", sessionID: sessionID, processingRunID: runID,
                 payload: ProcessingRunStartedPayload(stage: stage, provenance: provenance)
             ))
             startedRuns.insert(stage)
         }
-        try ensureActive()
-        let envelope = try await writer.append(EventDraft(
+        let envelope = try await save(EventDraft(
             eventType: eventType, sessionID: sessionID, processingRunID: runID, payload: payload
         ))
         return TranscriptEvent.clause(seq: envelope.eventSeq, runID: runID, kind: kind)
+    }
+
+    /// Every log write goes through here so that `stop` can wait for the ones already started.
+    private func save<Payload: Codable & Sendable>(_ draft: EventDraft<Payload>) async throws -> EventEnvelope<Payload> {
+        try ensureActive()
+        writesInFlight += 1
+        defer {
+            writesInFlight -= 1
+            if writesInFlight == 0 {
+                let waiters = quiescenceWaiters
+                quiescenceWaiters = []
+                waiters.forEach { $0.resume() }
+            }
+        }
+        return try await writer.append(draft)
     }
 
     private func recordPending(_ targets: Set<DecisionPendingTarget>) async throws {

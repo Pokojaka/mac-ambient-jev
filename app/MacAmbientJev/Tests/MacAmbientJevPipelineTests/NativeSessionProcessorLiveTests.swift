@@ -138,11 +138,8 @@ func nativeSessionProcessorStreamsLiveSegmentsWithoutRealModel() async throws {
         contentPriority: .disabled,
         sleep: { _ in }
     )
-    let segmentationRunID = "seg_live_test"
-
-    _ = try await processor.startLiveTranscription(
+    let segmentationRunID = try await processor.startLiveTranscription(
         sessionID: sessionID,
-        segmentationRunID: segmentationRunID,
         sampleRate: checkpoint.sampleRate
     )
 
@@ -189,6 +186,320 @@ func nativeSessionProcessorStreamsLiveSegmentsWithoutRealModel() async throws {
     let counts = await asr.counts()
     #expect(counts.prepare == 1)
     #expect(counts.transcribe == 2)
+}
+
+private actor ScriptedStopASR: ASREngine {
+    nonisolated let provenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
+    private var failingCalls: Set<Int>
+    private var calls = 0
+
+    init(failingCalls: Set<Int> = []) { self.failingCalls = failingCalls }
+
+    func prepare() async throws {}
+    func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
+        calls += 1
+        if failingCalls.contains(calls) { throw UnexpectedLiveTestFinalization.called }
+        return ASRResult(text: "認識\(calls)", detectedLanguage: "ja")
+    }
+    func unload() async {}
+    func callCount() -> Int { calls }
+    func stopFailing() { failingCalls = [] }
+}
+
+private struct StopFixture {
+    let root: URL
+    let processor: NativeSessionProcessor
+    let sessionID: UUID
+    let layout: SessionLayout
+    let checkpoint: AudioCheckpoint
+    let segments: [SegmentReference]
+
+    func stop(resume: Bool = false) async -> SessionProcessingResult {
+        if resume {
+            return await processor.resumeSession(
+                sessionID: sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
+                onStatus: { _ in }, onUpdate: { _, _ in }
+            )
+        }
+        return await processor.processSession(
+            sessionID: sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
+            metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+        )
+    }
+}
+
+/// A recording whose live segmentation finished with two registered segments; the first is recognized live.
+private func makeStopFixture(asr: ScriptedStopASR) async throws -> StopFixture {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    let paths = AppPaths(
+        applicationSupportURL: root.appending(path: "support", directoryHint: .isDirectory),
+        cacheURL: root.appending(path: "cache", directoryHint: .isDirectory), sessionsRootOverride: nil
+    )
+    let sessionID = UUID()
+    let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
+        paths: paths, sessionID: sessionID, source: .recording(.microphone),
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+    let layout = SessionLayout(sessionURL: sessionURL)
+    let audioWriter = try DurableAudioWriter(
+        directory: layout.processingDirectory, chunkDurationSeconds: 1, sessionURL: sessionURL
+    )
+    try await audioWriter.append(samples: Array(repeating: Float(0.1), count: 16_000))
+    let checkpoint = await audioWriter.committedSnapshot()
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        engines: SessionProcessingEngines(asr: asr, finalTranscriptVAD: UnusedLiveTestVAD()),
+        audioHandling: RecordingTestAudioHandling(), contentPriority: .disabled, sleep: { _ in }
+    )
+    // The live side runs through the real coordinator: its stop seals and completes the segmentation.
+    let segmentFor: @Sendable (String, Int) -> SegmentReference = { runID, ordinal in
+        SegmentReference(
+            segmentationRunID: runID, segmentID: String(format: "seg_%06d", ordinal),
+            speechRanges: [Int64(ordinal - 1) * 4_000..<Int64(ordinal) * 4_000]
+        )
+    }
+    let effects = await StopTestEffects(sessionID: sessionID)
+    let live = await LiveTranscriptionCoordinator(
+        state: LiveTranscriptionState(), effects: effects, processor: processor,
+        thermalMonitor: PublishedRetryNoThermalMonitor(), resourceMonitor: nil,
+        sleep: { _ in try await Task.sleep(for: .seconds(3_600)) }
+    )
+    try await live.startVAD(sessionID: sessionID, checkpoint: checkpoint) { runID in
+        TwoSegmentVAD(segmentationRunID: runID, tail: [segmentFor(runID, 2)])
+    }
+    let runID = try #require(try ProcessingLogState(eventsURL: layout.eventsURL, sessionID: sessionID)?.segmentationRunID)
+    let first = segmentFor(runID, 1)
+    await live.enqueue(sessionID: sessionID, segments: [first], checkpoint: checkpoint)
+    await live.waitForDrain(sessionID: sessionID)
+    #expect(await asr.callCount() == 1)
+    // The tail is registered at stop and recognized by the stop's drain, not live.
+    await effects.setModelsIdle()
+    await live.stopVADPolling()
+    await live.finishVAD(sessionID: sessionID, checkpoint: checkpoint)
+    return StopFixture(root: root, processor: processor, sessionID: sessionID, layout: layout,
+                       checkpoint: checkpoint, segments: [first, segmentFor(runID, 2)])
+}
+
+private actor CountingStoredVAD: FinalTranscriptVADSegmenter {
+    nonisolated let provenance = RunProvenance(engine: "counting-stored-vad", model: nil, version: "test", configuration: [:])
+    private var calls = 0
+
+    func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
+        calls += 1
+        return [SegmentReference(segmentationRunID: runID, segmentID: "seg_000001", speechRanges: [0..<8_000])]
+    }
+
+    func callCount() -> Int { calls }
+}
+
+private actor PollFailingVAD: LiveVADProcessing {
+    nonisolated let segmentationRunID: String
+
+    init(segmentationRunID: String) { self.segmentationRunID = segmentationRunID }
+
+    func processAvailable(checkpoint: AudioCheckpoint) async throws -> LiveVADProgress {
+        throw UnexpectedLiveTestFinalization.called
+    }
+
+    func finish(checkpoint: AudioCheckpoint) async throws -> LiveVADProgress {
+        LiveVADProgress(emittedSegments: [], totalSegmentCount: 0,
+                        committedFrames: checkpoint.committedFrames, micSpeechLevels: [])
+    }
+}
+
+private final class FirstPollOnlySleep: @unchecked Sendable {
+    private var polled = false
+    func sleep() async throws {
+        if !polled { polled = true; return }
+        try await Task.sleep(for: .seconds(3_600))
+    }
+}
+
+@Test
+func aVADThatFailedDoesNotCertifySegmentationAndStopReplaysTheStoredVAD() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let paths = AppPaths(
+        applicationSupportURL: root.appending(path: "support", directoryHint: .isDirectory),
+        cacheURL: root.appending(path: "cache", directoryHint: .isDirectory), sessionsRootOverride: nil
+    )
+    let sessionID = UUID()
+    let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
+        paths: paths, sessionID: sessionID, source: .recording(.microphone),
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+    let layout = SessionLayout(sessionURL: sessionURL)
+    let audioWriter = try DurableAudioWriter(
+        directory: layout.processingDirectory, chunkDurationSeconds: 1, sessionURL: sessionURL
+    )
+    try await audioWriter.append(samples: Array(repeating: Float(0.1), count: 16_000))
+    let checkpoint = await audioWriter.committedSnapshot()
+    let storedVAD = CountingStoredVAD()
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        engines: SessionProcessingEngines(asr: ScriptedStopASR(), finalTranscriptVAD: storedVAD),
+        audioHandling: RecordingTestAudioHandling(), contentPriority: .disabled, sleep: { _ in }
+    )
+    let effects = await StopTestEffects(sessionID: sessionID, checkpoint: checkpoint)
+    let liveState = await LiveTranscriptionState()
+    let pollSleep = FirstPollOnlySleep()
+    let live = await LiveTranscriptionCoordinator(
+        state: liveState, effects: effects, processor: processor,
+        thermalMonitor: PublishedRetryNoThermalMonitor(), resourceMonitor: nil,
+        sleep: { _ in try await pollSleep.sleep() }
+    )
+    try await live.startVAD(sessionID: sessionID, checkpoint: checkpoint) { runID in
+        PollFailingVAD(segmentationRunID: runID)
+    }
+    // A transient poll error is recorded; the EOF flush then succeeds.
+    while await liveState.vadFailureText == nil { await Task.yield() }
+    await live.stopVADPolling()
+    await live.finishVAD(sessionID: sessionID, checkpoint: checkpoint)
+
+    let beforeStop = try #require(try ProcessingLogState(eventsURL: layout.eventsURL, sessionID: sessionID))
+    #expect(!beforeStop.segmentationCompleted)
+    await processor.cancelLiveTranscription(sessionID: sessionID)
+
+    let result = await processor.processSession(
+        sessionID: sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+    )
+
+    #expect(result.disposition == .completed, "\(result.message ?? "no failure message")")
+    #expect(await storedVAD.callCount() == 1)
+}
+
+private actor TwoSegmentVAD: LiveVADProcessing {
+    nonisolated let segmentationRunID: String
+    private let tail: [SegmentReference]
+
+    init(segmentationRunID: String, tail: [SegmentReference]) {
+        self.segmentationRunID = segmentationRunID
+        self.tail = tail
+    }
+
+    func processAvailable(checkpoint: AudioCheckpoint) async throws -> LiveVADProgress {
+        preconditionFailure("polling is not used")
+    }
+
+    func finish(checkpoint: AudioCheckpoint) async throws -> LiveVADProgress {
+        LiveVADProgress(emittedSegments: tail, totalSegmentCount: 2,
+                        committedFrames: checkpoint.committedFrames, micSpeechLevels: [])
+    }
+}
+
+@MainActor
+private final class StopTestEffects: LiveTranscriptionEffects {
+    let recordingSessionID: UUID?
+    var modelPhase = ModelPreparationStatus.Phase.ready
+
+    private let checkpoint: AudioCheckpoint?
+
+    init(sessionID: UUID, checkpoint: AudioCheckpoint? = nil) {
+        recordingSessionID = sessionID
+        self.checkpoint = checkpoint
+    }
+
+    func setModelsIdle() { modelPhase = .idle }
+    func isCurrentRecording(_ sessionID: UUID) -> Bool { sessionID == recordingSessionID }
+    func committedLiveCheckpoint() async throws -> AudioCheckpoint {
+        guard let checkpoint else { preconditionFailure("polling is not used") }
+        return checkpoint
+    }
+    func awaitIdleRelease() async {}
+    func awaitModelPreparation() async {}
+    func liveStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler { { _ in } }
+    func liveUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler { { _, _ in } }
+    func liveDidChange(_ event: LiveTranscriptionEvent) {}
+}
+
+@Test
+func stopDoesNotRecognizeSavedSegmentsAgain() async throws {
+    let asr = ScriptedStopASR()
+    let fixture = try await makeStopFixture(asr: asr)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    #expect(await asr.callCount() == 1)
+
+    let result = await fixture.stop()
+
+    #expect(result.disposition == .completed, "\(result.message ?? "no failure message")")
+    #expect(await asr.callCount() == 2)
+    let stored = try EventLogTranscriptReader().validateCompletion(
+        eventsURL: fixture.layout.eventsURL, sessionID: fixture.sessionID, frameCount: fixture.checkpoint.committedFrames
+    )
+    let rows = try TranscriptMaterializer(sampleRate: stored.state.generation.sampleRate)
+        .materialize(events: stored.events, activeRuns: stored.state.runs)
+    #expect(rows.map(\.text) == ["認識1", "認識2"])
+}
+
+@Test
+func stopAfterALiveASRFailureIsFailedAndNotAutoResumable() async throws {
+    let asr = ScriptedStopASR(failingCalls: [1])
+    let fixture = try await makeStopFixture(asr: asr)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    let stopped = await fixture.stop()
+
+    #expect(stopped.disposition == .failed)
+    #expect(try ProcessingMetadataStore(sessionURL: fixture.layout.sessionURL).load()?.state == .failed)
+    #expect(await asr.callCount() == 1)
+}
+
+@Test
+func aCancelledStopAfterALiveASRFailureStaysFailed() async throws {
+    let asr = ScriptedStopASR(failingCalls: [1])
+    let fixture = try await makeStopFixture(asr: asr)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    let task = Task { () -> SessionProcessingResult in
+        while !Task.isCancelled { await Task.yield() }
+        return await fixture.stop()
+    }
+    task.cancel()
+    let stopped = await task.value
+
+    #expect(stopped.disposition == .failed)
+    #expect(try ProcessingMetadataStore(sessionURL: fixture.layout.sessionURL).load()?.state == .failed)
+}
+
+@Test
+func aCancelledStopReportsAMalformedLogRecordAsFailed() async throws {
+    let fixture = try await makeStopFixture(asr: ScriptedStopASR())
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let log = try FileHandle(forWritingTo: fixture.layout.eventsURL)
+    try log.seekToEnd()
+    try log.write(contentsOf: Data("{\"malformed\": true}\n".utf8))
+    try log.close()
+
+    let task = Task { () -> SessionProcessingResult in
+        while !Task.isCancelled { await Task.yield() }
+        return await fixture.stop()
+    }
+    task.cancel()
+    let stopped = await task.value
+
+    #expect(stopped.disposition == .failed)
+}
+
+@Test
+func stopFailsOnAnASRFailureAndResumeRecognizesOnlyTheFailedSegment() async throws {
+    let asr = ScriptedStopASR(failingCalls: [2])
+    let fixture = try await makeStopFixture(asr: asr)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    let stopped = await fixture.stop()
+
+    #expect(stopped.disposition == .failed)
+    #expect(try ProcessingMetadataStore(sessionURL: fixture.layout.sessionURL).load()?.state == .failed)
+    let failed = try #require(try ProcessingLogState(eventsURL: fixture.layout.eventsURL, sessionID: fixture.sessionID))
+    #expect(failed.hasUnresolvedASRFailure && !failed.recognitionCompleted)
+
+    await asr.stopFailing()
+    let resumed = await fixture.stop(resume: true)
+
+    #expect(resumed.disposition == .completed, "\(resumed.message ?? "no failure message")")
+    #expect(await asr.callCount() == 3)
+    #expect(try ProcessingMetadataStore(sessionURL: fixture.layout.sessionURL).load()?.state == .complete)
 }
 
 private actor GatedLiveProcessorASR: ASREngine {
@@ -283,12 +594,11 @@ func cancelledLiveTranscriptionDoesNotPublishInFlightResult() async throws {
         contentPriority: .disabled,
         sleep: { _ in }
     )
-    _ = try await processor.startLiveTranscription(
-        sessionID: sessionID, segmentationRunID: "seg_live_test",
-        sampleRate: checkpoint.sampleRate
+    let segmentationRunID = try await processor.startLiveTranscription(
+        sessionID: sessionID, sampleRate: checkpoint.sampleRate
     )
     let segment = SegmentReference(
-        segmentationRunID: "seg_live_test", segmentID: "seg_000001",
+        segmentationRunID: segmentationRunID, segmentID: "seg_000001",
         speechRanges: [0..<4_000]
     )
     let updates = UpdateCounter()
@@ -486,15 +796,15 @@ func cancellingLiveDecisionsAfterAFailedTaggerLoadClearsItsPendingKeys() async t
         texts: ["前の本文", "次の本文"], factory: { throw TaggerLoadFailure() }, counter: counter
     )
     defer { try? FileManager.default.removeItem(at: fixture.root) }
-    _ = try await fixture.processor.startLiveTranscription(
-        sessionID: fixture.sessionID, segmentationRunID: "live", sampleRate: 16_000
+    let liveRunID = try await fixture.processor.startLiveTranscription(
+        sessionID: fixture.sessionID, sampleRate: 16_000
     )
     let updates = LiveUpdateRecorder()
     _ = try await fixture.processor.processLiveSegments(
         sessionID: fixture.sessionID,
         segments: [
-            SegmentReference(segmentationRunID: "live", segmentID: "a", speechRanges: [0..<4_000]),
-            SegmentReference(segmentationRunID: "live", segmentID: "b", speechRanges: [4_000..<8_000])
+            SegmentReference(segmentationRunID: liveRunID, segmentID: "a", speechRanges: [0..<4_000]),
+            SegmentReference(segmentationRunID: liveRunID, segmentID: "b", speechRanges: [4_000..<8_000])
         ],
         checkpoint: fixture.checkpoint, onStatus: nil, onUpdate: { rows, _ in await updates.record(rows) }
     )

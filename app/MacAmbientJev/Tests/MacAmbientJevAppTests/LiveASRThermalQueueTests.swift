@@ -44,7 +44,7 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
             finalTranscriptVAD: EmptyThermalQueueFinalVAD()
         ),
         modelProvisioning: ReadyModelProvisioning(),
-        makeLiveVADSession: { _, _, _, _ in liveVAD },
+        makeLiveVADSession: { _, _, _, _, _ in liveVAD },
         thermalMonitor: pressure,
         liveTranscriptionSleep: { duration in
             if duration == .milliseconds(LiveTranscriptionCadence.checkpointPollIntervalMilliseconds) {

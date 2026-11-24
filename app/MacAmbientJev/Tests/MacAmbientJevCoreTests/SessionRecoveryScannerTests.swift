@@ -137,14 +137,24 @@ func unprocessedImportIsFinalizedFromItsOriginal() throws {
 }
 
 @Test
-func recordingWithoutCapturedAudioHasNothingToRecover() throws {
+func aRecordingWithoutItsCheckpointIsMissingAudioAndAnEmptyOneIsFinalized() async throws {
     let root = temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
-    try writeRecoveryManifest(sessionID: id, source: .recording(.microphone),
-        to: recoveryURL(id: id, source: .recording(.microphone), root: root))
+    let url = try recoveryURL(id: id, source: .recording(.microphone), root: root)
+    try writeRecoveryManifest(sessionID: id, source: .recording(.microphone), to: url)
 
-    #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery == nil)
+    #expect(throws: SessionRecoveryScannerError.missingAudio) {
+        _ = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id)
+    }
+
+    // A crash after the writer's initial zero-frame checkpoint, before the first generation.
+    let layout = SessionLayout(sessionURL: url)
+    _ = try await DurableAudioWriter(
+        directory: layout.processingDirectory, chunkDurationSeconds: 1, sessionURL: url
+    ).finish()
+    let candidate = try #require(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery)
+    #expect(candidate.action == .finalize)
 }
 
 @Test(arguments: [ProcessingMetadata.State.running, .paused])

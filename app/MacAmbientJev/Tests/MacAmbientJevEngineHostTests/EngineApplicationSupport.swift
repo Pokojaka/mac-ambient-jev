@@ -358,7 +358,8 @@ final class ApplicationHarness {
     private var runTask: Task<EngineExit, Never>?
     private var nextRequestID: UInt64 = 1
 
-    init(root: URL) {
+    /// `provider` replaces the fake inference, for tests that need another provider's behaviour.
+    init(root: URL, provider: (any EngineInferenceProviding)? = nil) {
         self.root = root
         paths = engineTestPaths(root: root)
         transport = EngineTransport(source: source, sink: sink, limits: testLimits())
@@ -367,7 +368,7 @@ final class ApplicationHarness {
                 paths: paths, logicalCPUCount: 4, resourceMonitor: resources, sleep: { try await Task.sleep(for: $0) },
                 shutdownPauseTimeout: .seconds(20), timeZone: TimeZone(identifier: "Asia/Tokyo")!),
             capture: capture,
-            inference: inference,
+            inference: provider ?? inference,
             events: EngineEventEmitter(transport: transport)
         )
         controller = EngineController(transport: transport, handlers: app.handlers, admission: .production)

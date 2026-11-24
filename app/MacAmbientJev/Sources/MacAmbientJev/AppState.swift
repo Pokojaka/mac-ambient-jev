@@ -11,7 +11,8 @@ import MacAmbientJevPipeline
 import UniformTypeIdentifiers
 
 typealias LiveVADFactory = @MainActor (
-    _ processingDirectory: URL, _ initialCheckpoint: AudioCheckpoint, _ measureMicInputLevels: Bool, _ sessionURL: URL
+    _ processingDirectory: URL, _ initialCheckpoint: AudioCheckpoint, _ measureMicInputLevels: Bool, _ sessionURL: URL,
+    _ segmentationRunID: String
 ) async throws -> any LiveVADProcessing
 
 enum MicInputVolumePreference {
