@@ -69,9 +69,10 @@ public actor NativeSessionProcessor {
     public typealias PauseCheck = @Sendable () async -> InferenceHoldReason?
     public typealias PhaseHandler = @Sendable (RunPhase) async -> Void
 
-    private enum FinalizationAudio {
-        case live(AudioCheckpoint)
-        case stored
+    /// The sessions a recording keeps running until stop; stop drains these same sessions.
+    private struct LiveWorker {
+        let asr: LiveASRSession
+        let decisions: LiveContentPrioritySession?
     }
 
     private struct OpenedGeneration {
@@ -115,10 +116,10 @@ public actor NativeSessionProcessor {
 
     public func releaseIdleResources() async { await asr.unload() }
 
-    @discardableResult
+    /// Creates the generation and the live worker, and returns the generation's segmentation run ID
+    /// that the live VAD session must use.
     public func startLiveTranscription(
         sessionID: UUID,
-        segmentationRunID: String,
         sampleRate: Double
     ) async throws -> String {
         guard !activeFinalizations.contains(sessionID), !activeDecisionRetries.contains(sessionID),
@@ -131,7 +132,7 @@ public actor NativeSessionProcessor {
         let writer = try SessionWriter(sessionURL: sessionLayout.sessionURL)
         let opened = try await openGeneration(
             sessionID: sessionID, layout: sessionLayout, writer: writer, sampleRate: sampleRate,
-            metadataPolicy: .reject, liveSegmentationRunID: segmentationRunID, allowFailed: false
+            metadataPolicy: .reject, allowFailed: false
         )
         try await ensureSegmentationStarted(opened.state, sessionID: sessionID, writer: writer)
         let liveASR = try await LiveASRSession.open(
@@ -148,7 +149,7 @@ public actor NativeSessionProcessor {
                 onStatus: { _ in }, onUpdate: { _ in }
             )
         }
-        return liveASR.asrRunID
+        return liveASR.segmentationRunID
     }
 
     @discardableResult
@@ -157,6 +158,27 @@ public actor NativeSessionProcessor {
             throw NativeSessionProcessorError.liveASRSessionNotStarted
         }
         return try await liveSession.register(segments: segments)
+    }
+
+    public func sealLiveSegmentation(sessionID: UUID, frameCount: Int64) async throws {
+        guard !activeFinalizations.contains(sessionID), let liveSession = liveASRSessions[sessionID] else {
+            throw NativeSessionProcessorError.liveASRSessionNotStarted
+        }
+        try await liveSession.sealSegmentationInput(frameCount: frameCount)
+    }
+
+    public func completeLiveSegmentation(sessionID: UUID, frameCount: Int64, segmentCount: Int) async throws {
+        guard !activeFinalizations.contains(sessionID), let liveSession = liveASRSessions[sessionID] else {
+            throw NativeSessionProcessorError.liveASRSessionNotStarted
+        }
+        try await liveSession.completeSegmentation(frameCount: frameCount, segmentCount: segmentCount)
+    }
+
+    /// True when the current generation holds a durable ASR failure that only an explicit resume continues.
+    public func hasUnresolvedASRFailure(sessionID: UUID) throws -> Bool {
+        let sessionLayout = try layout(for: sessionID)
+        return try ProcessingLogState(eventsURL: sessionLayout.eventsURL, sessionID: sessionID)?
+            .hasUnresolvedASRFailure ?? false
     }
 
     @discardableResult
@@ -216,6 +238,7 @@ public actor NativeSessionProcessor {
             }
         } catch {
             await enrichment.stop()
+            if liveContentPrioritySessions[sessionID] === enrichment { liveContentPrioritySessions[sessionID] = nil }
             let message = "ライブの発話文判定に失敗しました: \(error.localizedDescription)"
             await onStatus?(.message(message))
             await onUpdate?(snapshot.progress.materializedSegments, .partialFailure(message))
@@ -243,22 +266,6 @@ public actor NativeSessionProcessor {
         }
     }
 
-    public func finishLiveTranscription(
-        sessionID: UUID,
-        checkpoint: AudioCheckpoint,
-        pacingMode: ASRPacingMode,
-        shouldPause: @escaping PauseCheck,
-        onPhase: @escaping PhaseHandler,
-        onStatus: @escaping StatusHandler,
-        onUpdate: @escaping UpdateHandler
-    ) async -> SessionProcessingResult {
-        await finalize(
-            sessionID: sessionID, metadataPolicy: .reject, allowFailed: false,
-            pacingMode: pacingMode, shouldPause: shouldPause, onPhase: onPhase,
-            onStatus: onStatus, onUpdate: onUpdate, audio: .live(checkpoint)
-        )
-    }
-
     @discardableResult
     public func processSession(
         sessionID: UUID,
@@ -272,7 +279,7 @@ public actor NativeSessionProcessor {
         await finalize(
             sessionID: sessionID, metadataPolicy: metadataPolicy, allowFailed: false,
             pacingMode: pacingMode, shouldPause: shouldPause, onPhase: onPhase,
-            onStatus: onStatus, onUpdate: onUpdate, audio: .stored
+            onStatus: onStatus, onUpdate: onUpdate
         )
     }
 
@@ -289,7 +296,7 @@ public actor NativeSessionProcessor {
         await finalize(
             sessionID: sessionID, metadataPolicy: .reject, allowFailed: true,
             pacingMode: pacingMode, shouldPause: shouldPause, onPhase: onPhase,
-            onStatus: onStatus, onUpdate: onUpdate, audio: .stored
+            onStatus: onStatus, onUpdate: onUpdate
         )
     }
 
@@ -425,8 +432,7 @@ public actor NativeSessionProcessor {
         shouldPause: @escaping PauseCheck,
         onPhase: @escaping PhaseHandler,
         onStatus: @escaping StatusHandler,
-        onUpdate: @escaping UpdateHandler,
-        audio: FinalizationAudio
+        onUpdate: @escaping UpdateHandler
     ) async -> SessionProcessingResult {
         guard !startingLiveSessions.contains(sessionID), !activeDecisionRetries.contains(sessionID),
               activeFinalizations.insert(sessionID).inserted else {
@@ -447,15 +453,7 @@ public actor NativeSessionProcessor {
             resolvedLayout = sessionLayout
             let manifest = try sessionLayout.loadManifest()
             loadedManifest = manifest
-            let source: SessionAudioSource
-            switch audio {
-            case .live(let checkpoint): source = .recordedPCM(checkpoint)
-            case .stored:
-                guard let stored = try sessionLayout.audioSource(for: manifest) else {
-                    throw NativeSessionProcessorError.storedAudioMissing
-                }
-                source = stored
-            }
+            let source = try sessionLayout.processingSource(for: manifest)
             let result = await runFinalization(
                 sessionID: sessionID, layout: sessionLayout, source: source,
                 metadataPolicy: metadataPolicy, allowFailed: allowFailed, pacingMode: pacingMode,
@@ -481,6 +479,7 @@ public actor NativeSessionProcessor {
         }
     }
 
+    /// Drains the session: the live worker when the recording kept one, otherwise sessions reopened from the log.
     private func runFinalization(
         sessionID: UUID,
         layout: SessionLayout,
@@ -493,11 +492,33 @@ public actor NativeSessionProcessor {
         onStatus: @escaping StatusHandler,
         onUpdate: @escaping UpdateHandler
     ) async -> SessionProcessingResult {
+        let live = takeLiveWorker(sessionID: sessionID)
+        let result = await drain(
+            sessionID: sessionID, layout: layout, source: source, live: live,
+            metadataPolicy: metadataPolicy, allowFailed: allowFailed, pacingMode: pacingMode,
+            shouldPause: shouldPause, onPhase: onPhase, onStatus: onStatus, onUpdate: onUpdate
+        )
+        await live?.decisions?.stop()
+        return result
+    }
+
+    private func drain(
+        sessionID: UUID,
+        layout: SessionLayout,
+        source: SessionAudioSource,
+        live: LiveWorker?,
+        metadataPolicy: UnreadableMetadataPolicy,
+        allowFailed: Bool,
+        pacingMode: ASRPacingMode,
+        shouldPause: @escaping PauseCheck,
+        onPhase: @escaping PhaseHandler,
+        onStatus: @escaping StatusHandler,
+        onUpdate: @escaping UpdateHandler
+    ) async -> SessionProcessingResult {
         var attemptGenerationID: UUID?
         var metrics: ASRBatchMetrics?
         do {
             await onPhase(.preparing)
-            let livePendingTargets = try await stopLiveWorkers(sessionID: sessionID)
             let writer = try SessionWriter(sessionURL: layout.sessionURL)
             let sampleRate: Double
             switch source {
@@ -507,7 +528,7 @@ public actor NativeSessionProcessor {
             }
             let opened = try await openGeneration(
                 sessionID: sessionID, layout: layout, writer: writer, sampleRate: sampleRate,
-                metadataPolicy: metadataPolicy, liveSegmentationRunID: nil, allowFailed: allowFailed
+                metadataPolicy: metadataPolicy, allowFailed: allowFailed
             )
             if !opened.state.segmentationCompleted {
                 await onStatus(.activity(.detectingSpeech))
@@ -534,15 +555,27 @@ public actor NativeSessionProcessor {
             if recognizedCount < state.segments.count {
                 await onStatus(.activity(.preparingASR))
             }
+            // The live worker knows only the segments it registered: it is kept when live segmentation
+            // already completed, and otherwise the sessions are reopened after stored segmentation.
+            // It is kept only while it agrees with the log; after a failed ASR write the log is the truth.
+            var worker: LiveWorker?
+            if state.segmentationCompleted, let live, await live.asr.agrees(with: state) { worker = live }
+            // The sessions are reopened from the log, so the old decision worker must stop writing first.
+            if worker == nil { await live?.decisions?.stop() }
             try await StoredSegmentation.finish(
                 state: state, sessionID: sessionID, audio: audio,
                 segmenter: finalTranscriptVAD, writer: writer
             )
             try Task.checkCancellation()
 
-            let liveSession = try await LiveASRSession.open(
-                sessionID: sessionID, sessionURL: layout.sessionURL, writer: writer, asr: asr
-            )
+            let liveSession: LiveASRSession
+            if let worker {
+                liveSession = worker.asr
+            } else {
+                liveSession = try await LiveASRSession.open(
+                    sessionID: sessionID, sessionURL: layout.sessionURL, writer: writer, asr: asr
+                )
+            }
             guard liveSession.segmentationRunID == state.segmentationRunID,
                   liveSession.asrRunID == state.asrRunID else {
                 throw ProcessingLogStateError.missingGeneration
@@ -585,9 +618,10 @@ public actor NativeSessionProcessor {
             let latest = try ProcessingLogState(eventsURL: layout.eventsURL, sessionID: sessionID)
             guard let latest, latest.generation.id == generationID else { throw ProcessingLogStateError.missingGeneration }
             await onPhase(.postprocessing)
+            var drainedPendingTargets: Set<DecisionPendingTarget> = []
             if let pair = decisionIDs(latest.generation.runs), decisionIDs(latest.runs) == pair {
-                try await finishInitialDecisions(
-                    sessionID: sessionID, writer: writer, liveASR: liveSession,
+                drainedPendingTargets = try await drainDecisions(
+                    sessionID: sessionID, writer: writer, liveASR: liveSession, live: worker?.decisions,
                     onStatus: onStatus, onUpdate: onUpdate
                 )
             }
@@ -601,7 +635,7 @@ public actor NativeSessionProcessor {
             if case .localTagger(_, let usageCounter) = contentPriority {
                 await usageCounter.clearDeferred(
                     sessionID: sessionID,
-                    targets: livePendingTargets.union(stored.pendingDecisions.pendingTargets)
+                    targets: drainedPendingTargets.union(stored.pendingDecisions.pendingTargets)
                 )
                 await usageCounter.recordDeferred(sessionID: sessionID, targets: stored.pendingDecisions.pendingTargets)
             }
@@ -622,7 +656,9 @@ public actor NativeSessionProcessor {
             return .completed(metrics: metrics, noSpeech: completion.completedCount == 0)
         } catch {
             if let cancellation = error as? ASRRunCancellation { metrics = cancellation.metrics }
-            let cancelled = error is CancellationError || error is ASRRunCancellation || Task.isCancelled
+            // The error decides: only a cancellation pauses. A read, validation or saved failure stays
+            // failed even when a shutdown cancelled the task meanwhile.
+            let cancelled = error is CancellationError || error is ASRRunCancellation
             var message = cancelled ? "確定処理が中断されたため、一時停止しました"
                 : attemptGenerationID == nil ? "確定処理を開始できませんでした: \(error.localizedDescription)"
                 : error.localizedDescription
@@ -646,20 +682,32 @@ public actor NativeSessionProcessor {
         }
     }
 
-    private func finishInitialDecisions(
+    /// Releases the final successor wait of the live decision session, or of one reopened from the log
+    /// when the recording kept none, and waits until every decision is saved.
+    private func drainDecisions(
         sessionID: UUID,
         writer: SessionWriter,
         liveASR: LiveASRSession,
+        live: LiveContentPrioritySession?,
         onStatus: @escaping StatusHandler,
         onUpdate: @escaping UpdateHandler
-    ) async throws {
-        guard case .localTagger(let factory, let usageCounter) = contentPriority else { return }
-        let enrichment = try await LiveContentPrioritySession.open(
-            sessionID: sessionID, writer: writer, liveASR: liveASR,
-            makeDecisions: factory, usageCounter: usageCounter,
-            onStatus: { text in await onStatus(.message(text)) },
-            onUpdate: { snapshot in await onUpdate(snapshot.progress.materializedSegments, .running) }
-        )
+    ) async throws -> Set<DecisionPendingTarget> {
+        guard case .localTagger(let factory, let usageCounter) = contentPriority else { return [] }
+        let onDecisionStatus: LiveContentPrioritySession.StatusHandler = { text in await onStatus(.message(text)) }
+        let onDecisionUpdate: LiveContentPrioritySession.UpdateHandler = { snapshot in
+            await onUpdate(snapshot.progress.materializedSegments, .running)
+        }
+        let enrichment: LiveContentPrioritySession
+        if let live {
+            await live.rebind(onStatus: onDecisionStatus, onUpdate: onDecisionUpdate)
+            enrichment = live
+        } else {
+            enrichment = try await LiveContentPrioritySession.open(
+                sessionID: sessionID, writer: writer, liveASR: liveASR,
+                makeDecisions: factory, usageCounter: usageCounter,
+                onStatus: onDecisionStatus, onUpdate: onDecisionUpdate
+            )
+        }
         do {
             try await enrichment.finishInput(snapshot: await liveASR.snapshot())
             try await enrichment.waitForDrain()
@@ -667,19 +715,13 @@ public actor NativeSessionProcessor {
             await enrichment.stop()
             throw error
         }
+        return await enrichment.pendingTargets()
     }
 
-    private func stopLiveWorkers(sessionID: UUID) async throws -> Set<DecisionPendingTarget> {
-        liveASRSessions[sessionID] = nil
-        guard let enrichment = liveContentPrioritySessions.removeValue(forKey: sessionID) else { return [] }
-        do {
-            if Task.isCancelled { await enrichment.stop() }
-            else { try await enrichment.waitForDrain(); await enrichment.stop() }
-        } catch {
-            await enrichment.stop()
-            throw error
-        }
-        return await enrichment.pendingTargets()
+    private func takeLiveWorker(sessionID: UUID) -> LiveWorker? {
+        let decisions = liveContentPrioritySessions.removeValue(forKey: sessionID)
+        guard let asr = liveASRSessions.removeValue(forKey: sessionID) else { return nil }
+        return LiveWorker(asr: asr, decisions: decisions)
     }
 
     private func openGeneration(
@@ -688,7 +730,6 @@ public actor NativeSessionProcessor {
         writer: SessionWriter,
         sampleRate: Double,
         metadataPolicy: UnreadableMetadataPolicy,
-        liveSegmentationRunID: String?,
         allowFailed: Bool
     ) async throws -> OpenedGeneration {
         guard sampleRate.isFinite, sampleRate > 0 else { throw ProcessingLogStateError.incompatibleSettings }
@@ -714,26 +755,24 @@ public actor NativeSessionProcessor {
             guard settingsMatch(state.generation, sampleRate: sampleRate) else {
                 throw ProcessingLogStateError.incompatibleSettings
             }
-            if let liveSegmentationRunID, liveSegmentationRunID != state.segmentationRunID {
-                throw ProcessingLogStateError.incompatibleSettings
-            }
             if metadata?.generationID == state.generation.id {
                 if metadata?.state == .failed && !allowFailed {
                     throw NativeSessionProcessorError.failedGenerationRequiresResume
                 }
             }
             if state.hasUnresolvedASRFailure && !allowFailed {
-                throw NativeSessionProcessorError.unresolvedASRFailure
+                let error = NativeSessionProcessorError.unresolvedASRFailure
+                try metadataStore.save(ProcessingMetadata(
+                    generationID: state.generation.id, state: .failed, failureReason: error.localizedDescription
+                ))
+                throw error
             }
             try metadataStore.save(ProcessingMetadata(generationID: state.generation.id, state: .running, failureReason: nil))
             return OpenedGeneration(state: state, startedNew: false)
         }
 
         let suffix = UUID().uuidString.lowercased()
-        let segmentationID = liveSegmentationRunID ?? "seg_\(suffix)"
-        guard !segmentationID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw ProcessingLogStateError.missingGeneration
-        }
+        let segmentationID = "seg_\(suffix)"
         let asrID = "asr_\(suffix)"
         let pair = hasDecisionPair ? ("boundary_\(suffix)", "priority_\(suffix)") : nil
         let runIDs = [segmentationID, asrID] + (pair.map { [$0.0, $0.1] } ?? [])
@@ -880,7 +919,6 @@ public actor NativeSessionProcessor {
 enum NativeSessionProcessorError: LocalizedError {
     case liveASRSessionNotStarted
     case transcriptNotPublished
-    case storedAudioMissing
     case duplicateDecisionRetryTarget
     case noDecisionRetryTargets
     case contentPriorityUnavailable
@@ -893,7 +931,6 @@ enum NativeSessionProcessorError: LocalizedError {
         switch self {
         case .liveASRSessionNotStarted: "録音中の文字起こしセッションが開始されていません"
         case .transcriptNotPublished: "確定済みの文字起こし run がありません"
-        case .storedAudioMissing: "保存済みの音声がありません"
         case .duplicateDecisionRetryTarget: "判定の再試行対象が重複しています"
         case .noDecisionRetryTargets: "判定の再試行対象がありません"
         case .contentPriorityUnavailable: "判定エンジンが利用できません"

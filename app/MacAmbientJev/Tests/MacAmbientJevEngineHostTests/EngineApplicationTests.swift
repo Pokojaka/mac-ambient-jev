@@ -448,6 +448,22 @@ private struct GatedOfflineFinalTranscriptVAD: FinalTranscriptVADSegmenter {
     }
 }
 
+private struct GatedLiveVADFailure: Error {}
+
+/// A live VAD that fails at stop, so the stop segments the saved audio offline, behind the gate.
+private struct GatedFailingLiveVAD: LiveVADProcessing {
+    let segmentationRunID: String
+
+    func processAvailable(checkpoint: AudioCheckpoint) async throws -> LiveVADProgress {
+        LiveVADProgress(emittedSegments: [], totalSegmentCount: 0,
+                        committedFrames: checkpoint.committedFrames, micSpeechLevels: [])
+    }
+
+    func finish(checkpoint: AudioCheckpoint) async throws -> LiveVADProgress {
+        throw GatedLiveVADFailure()
+    }
+}
+
 private final class GatedFinalizationInferenceProvider: EngineInferenceProviding, @unchecked Sendable {
     private let gate: OfflineFinalizationGate
     private let calls = CallCounter()
@@ -479,7 +495,7 @@ private final class GatedFinalizationInferenceProvider: EngineInferenceProviding
             ),
             contentPriority: .disabled,
             timelineBuilder: FakeTimelineBuilder(),
-            makeLiveVADSession: { _, _, _, runID in FakeLiveVAD(segmentationRunID: runID) }
+            makeLiveVADSession: { _, _, _, runID in GatedFailingLiveVAD(segmentationRunID: runID) }
         )
     }
 }

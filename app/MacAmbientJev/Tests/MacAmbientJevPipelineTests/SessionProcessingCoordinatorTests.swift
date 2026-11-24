@@ -60,12 +60,20 @@ private final class CoordinatorTestThermalMonitor: ThermalMonitoring, Sendable {
 private struct CoordinatorQueueSnapshot {
     let pendingSessionIDs: [UUID]
     let heldSessionIDs: [UUID]
+    let modelHeldSessionIDs: [UUID]
     let currentSessionID: UUID?
     let claimedSessionIDs: Set<UUID>
+
+    /// True when no request is both current and in a list, so a queue count sees each request once.
+    var countsEachRequestOnce: Bool {
+        guard let currentSessionID else { return true }
+        return !(pendingSessionIDs + heldSessionIDs + modelHeldSessionIDs).contains(currentSessionID)
+    }
 
     init(queue: SessionProcessingQueue) {
         pendingSessionIDs = queue.pending.map(\.sessionID)
         heldSessionIDs = queue.held.map { $0.request.sessionID }
+        modelHeldSessionIDs = queue.modelHeld.map(\.sessionID)
         currentSessionID = queue.currentSessionID
         claimedSessionIDs = queue.claimedSessionIDs
     }
@@ -178,6 +186,9 @@ private final class CoordinatorEffectsFake: SessionProcessingEffects {
     }
 }
 
+private enum CoordinatorTestProbeOutcome { case noFailure, failure, readError }
+private struct CoordinatorTestProbeReadError: Error {}
+
 private actor ScriptedSessionProcessingExecutor: SessionProcessingExecuting {
     private var scriptedResults: [SessionProcessingResult]
     private var recordedOperations: [String] = []
@@ -202,22 +213,6 @@ private actor ScriptedSessionProcessingExecutor: SessionProcessingExecuting {
         onUpdate: @escaping NativeSessionProcessor.UpdateHandler
     ) async -> SessionProcessingResult {
         record("processSession:\(sessionID.uuidString)")
-        let holdReason = await shouldPause()
-        recordedShouldPauseValues.append(holdReason != nil)
-        let result = nextResult()
-        return await applyingPauseReason(to: result, holdReason: holdReason, onStatus: onStatus)
-    }
-
-    func finishLiveTranscription(
-        sessionID: UUID,
-        checkpoint: AudioCheckpoint,
-        pacingMode: ASRPacingMode,
-        shouldPause: @escaping NativeSessionProcessor.PauseCheck,
-        onPhase: @escaping NativeSessionProcessor.PhaseHandler,
-        onStatus: @escaping NativeSessionProcessor.StatusHandler,
-        onUpdate: @escaping NativeSessionProcessor.UpdateHandler
-    ) async -> SessionProcessingResult {
-        record("finishLiveTranscription:\(sessionID.uuidString)")
         let holdReason = await shouldPause()
         recordedShouldPauseValues.append(holdReason != nil)
         let result = nextResult()
@@ -255,8 +250,26 @@ private actor ScriptedSessionProcessingExecutor: SessionProcessingExecuting {
         beforeRetryResult = callback
     }
 
+    /// What the durable-failure probe finds; settable from the synchronous live-drain hook.
+    nonisolated let probeOutcome = Mutex(CoordinatorTestProbeOutcome.noFailure)
+    private var beforeProbeResult: (@MainActor @Sendable () -> Void)?
+    func setBeforeProbeResult(_ callback: @escaping @MainActor @Sendable () -> Void) { beforeProbeResult = callback }
+    func hasUnresolvedASRFailure(sessionID: UUID) async throws -> Bool {
+        await beforeProbeResult?()
+        switch probeOutcome.withLock({ $0 }) {
+        case .noFailure: return false
+        case .failure: return true
+        case .readError: throw CoordinatorTestProbeReadError()
+        }
+    }
+
+    private var duringLiveCancellation: (@MainActor @Sendable () -> Void)?
+    func setDuringLiveCancellation(_ callback: @escaping @MainActor @Sendable () -> Void) {
+        duringLiveCancellation = callback
+    }
     func cancelLiveTranscription(sessionID: UUID) async {
         record("cancelLiveTranscription:\(sessionID.uuidString)")
+        await duringLiveCancellation?()
     }
 
     func operations() -> [String] { recordedOperations }
@@ -503,17 +516,7 @@ func completedFinishLiveRefreshesSavedSessions() async {
         thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair),
         resourceHolds: nil
     )
-    let checkpoint = AudioCheckpoint(
-        committedFrames: 0,
-        sampleRate: 16_000,
-        channelCount: 1,
-        sampleFormat: .float32LE,
-        chunkFiles: [],
-        chunkFrameCounts: [],
-        gapEvents: []
-    )
-
-    coordinator.enqueue(.finishLive(sessionID: UUID(), checkpoint: checkpoint))
+    coordinator.enqueue(.finalize(sessionID: UUID(), metadataPolicy: .reject))
     await coordinator.waitUntilIdle()
 
     #expect(effects.refreshSavedSessionsCount == 1)
@@ -541,17 +544,7 @@ func pausedFinishLiveResumesAsStoredFinalization() async throws {
         resourceHolds: nil
     )
     let sessionID = UUID()
-    let checkpoint = AudioCheckpoint(
-        committedFrames: 0,
-        sampleRate: 16_000,
-        channelCount: 1,
-        sampleFormat: .float32LE,
-        chunkFiles: [],
-        chunkFrameCounts: [],
-        gapEvents: []
-    )
-
-    coordinator.enqueue(.finishLive(sessionID: sessionID, checkpoint: checkpoint))
+    coordinator.enqueue(.finalize(sessionID: sessionID, metadataPolicy: .reject))
     await coordinator.waitUntilIdle()
 
     #expect(effects.liveASRDrainWaitCount == 1)
@@ -571,70 +564,19 @@ func pausedFinishLiveResumesAsStoredFinalization() async throws {
 
     let eventsBeforeResume = eventLog.events
     let waitIndex = try #require(eventsBeforeResume.firstIndex(of: "waitForLiveASRDrain:\(sessionID.uuidString)"))
-    let cancellationIndex = try #require(eventsBeforeResume.firstIndex(of: "cancelLiveTranscription:\(sessionID.uuidString)"))
-    let finishIndex = try #require(eventsBeforeResume.firstIndex(of: "finishLiveTranscription:\(sessionID.uuidString)"))
-    #expect(waitIndex < cancellationIndex)
+    let finishIndex = try #require(eventsBeforeResume.firstIndex(of: "processSession:\(sessionID.uuidString)"))
     #expect(waitIndex < finishIndex)
 
     coordinator.resumeHeldProcessing()
     await coordinator.waitUntilIdle()
 
     #expect(await processor.operations() == [
-        "cancelLiveTranscription:\(sessionID.uuidString)",
-        "finishLiveTranscription:\(sessionID.uuidString)",
+        "processSession:\(sessionID.uuidString)",
         "processSession:\(sessionID.uuidString)"
     ])
-    #expect(effects.liveASRDrainWaitCount == 1)
-    #expect(effects.liveASRCleanupCount == 1)
+    #expect(effects.liveASRDrainWaitCount == 2)
+    #expect(effects.liveASRCleanupCount == 2)
     #expect(effects.exportedSessionIDs == [sessionID])
-}
-
-@MainActor
-@Test
-func pauseDuringLiveDrainSkipsFinishAndHoldsStoredFinalization() async {
-    let thermalMonitor = CoordinatorTestThermalMonitor(pressure: .fair)
-    let eventLog = CoordinatorTestEventLog()
-    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
-    effects.onLiveASRDrainWait = { effects.pausesProcessing = true }
-    let processor = ScriptedSessionProcessingExecutor(
-        scriptedResults: [],
-        eventLog: eventLog
-    )
-    let coordinator = SessionProcessingCoordinator(
-        effects: effects,
-        processor: processor,
-        thermalMonitor: thermalMonitor,
-        resourceHolds: nil
-    )
-    let sessionID = UUID()
-    let checkpoint = AudioCheckpoint(
-        committedFrames: 0,
-        sampleRate: 16_000,
-        channelCount: 1,
-        sampleFormat: .float32LE,
-        chunkFiles: [],
-        chunkFrameCounts: [],
-        gapEvents: []
-    )
-
-    coordinator.enqueue(.finishLive(sessionID: sessionID, checkpoint: checkpoint))
-    await coordinator.waitUntilIdle()
-
-    #expect(await processor.operations() == ["cancelLiveTranscription:\(sessionID.uuidString)"])
-    #expect(effects.liveASRCleanupCount == 1)
-    #expect(effects.refreshSavedSessionsCount == 1)
-    #expect(effects.processingQueue.currentSessionID == nil)
-    #expect(effects.processingQueue.held.count == 1)
-    if let heldEntry = effects.processingQueue.held.first {
-        if case .finalize(let heldSessionID, let metadataPolicy) = heldEntry.request {
-            #expect(heldSessionID == sessionID)
-            #expect(metadataPolicy == .reject)
-        } else {
-            #expect(Bool(false), "一時停止したライブ処理は確定処理として保持されます")
-        }
-    }
-    #expect(effects.eventOrder.contains("finished:\(sessionID.uuidString):paused"))
-    #expect(effects.eventOrder.suffix(2) == ["willFinishDrain", "drained"])
 }
 
 @MainActor
@@ -1018,10 +960,10 @@ func retainedFinalizeRequestRunsExactlyOneFinalization() async {
 
 @MainActor
 @Test
-func inferenceResourceStoppedLiveRequeuesWholeFinalizationWithoutDrain() async throws {
+func inferenceResourcePressureWhileStoppingHoldsTheFinalizationAndReplaysIt() async throws {
     let monitor = TestInferenceResourceMonitor(.healthy), eventLog = CoordinatorTestEventLog()
     let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
-    effects.onLiveASRDrainWait = { monitor.setSignal(.pressure) }
+    effects.onLiveASRDrainWait = { monitor.setSignal(.pressure); effects.onLiveASRDrainWait = nil }
     let processor = ScriptedSessionProcessingExecutor(
         scriptedResults: [makeCoordinatorTestCompletedResult()], eventLog: eventLog)
     let coordinator = SessionProcessingCoordinator(
@@ -1032,11 +974,7 @@ func inferenceResourceStoppedLiveRequeuesWholeFinalizationWithoutDrain() async t
             monitor: monitor, release: { eventLog.append("resourceRelease") })
     )
     let sessionID = UUID()
-    let checkpoint = AudioCheckpoint(
-        committedFrames: 0, sampleRate: 16_000, channelCount: 1, sampleFormat: .float32LE,
-        chunkFiles: [], chunkFrameCounts: [], gapEvents: [])
-
-    coordinator.enqueue(.finishLive(sessionID: sessionID, checkpoint: checkpoint))
+    coordinator.enqueue(.finalize(sessionID: sessionID, metadataPolicy: .reject))
     await coordinator.waitUntilIdle()
 
     #expect(await processor.operations() == ["cancelLiveTranscription:\(sessionID.uuidString)"])
@@ -1063,9 +1001,7 @@ func inferenceResourceFinalizationPausesAndReplaysWholeAttempt(
     let monitor = TestInferenceResourceMonitor(.healthy), eventLog = CoordinatorTestEventLog()
     let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
     let processor = ScriptedSessionProcessingExecutor(
-        scriptedResults: [.paused(metrics: nil, retained: .nothing,
-            message: signal.holdReason!.finalizationExplanation), makeCoordinatorTestCompletedResult()],
-        eventLog: eventLog)
+        scriptedResults: [makeCoordinatorTestCompletedResult()], eventLog: eventLog)
     let coordinator = SessionProcessingCoordinator(
         effects: effects,
         processor: processor,
@@ -1101,8 +1037,9 @@ func inferenceResourceFinalizationPausesAndReplaysWholeAttempt(
         await coordinator.waitUntilIdle()
     }
 
-    #expect(await processor.operations() == [operation, operation])
-    #expect(await processor.shouldPauseValues() == [true, false])
+    // The pressure that arrived before processing started holds the request without processing it.
+    #expect(await processor.operations() == ["cancelLiveTranscription:\(sessionID.uuidString)", operation])
+    #expect(await processor.shouldPauseValues() == [false])
     #expect(effects.processingQueue.held.isEmpty && effects.processingQueue.claimedSessionIDs.isEmpty)
     #expect(effects.exportCount == 1 && effects.exportedSessionIDs == [sessionID])
     #expect(eventLog.events.filter { $0 == "resourceRelease" }.count == 1)
@@ -1143,7 +1080,8 @@ func modelHoldKeepsFIFOOrderAndClaimsUntilTheModelsAreReady() async {
     #expect(effects.processingQueue.modelHeld.map(\.sessionID) == [first, second])
     #expect(effects.processingQueue.claimedSessionIDs == Set([first, second]))
     #expect(effects.processingQueue.sessionIDs.isSuperset(of: [first, second]))
-    #expect(await processor.operations() == ["retryContentPriority:\(retry.uuidString)"])
+    let released = ["cancelLiveTranscription:\(first.uuidString)", "cancelLiveTranscription:\(second.uuidString)"]
+    #expect(await processor.operations() == released + ["retryContentPriority:\(retry.uuidString)"])
 
     coordinator.resumeModelHeldProcessing()
     #expect(effects.processingQueue.modelHeld.count == 2)
@@ -1152,7 +1090,7 @@ func modelHoldKeepsFIFOOrderAndClaimsUntilTheModelsAreReady() async {
     coordinator.resumeModelHeldProcessing()
     await coordinator.waitUntilIdle()
 
-    #expect(await processor.operations() == [
+    #expect(await processor.operations() == released + [
         "retryContentPriority:\(retry.uuidString)",
         "processSession:\(first.uuidString)",
         "processSession:\(second.uuidString)"
@@ -1163,7 +1101,7 @@ func modelHoldKeepsFIFOOrderAndClaimsUntilTheModelsAreReady() async {
 
 @MainActor
 @Test
-func finishLiveHeldForModelsBecomesRejectingFinalize() async {
+func liveFinalizationHeldForModelsReleasesTheLiveWorker() async {
     let eventLog = CoordinatorTestEventLog()
     let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
     effects.modelsReady = false
@@ -1178,22 +1116,181 @@ func finishLiveHeldForModelsBecomesRejectingFinalize() async {
     var sessionIDsDuringWait: [Set<UUID>] = []
     effects.onLiveASRDrainWait = { sessionIDsDuringWait.append(effects.processingQueue.sessionIDs) }
 
-    coordinator.enqueue(.finishLive(sessionID: sessionID, checkpoint: makeCoordinatorTestCheckpoint()))
+    coordinator.enqueue(.finalize(sessionID: sessionID, metadataPolicy: .reject))
     await coordinator.waitUntilIdle()
 
     #expect(sessionIDsDuringWait == [[sessionID]])
     #expect(effects.processingQueue.currentSessionID == nil)
     #expect(effects.processingQueue.modelHeld.count == 1)
     if case .finalize(sessionID, .reject) = effects.processingQueue.modelHeld[0] {} else {
-        Issue.record("the held finishLive must become finalize(.reject)")
+        Issue.record("the held finalization keeps its request")
     }
     #expect(await processor.operations() == ["cancelLiveTranscription:\(sessionID.uuidString)"])
     #expect(effects.liveASRCleanupCount == 1)
+    // Waiting for the models is not an outcome, so a caller waiting on the request keeps waiting.
+    #expect(effects.eventOrder.contains("heldForModels:\(sessionID.uuidString)"))
+    #expect(!effects.eventOrder.contains { $0.hasPrefix("finished:") })
+    #expect(effects.queueSnapshots.allSatisfy { $0.countsEachRequestOnce })
+    #expect(effects.refreshSavedSessionsCount == 1)
 
     effects.modelsReady = true
     coordinator.resumeModelHeldProcessing()
     await coordinator.waitUntilIdle()
     #expect(await processor.operations().last == "processSession:\(sessionID.uuidString)")
+    #expect(effects.eventOrder.filter { $0.hasPrefix("finished:") } == ["finished:\(sessionID.uuidString):completed"])
+}
+
+@MainActor
+@Test
+func modelsReadyDuringLiveWorkerCleanupRunTheHeldFinalization() async {
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    effects.modelsReady = false
+    let processor = ScriptedSessionProcessingExecutor(
+        scriptedResults: [makeCoordinatorTestCompletedResult()], eventLog: eventLog
+    )
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects, processor: processor, thermalMonitor: CoordinatorTestThermalMonitor(pressure: .nominal),
+        resourceHolds: nil
+    )
+    await processor.setDuringLiveCancellation {
+        effects.modelsReady = true
+        coordinator.resumeModelHeldProcessing()
+    }
+    let sessionID = UUID()
+
+    coordinator.enqueue(.finalize(sessionID: sessionID, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+
+    #expect(await processor.operations() == [
+        "cancelLiveTranscription:\(sessionID.uuidString)", "processSession:\(sessionID.uuidString)"
+    ])
+    #expect(effects.processingQueue.modelHeld.isEmpty && effects.processingQueue.pending.isEmpty)
+    #expect(effects.exportedSessionIDs == [sessionID])
+}
+
+@MainActor
+@Test
+func pauseDuringLiveDrainSkipsProcessingAndHoldsTheFinalization() async {
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    effects.onLiveASRDrainWait = { effects.pausesProcessing = true }
+    let processor = ScriptedSessionProcessingExecutor(scriptedResults: [], eventLog: eventLog)
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects, processor: processor, thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair),
+        resourceHolds: nil
+    )
+    let sessionID = UUID()
+
+    coordinator.enqueue(.finalize(sessionID: sessionID, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+
+    #expect(await processor.operations() == ["cancelLiveTranscription:\(sessionID.uuidString)"])
+    #expect(effects.liveASRCleanupCount == 1)
+    #expect(effects.processingQueue.held.map { $0.request.sessionID } == [sessionID])
+    #expect(effects.eventOrder.contains("finished:\(sessionID.uuidString):paused"))
+}
+
+@MainActor
+@Test
+func durableASRFailureIsProcessedInsteadOfHeldForModels() async {
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    effects.modelsReady = false
+    let processor = ScriptedSessionProcessingExecutor(
+        scriptedResults: [makeCoordinatorTestFailedResult()], eventLog: eventLog
+    )
+    processor.probeOutcome.withLock { $0 = .failure }
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects, processor: processor, thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair),
+        resourceHolds: nil
+    )
+    let sessionID = UUID()
+
+    coordinator.enqueue(.finalize(sessionID: sessionID, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+
+    #expect(await processor.operations() == ["processSession:\(sessionID.uuidString)"])
+    #expect(effects.processingQueue.held.isEmpty && effects.processingQueue.modelHeld.isEmpty)
+    #expect(effects.eventOrder.contains("finished:\(sessionID.uuidString):failed"))
+}
+
+/// Memory pressure is active at admission or arrives during the drain; the live call fails durably meanwhile.
+@MainActor
+@Test(arguments: [true, false])
+func aLiveASRFailureDuringTheWaitBeatsAResourceHold(pressureAtAdmission: Bool) async {
+    let monitor = TestInferenceResourceMonitor(pressureAtAdmission ? .pressure : .healthy)
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    let processor = ScriptedSessionProcessingExecutor(
+        scriptedResults: [makeCoordinatorTestFailedResult()], eventLog: eventLog)
+    effects.onLiveASRDrainWait = {
+        monitor.setSignal(.pressure)
+        processor.probeOutcome.withLock { $0 = .failure }
+    }
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects, processor: processor, thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair),
+        resourceHolds: InferenceResourceHolds(monitor: monitor, release: { eventLog.append("resourceRelease") })
+    )
+    let sessionID = UUID()
+
+    coordinator.enqueue(.finalize(sessionID: sessionID, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+
+    #expect(await processor.operations() == ["processSession:\(sessionID.uuidString)"])
+    #expect(effects.processingQueue.held.isEmpty)
+    #expect(effects.eventOrder.contains("finished:\(sessionID.uuidString):failed"))
+}
+
+/// A probe read error is not a failure: holds apply, and with none processing runs once and reports it.
+@MainActor
+@Test(arguments: [true, false])
+func aProbeReadErrorLeavesTheDecisionToTheHolds(underPressure: Bool) async {
+    let monitor = TestInferenceResourceMonitor(underPressure ? .pressure : .healthy)
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    let processor = ScriptedSessionProcessingExecutor(
+        scriptedResults: [makeCoordinatorTestFailedResult()], eventLog: eventLog)
+    processor.probeOutcome.withLock { $0 = .readError }
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects, processor: processor, thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair),
+        resourceHolds: InferenceResourceHolds(monitor: monitor, release: { eventLog.append("resourceRelease") })
+    )
+    let sessionID = UUID()
+
+    coordinator.enqueue(.finalize(sessionID: sessionID, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+
+    if underPressure {
+        #expect(await processor.operations() == ["cancelLiveTranscription:\(sessionID.uuidString)"])
+        #expect(effects.processingQueue.held.map(\.reason) == [.resourcePressure])
+        #expect(effects.queueSnapshots.allSatisfy { $0.countsEachRequestOnce })
+    } else {
+        #expect(await processor.operations() == ["processSession:\(sessionID.uuidString)"])
+        #expect(effects.processingQueue.held.isEmpty)
+        #expect(effects.eventOrder.contains("finished:\(sessionID.uuidString):failed"))
+    }
+}
+
+@MainActor
+@Test
+func pressureArrivingDuringTheProbeHoldsTheFinalization() async {
+    let monitor = TestInferenceResourceMonitor(.healthy), eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    let processor = ScriptedSessionProcessingExecutor(scriptedResults: [], eventLog: eventLog)
+    await processor.setBeforeProbeResult { monitor.setSignal(.pressure) }
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects, processor: processor, thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair),
+        resourceHolds: InferenceResourceHolds(monitor: monitor, release: { eventLog.append("resourceRelease") })
+    )
+    let sessionID = UUID()
+
+    coordinator.enqueue(.finalize(sessionID: sessionID, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+
+    #expect(await processor.operations() == ["cancelLiveTranscription:\(sessionID.uuidString)"])
+    #expect(effects.processingQueue.held.map(\.reason) == [.resourcePressure])
+    #expect(effects.eventOrder.contains("finished:\(sessionID.uuidString):paused"))
 }
 
 @MainActor
@@ -1213,13 +1310,16 @@ func modelHoldAndThermalHoldResumeOnlyWhenBothAllow() async {
     coordinator.enqueue(.finalize(sessionID: first, metadataPolicy: .reject))
     coordinator.enqueue(.finalize(sessionID: second, metadataPolicy: .reject))
     await coordinator.waitUntilIdle()
-    #expect(effects.processingQueue.modelHeld.map(\.sessionID) == [first, second])
+    // Thermal holds at dequeue, before the models are checked, and keeps the live workers.
+    #expect(effects.processingQueue.held.map { $0.request.sessionID } == [first, second])
+    #expect(await processor.operations().isEmpty)
 
     thermal.setPressure(.fair)
     coordinator.resumeHeldProcessing()
     await coordinator.waitUntilIdle()
     #expect(effects.processingQueue.modelHeld.map(\.sessionID) == [first, second])
-    #expect(await processor.operations().isEmpty)
+    let released = ["cancelLiveTranscription:\(first.uuidString)", "cancelLiveTranscription:\(second.uuidString)"]
+    #expect(await processor.operations() == released)
 
     thermal.setPressure(.critical)
     effects.modelsReady = true
@@ -1227,24 +1327,12 @@ func modelHoldAndThermalHoldResumeOnlyWhenBothAllow() async {
     await coordinator.waitUntilIdle()
     #expect(effects.processingQueue.held.map { $0.request.sessionID } == [first, second])
     #expect(effects.processingQueue.modelHeld.isEmpty)
-    #expect(await processor.operations().isEmpty)
+    #expect(await processor.operations() == released)
 
     thermal.setPressure(.fair)
     coordinator.resumeHeldProcessing()
     await coordinator.waitUntilIdle()
-    #expect(await processor.operations() == [
+    #expect(await processor.operations() == released + [
         "processSession:\(first.uuidString)", "processSession:\(second.uuidString)"
     ])
-}
-
-private func makeCoordinatorTestCheckpoint() -> AudioCheckpoint {
-    AudioCheckpoint(
-        committedFrames: 0,
-        sampleRate: 16_000,
-        channelCount: 1,
-        sampleFormat: .float32LE,
-        chunkFiles: [],
-        chunkFrameCounts: [],
-        gapEvents: []
-    )
 }

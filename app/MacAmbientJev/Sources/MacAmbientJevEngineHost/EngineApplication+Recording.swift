@@ -260,11 +260,9 @@ extension EngineApplicationCore: RecordingStartEffects {
         let sessionURL = try SessionDirectoryLocator(fileManager: .default)
             .resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
         let directory = SessionLayout(sessionURL: sessionURL).processingDirectory
-        let vadSession = try inference.makeLiveVADSession(
-            directory, sessionURL, checkpoint, "seg_\(UUID().uuidString.lowercased())"
-        )
-        guard recording.isCurrentRecording(sessionID) else { return }
-        await liveCoordinator.startVAD(sessionID: sessionID, session: vadSession, checkpoint: checkpoint)
+        try await liveCoordinator.startVAD(sessionID: sessionID, checkpoint: checkpoint) { segmentationRunID in
+            try inference.makeLiveVADSession(directory, sessionURL, checkpoint, segmentationRunID)
+        }
     }
 
     func liveSessionStartDidFail(sessionID: UUID, error: any Error) {

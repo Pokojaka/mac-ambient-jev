@@ -103,7 +103,7 @@ actor FakeLiveVAD: LiveVADProcessing {
 
     func finish(checkpoint: AudioCheckpoint) -> LiveVADProgress {
         finishedCheckpoints.append(checkpoint)
-        return LiveVADProgress(emittedSegments: [], totalSegmentCount: 1,
+        return LiveVADProgress(emittedSegments: [], totalSegmentCount: 0,
                                committedFrames: checkpoint.committedFrames, micSpeechLevels: [])
     }
 }
@@ -160,7 +160,7 @@ func productionEngines(paths: AppPaths) -> SessionProcessingEngines {
 
 @MainActor
 func idleLiveVADFactory() -> LiveVADFactory {
-    { _, _, _, _ in FakeLiveVAD() }
+    { _, _, _, _, _ in FakeLiveVAD() }
 }
 
 /// A stop with no loss, storage failure or release failure.
@@ -260,7 +260,7 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
         let state = AppState(
             paths: paths, captureEngine: engine, microphoneAccess: { true },
             pausesProcessing: true, userDefaults: defaults,
-            engines: productionEngines(paths: paths), modelProvisioning: ReadyModelProvisioning(), makeLiveVADSession: { _, _, _, _ in vad },
+            engines: productionEngines(paths: paths), modelProvisioning: ReadyModelProvisioning(), makeLiveVADSession: { _, _, _, _, _ in vad },
             thermalMonitor: TestThermalMonitor(.nominal),
             liveTranscriptionSleep: { try await Task.sleep(for: $0) }
         )
@@ -286,12 +286,11 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
         #expect(await vad.finishedCheckpoints == (trigger == .startingFailure ? [] : [checkpoint]))
         #expect(state.processingQueue.pending.count == 1)
         guard state.processingQueue.pending.count == 1,
-              case .finishLive(let queuedID, let queuedCheckpoint) = state.processingQueue.pending[0] else {
-            Issue.record("stop did not enqueue live finalization")
+              case .finalize(let queuedID, .reject) = state.processingQueue.pending[0] else {
+            Issue.record("stop did not enqueue finalization")
             continue
         }
         #expect(queuedID == sessionID)
-        #expect(queuedCheckpoint == checkpoint)
         #expect(state.processingState == .idle)
     }
 }

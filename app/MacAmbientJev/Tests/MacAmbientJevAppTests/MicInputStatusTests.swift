@@ -374,7 +374,7 @@ struct MicInputStatusTests {
         let vad = ScriptedLiveVAD(batches: live, finalLevels: final)
         let poll = LivePollSleep()
         var measureRequests: [Bool] = []
-        let state = makeState(paths: paths, engine: engine, defaults: defaults, poll: poll) { _, _, measure, _ in
+        let state = makeState(paths: paths, engine: engine, defaults: defaults, poll: poll) { _, _, measure, _, _ in
             measureRequests.append(measure)
             return vad
         }
@@ -481,7 +481,7 @@ struct MicInputStatusTests {
         let vad = ScriptedLiveVAD(batches: speechBatches(seconds: 0..<2, dBFS: -40))
         let poll = LivePollSleep()
         var measureRequests: [Bool] = []
-        let state = makeState(paths: paths, engine: engine, defaults: defaults, poll: poll) { _, _, measure, _ in
+        let state = makeState(paths: paths, engine: engine, defaults: defaults, poll: poll) { _, _, measure, _, _ in
             measureRequests.append(measure)
             return vad
         }
@@ -510,7 +510,7 @@ struct MicInputStatusTests {
         var startedSessionID: UUID?
         engine.onStart = { startedSessionID = $0 }
         let poll = LivePollSleep()
-        let state = makeState(paths: paths, engine: engine, defaults: defaults, poll: poll) { _, _, _, _ in
+        let state = makeState(paths: paths, engine: engine, defaults: defaults, poll: poll) { _, _, _, _, _ in
             guard failsWhilePolling else { throw InjectedLiveVADFailure() }
             return ScriptedLiveVAD(batches: [], failsProcessing: true)
         }
@@ -545,7 +545,7 @@ struct MicInputStatusTests {
             clock.set(seconds: InputFreeMicCaptureEngine.clockOrigin + Double(index + 1))
         }
         let poll = LivePollSleep()
-        let state = makeState(paths: paths, engine: engine, defaults: defaults, poll: poll) { _, _, _, _ in vad }
+        let state = makeState(paths: paths, engine: engine, defaults: defaults, poll: poll) { _, _, _, _, _ in vad }
 
         await state.startRecording()
         try #require(state.recordingPhase == .recording)
@@ -570,7 +570,7 @@ struct MicInputStatusTests {
             clock.set(seconds: InputFreeMicCaptureEngine.clockOrigin + Double(index + 1))
         }
         let poll = LivePollSleep()
-        let state = makeState(paths: paths, engine: engine, defaults: defaults, poll: poll) { _, _, _, _ in vad }
+        let state = makeState(paths: paths, engine: engine, defaults: defaults, poll: poll) { _, _, _, _, _ in vad }
 
         await state.startRecording()
         try #require(state.recordingPhase == .recording)

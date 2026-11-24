@@ -87,32 +87,6 @@ final class EngineProcessorGateway: SessionProcessingExecuting, LiveTranscriptio
         )
     }
 
-    func finishLiveTranscription(
-        sessionID: UUID,
-        checkpoint: AudioCheckpoint,
-        pacingMode: ASRPacingMode,
-        shouldPause: @escaping NativeSessionProcessor.PauseCheck,
-        onPhase: @escaping NativeSessionProcessor.PhaseHandler,
-        onStatus: @escaping NativeSessionProcessor.StatusHandler,
-        onUpdate: @escaping NativeSessionProcessor.UpdateHandler
-    ) async -> SessionProcessingResult {
-        let current: (processor: NativeSessionProcessor, pacing: ASRPacingMode)
-        do {
-            current = try self.current()
-        } catch {
-            return .failed(message: error.localizedDescription, metrics: nil, retained: nil)
-        }
-        return await current.processor.finishLiveTranscription(
-            sessionID: sessionID,
-            checkpoint: checkpoint,
-            pacingMode: current.pacing,
-            shouldPause: shouldPause,
-            onPhase: onPhase,
-            onStatus: onStatus,
-            onUpdate: onUpdate
-        )
-    }
-
     func retryContentPrioritySession(
         sessionID: UUID,
         boundarySegments: [SegmentTextReference],
@@ -144,9 +118,21 @@ final class EngineProcessorGateway: SessionProcessingExecuting, LiveTranscriptio
 
     // MARK: LiveTranscriptionExecuting
 
-    func startLiveTranscription(sessionID: UUID, segmentationRunID: String, sampleRate: Double) async throws -> String {
-        try await current().processor.startLiveTranscription(
-            sessionID: sessionID, segmentationRunID: segmentationRunID, sampleRate: sampleRate
+    func startLiveTranscription(sessionID: UUID, sampleRate: Double) async throws -> String {
+        try await current().processor.startLiveTranscription(sessionID: sessionID, sampleRate: sampleRate)
+    }
+
+    func hasUnresolvedASRFailure(sessionID: UUID) async throws -> Bool {
+        try await current().processor.hasUnresolvedASRFailure(sessionID: sessionID)
+    }
+
+    func sealLiveSegmentation(sessionID: UUID, frameCount: Int64) async throws {
+        try await current().processor.sealLiveSegmentation(sessionID: sessionID, frameCount: frameCount)
+    }
+
+    func completeLiveSegmentation(sessionID: UUID, frameCount: Int64, segmentCount: Int) async throws {
+        try await current().processor.completeLiveSegmentation(
+            sessionID: sessionID, frameCount: frameCount, segmentCount: segmentCount
         )
     }
 

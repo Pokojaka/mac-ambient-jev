@@ -240,9 +240,9 @@ func finishingALiveRecordingCompactsItToFLAC() async throws {
     }
 
     let result = await fixture.processor(engines(for: .success))
-        .finishLiveTranscription(
-            sessionID: fixture.sessionID, checkpoint: checkpoint, pacingMode: .normal,
-            shouldPause: { nil }, onPhase: { _ in }, onStatus: { _ in }, onUpdate: { _, _ in }
+        .processSession(
+            sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { nil },
+            onPhase: { _ in }, metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
         )
 
     #expect(result.disposition == .completed)
@@ -261,8 +261,7 @@ func openGenerationDoesNotPermitPCMCompaction() async throws {
     }
 
     let processor = fixture.processor(engines(for: .success))
-    let segmentationRunID = "seg_fixture"
-    _ = try await processor.startLiveTranscription(sessionID: fixture.sessionID, segmentationRunID: segmentationRunID, sampleRate: checkpoint.sampleRate)
+    let segmentationRunID = try await processor.startLiveTranscription(sessionID: fixture.sessionID, sampleRate: checkpoint.sampleRate)
     let segments = [SegmentReference(segmentationRunID: segmentationRunID, segmentID: "fixture_speech", speechRanges: [0..<checkpoint.committedFrames])]
     _ = try await processor.registerLiveSegments(sessionID: fixture.sessionID, segments: segments)
     let progress = try await processor.processLiveSegments(sessionID: fixture.sessionID, segments: segments, checkpoint: checkpoint, onStatus: nil, onUpdate: nil)

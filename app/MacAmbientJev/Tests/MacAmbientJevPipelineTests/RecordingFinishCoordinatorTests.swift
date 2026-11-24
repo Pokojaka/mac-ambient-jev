@@ -47,8 +47,6 @@ private final class RecordingFinishEffectsFake: RecordingFinishEffects, LiveTran
             guard processingQueue.pending.count > oldValue.pending.count,
                   let request = processingQueue.pending.last else { return }
             switch request {
-            case .finishLive(_, let checkpoint):
-                orderLog.append("enqueue.finishLive:\(checkpoint.committedFrames)")
             case .finalize(_, let policy):
                 precondition(policy == .reject, "Recording finish finalization must reject unreadable metadata")
                 orderLog.append("enqueue.finalize.reject")
@@ -141,11 +139,11 @@ private actor FinishTestExecutor: LiveTranscriptionExecuting, SessionProcessingE
         self.sessionID = sessionID
         self.orderLog = orderLog
     }
-    func startLiveTranscription(sessionID: UUID, segmentationRunID: String, sampleRate: Double) async throws -> String {
-        _ = (sessionID, segmentationRunID, sampleRate)
+    func startLiveTranscription(sessionID: UUID, sampleRate: Double) async throws -> String {
+        _ = (sessionID, sampleRate)
         startCount += 1
         orderLog.append("live.start")
-        return "finish-test-asr-run"
+        return "finish-test-seg-run"
     }
     func registerLiveSegments(sessionID: UUID, segments: [SegmentReference]) async throws -> LiveASRProgress {
         _ = (sessionID, segments)
@@ -158,6 +156,13 @@ private actor FinishTestExecutor: LiveTranscriptionExecuting, SessionProcessingE
         _ = (sessionID, segments, checkpoint, onStatus, onUpdate)
         preconditionFailure("Unexpected live model work")
     }
+    func sealLiveSegmentation(sessionID: UUID, frameCount: Int64) async throws {
+        orderLog.append("live.seal")
+    }
+    func completeLiveSegmentation(sessionID: UUID, frameCount: Int64, segmentCount: Int) async throws {
+        orderLog.append("live.complete")
+    }
+    func hasUnresolvedASRFailure(sessionID: UUID) async throws -> Bool { false }
     func cancelLiveTranscription(sessionID: UUID) async {
         _ = sessionID
         cancelCount += 1
@@ -179,14 +184,6 @@ private actor FinishTestExecutor: LiveTranscriptionExecuting, SessionProcessingE
         onUpdate: @escaping NativeSessionProcessor.UpdateHandler
     ) async -> SessionProcessingResult {
         _ = (sessionID, pacingMode, shouldPause, onPhase, metadataPolicy, onStatus, onUpdate)
-        preconditionFailure("Paused queue must retain finalization without model work")
-    }
-    func finishLiveTranscription(
-        sessionID: UUID, checkpoint: AudioCheckpoint, pacingMode: ASRPacingMode,
-        shouldPause: @escaping NativeSessionProcessor.PauseCheck, onPhase: @escaping NativeSessionProcessor.PhaseHandler,
-        onStatus: @escaping NativeSessionProcessor.StatusHandler, onUpdate: @escaping NativeSessionProcessor.UpdateHandler
-    ) async -> SessionProcessingResult {
-        _ = (sessionID, checkpoint, pacingMode, shouldPause, onPhase, onStatus, onUpdate)
         preconditionFailure("Paused queue must retain finalization without model work")
     }
     func retryContentPrioritySession(
@@ -263,8 +260,8 @@ private struct RecordingFinishFixture {
         }
         processing = SessionProcessingCoordinator(effects: effects, processor: executor, thermalMonitor: thermal, resourceHolds: nil)
     }
-    func startVAD() async {
-        await coordinator.startVAD(sessionID: sessionID, session: vad, checkpoint: checkpoint)
+    func startVAD() async throws {
+        try await coordinator.startVAD(sessionID: sessionID, checkpoint: checkpoint) { _ in vad }
         await pollStarted.wait()
     }
     func finish(failureMessage: String?) async {
@@ -304,18 +301,6 @@ private func makeFixture(
 }
 
 @MainActor
-private func expectQueuedFinishLive(
-    _ effects: RecordingFinishEffectsFake, sessionID: UUID, checkpoint: AudioCheckpoint
-) throws {
-    guard case .finishLive(let queuedID, let queuedCheckpoint) = try #require(effects.processingQueue.pending.first) else {
-        #expect(Bool(false), "Saved recording must enqueue finishLive")
-        return
-    }
-    #expect(queuedID == sessionID)
-    #expect(queuedCheckpoint == checkpoint)
-}
-
-@MainActor
 private func expectQueuedFinalize(_ effects: RecordingFinishEffectsFake, sessionID: UUID) throws {
     guard case .finalize(let queuedID, let policy) = try #require(effects.processingQueue.pending.first) else {
         #expect(Bool(false), "Recording failure must enqueue rejected-metadata finalization")
@@ -327,7 +312,7 @@ private func expectQueuedFinalize(_ effects: RecordingFinishEffectsFake, session
 
 @MainActor
 @Test
-func successfulFinishCancelsPollingBeforeVADAndQueuesExactCheckpoint() async throws {
+func successfulFinishCancelsPollingBeforeVADAndQueuesFinalization() async throws {
     let sessionID = UUID()
     let checkpoint = makeCheckpoint(32_000)
     let result = makeStopResult(checkpoint: checkpoint, dropouts: 13, writerFailure: nil, releaseFailure: nil)
@@ -337,7 +322,7 @@ func successfulFinishCancelsPollingBeforeVADAndQueuesExactCheckpoint() async thr
         stopPlan: .succeed(result),
         vadPlan: .succeed(makeProgress(count: 4, segments: []))
     )
-    await fixture.startVAD()
+    try await fixture.startVAD()
     await fixture.finish(failureMessage: nil)
     #expect(fixture.effects.outcomes == [.saved(
         result: result, failureMessage: nil, vadFailureText: nil, vadSegmentCount: 4
@@ -352,9 +337,9 @@ func successfulFinishCancelsPollingBeforeVADAndQueuesExactCheckpoint() async thr
     #expect(fixture.state.vadFailureText == nil)
     #expect(fixture.orderLog.events == [
         "live.started", "live.start", "poll.entered", "capture.stop", "poll.cancelled",
-        "capture.stopped:13", "vad.finish:32000", "finish.saved", "enqueue.finishLive:32000"
+        "capture.stopped:13", "live.seal", "vad.finish:32000", "live.complete", "finish.saved", "enqueue.finalize.reject"
     ])
-    try expectQueuedFinishLive(fixture.effects, sessionID: sessionID, checkpoint: checkpoint)
+    try expectQueuedFinalize(fixture.effects, sessionID: sessionID)
 }
 
 @MainActor
@@ -374,7 +359,7 @@ func writerFailureKeepsDurablePrefixAndOrdersCleanupBeforeRejectFinalization() a
             stopPlan: .succeed(result),
             vadPlan: .succeed(makeProgress(count: 4, segments: []))
         )
-        await fixture.startVAD()
+        try await fixture.startVAD()
         fixture.state.enqueue(sessionID: sessionID, segments: [makeSegment("queued")], checkpoint: checkpoint)
         fixture.state.vadFailureText = "stale VAD failure"
         fixture.state.vadSegmentCount = 9
@@ -407,7 +392,7 @@ func cancelledVADFinishDiscardsLiveQueueBeforeFullFinalization() async throws {
         stopPlan: .succeed(result),
         vadPlan: .cancelled
     )
-    await fixture.startVAD()
+    try await fixture.startVAD()
     fixture.state.enqueue(sessionID: sessionID, segments: [makeSegment("discarded")], checkpoint: checkpoint)
     fixture.state.vadSegmentCount = 11
     await fixture.finish(failureMessage: nil)
@@ -428,7 +413,7 @@ func cancelledVADFinishDiscardsLiveQueueBeforeFullFinalization() async throws {
     #expect(fixture.effects.refreshCount == 0)
     #expect(fixture.orderLog.events == [
         "live.started", "live.start", "poll.entered", "capture.stop", "poll.cancelled",
-        "capture.stopped:2", "vad.finish:64000", "finish.saved",
+        "capture.stopped:2", "live.seal", "vad.finish:64000", "finish.saved",
         "live.cancel.queue-clean.vad-retained", "enqueue.finalize.reject"
     ])
     #expect(fixture.state.pendingSegmentCount(sessionID: sessionID) == 0)
@@ -449,7 +434,7 @@ func captureStopFailureCleansUpAndReleasesIdleResourcesWithConditionalRefresh() 
             stopPlan: .fail("capture stop failed"),
             vadPlan: .succeed(makeProgress(count: 4, segments: []))
         )
-        await fixture.startVAD()
+        try await fixture.startVAD()
         fixture.state.enqueue(sessionID: sessionID, segments: [makeSegment("discarded")], checkpoint: checkpoint)
         fixture.state.vadSegmentCount = 5
         await fixture.finish(failureMessage: incoming)
@@ -497,16 +482,16 @@ func savedReleaseFailureIsDeduplicatedAndRefreshDependsOnIncomingFailure() async
         #expect(fixture.effects.refreshCount == expectedRefreshCount)
         #expect(fixture.effects.idleReleaseCount == 0)
         #expect(await fixture.executor.counts().cancellations == 0)
-        var expectedEvents = ["capture.stop", "capture.stopped:4", "finish.saved", "enqueue.finishLive:96000"]
+        var expectedEvents = ["capture.stop", "capture.stopped:4", "finish.saved", "enqueue.finalize.reject"]
         if incoming != nil { expectedEvents.append("refresh") }
         #expect(fixture.orderLog.events == expectedEvents)
-        try expectQueuedFinishLive(fixture.effects, sessionID: sessionID, checkpoint: checkpoint)
+        try expectQueuedFinalize(fixture.effects, sessionID: sessionID)
     }
 }
 
 @MainActor
 @Test
-func prefailedLiveASRStillQueuesFinishLiveForProcessingCoordinator() async throws {
+func prefailedLiveASRStillQueuesFinalizationForProcessingCoordinator() async throws {
     let sessionID = UUID()
     let checkpoint = makeCheckpoint(112_000)
     let result = makeStopResult(checkpoint: checkpoint, dropouts: 0, writerFailure: nil, releaseFailure: nil)
@@ -517,7 +502,7 @@ func prefailedLiveASRStillQueuesFinishLiveForProcessingCoordinator() async throw
         vadPlan: .succeed(makeProgress(count: 4, segments: []))
     )
     fixture.state.recordFailure(sessionID: sessionID, message: "live ASR failed", discardQueued: true)
-    await fixture.startVAD()
+    try await fixture.startVAD()
     await fixture.finish(failureMessage: nil)
     #expect(fixture.effects.outcomes == [.saved(
         result: result, failureMessage: nil, vadFailureText: nil, vadSegmentCount: 4
@@ -526,7 +511,7 @@ func prefailedLiveASRStillQueuesFinishLiveForProcessingCoordinator() async throw
     #expect(await fixture.executor.counts().cancellations == 0)
     #expect(fixture.orderLog.events == [
         "live.started", "live.start", "poll.entered", "capture.stop", "poll.cancelled",
-        "capture.stopped:0", "vad.finish:112000", "finish.saved", "enqueue.finishLive:112000"
+        "capture.stopped:0", "live.seal", "vad.finish:112000", "finish.saved", "enqueue.finalize.reject"
     ])
-    try expectQueuedFinishLive(fixture.effects, sessionID: sessionID, checkpoint: checkpoint)
+    try expectQueuedFinalize(fixture.effects, sessionID: sessionID)
 }

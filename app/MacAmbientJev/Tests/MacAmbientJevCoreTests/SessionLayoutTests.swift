@@ -69,6 +69,22 @@ func recordingWithoutCapturedAudioHasNoSource() async throws {
 }
 
 @Test
+func anEmptyRecordingNeedsItsCheckpointToBeProcessed() async throws {
+    let (layout, manifest) = try makeSession(source: .recording(.microphone))
+    defer { try? FileManager.default.removeItem(at: layout.sessionURL.deletingLastPathComponent()) }
+    #expect(throws: SessionAudioSourceError.recordingCheckpointMissing) {
+        _ = try layout.processingSource(for: manifest)
+    }
+
+    _ = try await DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate, sessionURL: layout.sessionURL).finish()
+    guard case .recordedPCM(let checkpoint) = try layout.processingSource(for: manifest) else {
+        Issue.record("an empty recording keeps its PCM checkpoint")
+        return
+    }
+    #expect(checkpoint.committedFrames == 0)
+}
+
+@Test
 func recordingResolvesToItsTimelineAndRejectsACorruptOne() async throws {
     let (layout, manifest) = try makeSession(source: .recording(.microphone))
     defer { try? FileManager.default.removeItem(at: layout.sessionURL.deletingLastPathComponent()) }

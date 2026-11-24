@@ -67,7 +67,10 @@ private struct PausedSessionGatedASR: ASREngine {
     func unload() async {}
 }
 
-private struct PausedSessionNoLiveSegmentsVAD: LiveVADProcessing {
+private struct PausedSessionLiveVADFailure: Error {}
+
+/// A live VAD that fails at stop, so the stop reopens the sessions and segments the saved audio offline.
+private struct PausedSessionFailingLiveVAD: LiveVADProcessing {
     let segmentationRunID: String
 
     func processAvailable(checkpoint: AudioCheckpoint) async throws -> LiveVADProgress {
@@ -78,10 +81,7 @@ private struct PausedSessionNoLiveSegmentsVAD: LiveVADProcessing {
     }
 
     func finish(checkpoint: AudioCheckpoint) async throws -> LiveVADProgress {
-        LiveVADProgress(
-            emittedSegments: [], totalSegmentCount: 0,
-            committedFrames: checkpoint.committedFrames, micSpeechLevels: []
-        )
+        throw PausedSessionLiveVADFailure()
     }
 }
 
@@ -116,7 +116,7 @@ private final class PausedSessionInferenceProvider: EngineInferenceProviding, @u
             ),
             contentPriority: .disabled,
             timelineBuilder: FakeTimelineBuilder(),
-            makeLiveVADSession: { _, _, _, runID in PausedSessionNoLiveSegmentsVAD(segmentationRunID: runID) }
+            makeLiveVADSession: { _, _, _, runID in PausedSessionFailingLiveVAD(segmentationRunID: runID) }
         )
     }
 }

@@ -83,9 +83,16 @@ public struct LiveASRCompletion: Sendable, Equatable {
 
 public enum LiveASRSessionError: LocalizedError {
     case foreignClauseEvent
+    case segmentationNotSealed
+    case segmentationSegmentCountMismatch(registered: Int, expected: Int)
 
     public var errorDescription: String? {
-        "ライブ文字起こしと別の判定を表示しようとしました"
+        switch self {
+        case .foreignClauseEvent: "ライブ文字起こしと別の判定を表示しようとしました"
+        case .segmentationNotSealed: "VAD の入力が確定していないため、区間検出を完了できません"
+        case .segmentationSegmentCountMismatch(let registered, let expected):
+            "保存した発話区間（\(registered)）が VAD の区間数（\(expected)）と一致しません"
+        }
     }
 }
 
@@ -120,6 +127,8 @@ public actor LiveASRSession {
     private var failedCount = 0
     private var prepared = false
     private var runStarted = false
+    private var segmentationSealed = false
+    private var segmentationCompleted = false
     private var attemptFailed = false
     private var processing = false
     private var startingRun = false
@@ -191,6 +200,8 @@ public actor LiveASRSession {
             setStatus(LiveASRSegmentStatus(segmentID: segment.segmentID, startFrame: segment.startFrame, outcome: .pending))
         }
         runStarted = recovery.runStarts[.asr] != nil
+        segmentationSealed = recovery.sealedFrames != nil
+        segmentationCompleted = recovery.segmentationCompleted
 
         for event in recovery.events {
             switch event.kind {
@@ -212,6 +223,38 @@ public actor LiveASRSession {
             finalized = true
             completedFinish = currentCompletion()
         }
+    }
+
+    /// Seals the segmentation input at its exact final length. Must precede the VAD's EOF flush.
+    public func sealSegmentationInput(frameCount: Int64) async throws {
+        guard !segmentationSealed else { return }
+        try await writer.append(EventDraft(
+            eventType: "segmentation.input.sealed", sessionID: sessionID, segmentationRunID: segmentationRunID,
+            payload: SegmentationInputSealedPayload(frameCount: frameCount)
+        ))
+        segmentationSealed = true
+    }
+
+    /// Closes the segmentation once every segment the VAD emitted is saved.
+    public func completeSegmentation(frameCount: Int64, segmentCount: Int) async throws {
+        guard !segmentationCompleted else { return }
+        guard segmentationSealed else { throw LiveASRSessionError.segmentationNotSealed }
+        guard registeredSegments.count == segmentCount else {
+            throw LiveASRSessionError.segmentationSegmentCountMismatch(
+                registered: registeredSegments.count, expected: segmentCount
+            )
+        }
+        try await writer.append(EventDraft(
+            eventType: "segmentation.completed", sessionID: sessionID, segmentationRunID: segmentationRunID,
+            payload: SegmentationCompletedPayload(consumedFrames: frameCount, segmentCount: segmentCount)
+        ))
+        segmentationCompleted = true
+        try await writer.append(EventDraft(
+            eventType: "processing.run.completed", sessionID: sessionID, processingRunID: segmentationRunID,
+            payload: ProcessingRunCompletedPayload(
+                stage: .segmentation, succeeded: true, completedCount: segmentCount, failedCount: 0
+            )
+        ))
     }
 
     /// Durably registers newly detected speech before it enters the ASR queue.
@@ -503,6 +546,15 @@ public actor LiveASRSession {
             waiters.forEach { $0.resume(throwing: error) }
             throw error
         }
+    }
+
+    /// True when this session's view of the saved segments and recognized lines is the log's own.
+    /// An append that failed after its line reached the disk leaves the two apart.
+    func agrees(with state: ProcessingLogState) -> Bool {
+        let recognized = state.events.reduce(0) { count, event in
+            if case .asrCompleted = event.kind { count + 1 } else { count }
+        }
+        return !attemptFailed && registeredSegments.count == state.segments.count && completedCount == recognized
     }
 
     private func canExecuteSegment() -> Bool {

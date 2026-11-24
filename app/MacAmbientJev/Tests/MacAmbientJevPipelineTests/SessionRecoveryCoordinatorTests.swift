@@ -77,17 +77,11 @@ private final class RecoveryCoordinatorEffects: SessionProcessingEffects, Sessio
         { _, _ in }
     }
 
-    func waitForLiveASRDrain(sessionID: UUID) async {
-        preconditionFailure("recovery tests do not finish live transcription")
-    }
+    func waitForLiveASRDrain(sessionID: UUID) async {}
 
-    func liveASRFailure(sessionID: UUID) -> String? {
-        preconditionFailure("recovery tests do not inspect live ASR failures")
-    }
+    func liveASRFailure(sessionID: UUID) -> String? { nil }
 
-    func cleanupLiveASRState(sessionID: UUID) {
-        preconditionFailure("recovery tests do not clean up live ASR state")
-    }
+    func cleanupLiveASRState(sessionID: UUID) {}
 
     func refreshSavedSessions() {}
 
@@ -130,18 +124,6 @@ private actor RecoveryTestExecutor: SessionProcessingExecuting {
         return .completed(metrics: nil, noSpeech: false)
     }
 
-    func finishLiveTranscription(
-        sessionID: UUID,
-        checkpoint: AudioCheckpoint,
-        pacingMode: ASRPacingMode,
-        shouldPause: @escaping NativeSessionProcessor.PauseCheck,
-        onPhase: @escaping NativeSessionProcessor.PhaseHandler,
-        onStatus: @escaping NativeSessionProcessor.StatusHandler,
-        onUpdate: @escaping NativeSessionProcessor.UpdateHandler
-    ) async -> SessionProcessingResult {
-        preconditionFailure("recovery tests do not finish live transcription")
-    }
-
     func retryContentPrioritySession(
         sessionID: UUID,
         boundarySegments: [SegmentTextReference],
@@ -159,6 +141,8 @@ private actor RecoveryTestExecutor: SessionProcessingExecuting {
     func cancelLiveTranscription(sessionID: UUID) async {
         preconditionFailure("recovery tests do not cancel live transcription")
     }
+
+    func hasUnresolvedASRFailure(sessionID: UUID) async throws -> Bool { false }
 
     func calls() -> [String] { recordedCalls }
 }

@@ -148,6 +148,15 @@ public struct SessionRecoveryScanner: Sendable {
         )
     }
 
+    /// The rule finalization uses: a missing checkpoint is missing audio, a zero-frame one an empty recording.
+    private func requireProcessingSource(layout: SessionLayout, manifest: SessionManifest) throws {
+        do {
+            _ = try layout.processingSource(for: manifest)
+        } catch SessionAudioSourceError.recordingCheckpointMissing {
+            throw SessionRecoveryScannerError.missingAudio
+        }
+    }
+
     private func candidate(
         layout: SessionLayout, manifest: SessionManifest, includeFailed: Bool
     ) throws -> RecoverableSession? {
@@ -200,8 +209,9 @@ public struct SessionRecoveryScanner: Sendable {
                     // A reset or status write interrupted the current generation's finalization.
                     action = .finalize
                 } else {
-                    // A recording may have stopped before its first pipeline generation.
-                    guard try layout.audioSource(for: manifest) != nil else { return nil }
+                    // A recording may have stopped before its first pipeline generation. Its empty recording
+                    // (a valid zero-frame checkpoint) is finalized like any other; no checkpoint is an error.
+                    try requireProcessingSource(layout: layout, manifest: manifest)
                     return RecoverableSession(
                         manifest: manifest,
                         sessionURL: layout.sessionURL,
@@ -211,9 +221,7 @@ public struct SessionRecoveryScanner: Sendable {
             }
         }
 
-        guard try layout.audioSource(for: manifest) != nil else {
-            throw SessionRecoveryScannerError.missingAudio
-        }
+        try requireProcessingSource(layout: layout, manifest: manifest)
         return RecoverableSession(
             manifest: manifest,
             sessionURL: layout.sessionURL,

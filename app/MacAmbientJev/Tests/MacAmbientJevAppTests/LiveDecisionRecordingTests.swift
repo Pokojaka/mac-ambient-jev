@@ -154,7 +154,7 @@ private func withLiveDecisionRecording(
         engines: SessionProcessingEngines(asr: RecordingASR(),
             finalTranscriptVAD: RecordingFinalVAD()),
         modelProvisioning: ReadyModelProvisioning(),
-        makeLiveVADSession: { _, _, _, _ in RecordingVAD() },
+        makeLiveVADSession: { _, _, _, _, _ in RecordingVAD() },
         thermalMonitor: TestThermalMonitor(.nominal),
         liveTranscriptionSleep: poll.sleep,
         makeDecisions: { _, counter in makeDecisions(counter) }

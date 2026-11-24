@@ -228,10 +228,8 @@ struct MeasureLiveLatencyCommand {
         try await processor.prepareASR { progress, message in
             FileHandle.standardError.write(Data("ASR model \(Int(progress * 100))%: \(message)\n".utf8))
         }
-        let segmentationRunID = "seg_\(UUID().uuidString.lowercased())"
-        _ = try await processor.startLiveTranscription(
+        let segmentationRunID = try await processor.startLiveTranscription(
             sessionID: sessionID,
-            segmentationRunID: segmentationRunID,
             sampleRate: CanonicalAudio.sampleRate
         )
         let vadSession = try await MacLiveVADSessionFactory.make(
@@ -312,12 +310,12 @@ struct MeasureLiveLatencyCommand {
                 onUpdate: { segments, _ in await collector.update(segments) }
             )
         }
-        let finalResult = await processor.finishLiveTranscription(
+        let finalResult = await processor.processSession(
             sessionID: sessionID,
-            checkpoint: checkpoint,
             pacingMode: .normal,
             shouldPause: { MacThermalMonitor().isCritical ? .thermal : nil },
             onPhase: { _ in },
+            metadataPolicy: .reject,
             onStatus: { _ in },
             onUpdate: { segments, state in
                 await collector.update(segments)

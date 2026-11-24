@@ -2,7 +2,6 @@ import Foundation
 import MacAmbientJevCore
 
 public enum PendingProcessing: Sendable {
-    case finishLive(sessionID: UUID, checkpoint: AudioCheckpoint)
     case finalize(sessionID: UUID, metadataPolicy: UnreadableMetadataPolicy)
     case retryContentPriority(
         sessionID: UUID,
@@ -12,8 +11,7 @@ public enum PendingProcessing: Sendable {
 
     public var sessionID: UUID {
         switch self {
-        case .finishLive(let sessionID, _),
-             .finalize(let sessionID, _),
+        case .finalize(let sessionID, _),
              .retryContentPriority(let sessionID, _, _):
             sessionID
         }
@@ -21,7 +19,7 @@ public enum PendingProcessing: Sendable {
 
     public var finalizesTranscript: Bool {
         switch self {
-        case .finishLive, .finalize:
+        case .finalize:
             true
         case .retryContentPriority:
             false
@@ -69,11 +67,6 @@ public struct SessionProcessingQueue: Sendable {
 
     public mutating func enqueue(_ request: PendingProcessing) {
         pending.append(request)
-    }
-
-    /// Puts a request back at the front, as if it had not been taken out.
-    public mutating func prepend(_ request: PendingProcessing) {
-        pending.insert(request, at: 0)
     }
 
     public mutating func dequeue() -> PendingProcessing? {

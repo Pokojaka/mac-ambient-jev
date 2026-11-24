@@ -87,8 +87,7 @@ func recordingStopFinalizesTailAtNon16kHzDeviceRate(sampleRate: Double) async th
         engines: SessionProcessingEngines(asr: asr, finalTranscriptVAD: TailVAD()),
         audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
         contentPriority: .disabled, sleep: { _ in })
-    let segmentationRunID = "seg_recording"
-    _ = try await processor.startLiveTranscription(sessionID: sessionID, segmentationRunID: segmentationRunID, sampleRate: 16_000)
+    let segmentationRunID = try await processor.startLiveTranscription(sessionID: sessionID, sampleRate: 16_000)
     let initialState = try #require(try ProcessingLogState(eventsURL: layout.eventsURL, sessionID: sessionID))
     let generationID = initialState.generation.id
     let initialRuns = initialState.runs
@@ -131,8 +130,8 @@ func recordingStopFinalizesTailAtNon16kHzDeviceRate(sampleRate: Double) async th
     #expect(checkpoint.committedFrames == 1_716_000)
     #expect(checkpoint.sampleRate == 16_000)
     #expect(checkpoint.gapEvents.isEmpty)
-    let result = await processor.finishLiveTranscription(sessionID: sessionID, checkpoint: checkpoint,
-        pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in }, onStatus: { _ in }, onUpdate: { _, _ in })
+    let result = await processor.processSession(sessionID: sessionID, pacingMode: .normal, shouldPause: { nil },
+        onPhase: { _ in }, metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in })
     #expect(result.disposition == .completed, "\(result.message ?? "no failure message")")
     #expect(await asr.calls == 2)
     let stored = try EventLogTranscriptReader().validateCompletion(

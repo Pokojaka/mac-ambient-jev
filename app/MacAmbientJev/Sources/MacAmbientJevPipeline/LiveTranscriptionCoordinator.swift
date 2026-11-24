@@ -2,9 +2,9 @@ import Foundation
 import MacAmbientJevCore
 
 public protocol LiveTranscriptionExecuting: Sendable {
+    /// Creates the generation and returns its segmentation run ID.
     func startLiveTranscription(
         sessionID: UUID,
-        segmentationRunID: String,
         sampleRate: Double
     ) async throws -> String
 
@@ -12,6 +12,12 @@ public protocol LiveTranscriptionExecuting: Sendable {
         sessionID: UUID,
         segments: [SegmentReference]
     ) async throws -> LiveASRProgress
+
+    /// Durably seals the segmentation input at its final length, before the VAD's EOF flush.
+    func sealLiveSegmentation(sessionID: UUID, frameCount: Int64) async throws
+
+    /// Records that every segment the VAD emitted is saved.
+    func completeLiveSegmentation(sessionID: UUID, frameCount: Int64, segmentCount: Int) async throws
 
     func processLiveSegments(
         sessionID: UUID,
@@ -101,31 +107,37 @@ public final class LiveTranscriptionCoordinator {
         asrTasks[sessionID] != nil
     }
 
+    /// The generation is created first; the VAD session takes its segmentation run ID from it.
     public func startVAD(
         sessionID: UUID,
-        session: any LiveVADProcessing,
-        checkpoint: AudioCheckpoint
-    ) async {
+        checkpoint: AudioCheckpoint,
+        makeSession: (String) async throws -> any LiveVADProcessing
+    ) async throws {
         guard !suspendForResources(sessionID: sessionID) else { return }
         let effects = requiredEffects
         state.vadFailureText = nil
         state.vadSegmentCount = 0
-        vadSession = (sessionID, session)
         effects.liveDidChange(.started(sessionID))
 
+        let segmentationRunID: String
         do {
-            _ = try await processor.startLiveTranscription(
+            segmentationRunID = try await processor.startLiveTranscription(
                 sessionID: sessionID,
-                segmentationRunID: session.segmentationRunID,
                 sampleRate: checkpoint.sampleRate
             )
         } catch {
-            state.recordFailure(
-                sessionID: sessionID,
-                message: error.localizedDescription,
-                discardQueued: false
-            )
+            // Without a generation there is no live VAD; stop reprocesses the whole recording.
+            state.recordFailure(sessionID: sessionID, message: error.localizedDescription, discardQueued: false)
             effects.liveDidChange(.startFailed(sessionID, error.localizedDescription))
+            return
+        }
+        let session: any LiveVADProcessing
+        do {
+            session = try await makeSession(segmentationRunID)
+        } catch {
+            cleanup(sessionID: sessionID)
+            await processor.cancelLiveTranscription(sessionID: sessionID)
+            throw error
         }
 
         guard effects.isCurrentRecording(sessionID) else {
@@ -142,6 +154,8 @@ public final class LiveTranscriptionCoordinator {
         }
         guard !resourceSuspensions.contains(sessionID) else { return }
 
+        // Installed only now: a later recording may own the slot by the time a slow factory returns.
+        vadSession = (sessionID, session)
         vadStopRequested = false
         let taskID = UUID()
         vadTaskID = taskID
@@ -165,6 +179,9 @@ public final class LiveTranscriptionCoordinator {
         guard !resourceSuspensions.contains(sessionID),
               let active = vadSession, active.sessionID == sessionID else { return }
         do {
+            // Sealed before the EOF flush, completed only after every emitted segment is saved. A recorded
+            // failure leaves the segmentation open, so stop reopens the sessions and surfaces the failure.
+            try await processor.sealLiveSegmentation(sessionID: sessionID, frameCount: checkpoint.committedFrames)
             let progress = try await active.session.finish(checkpoint: checkpoint)
             state.vadSegmentCount = progress.totalSegmentCount
             await enqueue(
@@ -172,6 +189,13 @@ public final class LiveTranscriptionCoordinator {
                 segments: progress.emittedSegments,
                 checkpoint: checkpoint
             )
+            // A VAD that failed earlier does not certify the segmentation, even if its EOF flush worked.
+            if state.failure(sessionID: sessionID) == nil, state.vadFailureText == nil {
+                try await processor.completeLiveSegmentation(
+                    sessionID: sessionID, frameCount: checkpoint.committedFrames,
+                    segmentCount: progress.totalSegmentCount
+                )
+            }
         } catch {
             state.vadFailureText = error.localizedDescription
         }
@@ -227,17 +251,12 @@ public final class LiveTranscriptionCoordinator {
                 )
             )
 
-            if state.vadFailureText == nil && !resourceSuspensions.contains(sessionID) {
-                processing.enqueue(
-                    .finishLive(sessionID: sessionID, checkpoint: checkpoint)
-                )
-            } else {
+            // Stop drains the live worker in place. Without complete live segmentation there is no worker to keep.
+            if state.vadFailureText != nil || resourceSuspensions.contains(sessionID) {
                 cleanup(sessionID: sessionID)
                 await processor.cancelLiveTranscription(sessionID: sessionID)
-                processing.enqueue(
-                    .finalize(sessionID: sessionID, metadataPolicy: .reject)
-                )
             }
+            processing.enqueue(.finalize(sessionID: sessionID, metadataPolicy: .reject))
 
             if failureMessage != nil { effects.refreshSavedSessions() }
             resetVAD()

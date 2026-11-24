@@ -250,11 +250,9 @@ private actor FakeLiveTranscriptionExecutor: LiveTranscriptionExecuting {
 
     func startLiveTranscription(
         sessionID: UUID,
-        segmentationRunID: String,
         sampleRate: Double
     ) async throws -> String {
         _ = sessionID
-        _ = segmentationRunID
         _ = sampleRate
         startCount += 1
         return startRunID
@@ -321,6 +319,14 @@ private actor FakeLiveTranscriptionExecutor: LiveTranscriptionExecuting {
                 throw FakeExecutorError.processing(message)
             }
         }
+    }
+
+    func sealLiveSegmentation(sessionID: UUID, frameCount: Int64) async throws {
+        orderLog.append("seal")
+    }
+
+    func completeLiveSegmentation(sessionID: UUID, frameCount: Int64, segmentCount: Int) async throws {
+        orderLog.append("complete")
     }
 
     func cancelLiveTranscription(sessionID: UUID) async {
@@ -795,7 +801,7 @@ func pollingDeliversMicProgressBeforeASREnqueueAndStopOwnsPolling() async throws
         }
     )
 
-    await coordinator.startVAD(sessionID: sessionID, session: vad, checkpoint: checkpoint)
+    try await coordinator.startVAD(sessionID: sessionID, checkpoint: checkpoint) { _ in vad }
     await pollGate.waitUntilEntered()
     #expect(await processor.startCalls() == 1)
     #expect(sleepLog.durations == [.milliseconds(LiveTranscriptionCadence.checkpointPollIntervalMilliseconds)])
@@ -878,7 +884,7 @@ func stopVADPollingDuringRegistrationKeepsPollAndFinalSegmentsQueued() async thr
         }
     )
 
-    await coordinator.startVAD(sessionID: sessionID, session: vad, checkpoint: checkpoint)
+    try await coordinator.startVAD(sessionID: sessionID, checkpoint: checkpoint) { _ in vad }
     await pollSleepGate.waitUntilEntered()
     await pollSleepGate.release()
     await registrationGate.waitUntilEntered()
@@ -964,7 +970,7 @@ func stopVADPollingCancelsSleepWithoutPollingAgain() async throws {
         }
     )
 
-    await coordinator.startVAD(sessionID: sessionID, session: vad, checkpoint: checkpoint)
+    try await coordinator.startVAD(sessionID: sessionID, checkpoint: checkpoint) { _ in vad }
     await sleepGate.waitUntilEntered()
 
     let stopCallStarted = OneShotAsyncSignal()
