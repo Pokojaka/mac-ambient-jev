@@ -101,7 +101,7 @@ func noReleaseWhileBusy() async throws {
     state.recording.finish()
     state.processingQueue.hold(.finalize(
         sessionID: UUID(), metadataPolicy: .reject
-    ), reason: .thermal)
+    ), reason: .inference(.thermal))
     state.releaseIdleResourcesIfIdle()
     #expect(state.idleReleaseTask == nil)
 

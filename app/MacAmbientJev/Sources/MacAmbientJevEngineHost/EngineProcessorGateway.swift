@@ -144,11 +144,13 @@ final class EngineProcessorGateway: SessionProcessingExecuting, LiveTranscriptio
         sessionID: UUID,
         segments: [SegmentReference],
         checkpoint: AudioCheckpoint,
+        shouldPause: @escaping NativeSessionProcessor.PauseCheck,
         onStatus: NativeSessionProcessor.StatusHandler?,
         onUpdate: NativeSessionProcessor.UpdateHandler?
     ) async throws -> LiveASRProgress {
         try await current().processor.processLiveSegments(
-            sessionID: sessionID, segments: segments, checkpoint: checkpoint, onStatus: onStatus, onUpdate: onUpdate
+            sessionID: sessionID, segments: segments, checkpoint: checkpoint, shouldPause: shouldPause,
+            onStatus: onStatus, onUpdate: onUpdate
         )
     }
 }

@@ -120,6 +120,17 @@ public enum InferenceHoldReason: Sendable, Equatable {
     case thermal, resourcePressure, monitorFailed
 }
 
+/// Where recognition asks whether it may go on with a segment.
+public enum InferenceGatePoint: Sendable, Equatable {
+    /// Before the segment's audio is read: an active hold stops here, without pacing.
+    case segmentBoundary
+    /// After the audio is loaded, right before inference: the one paced decision.
+    case dispatch
+}
+
+/// Answers a hold reason to stop recognition at `point`, or nil to go on.
+public typealias InferenceGate = @Sendable (InferenceGatePoint) async throws -> InferenceHoldReason?
+
 public enum ASRRunDisposition: Sendable, Equatable {
     case completed
     case paused(InferenceHoldReason)
@@ -166,7 +177,7 @@ public actor PipelineCoordinator {
     private let loader: ASRAudioLoader
     private let pacingMode: ASRPacingMode
     private let sleep: @Sendable (Duration) async throws -> Void
-    private let shouldPause: @Sendable () async -> InferenceHoldReason?
+    private let shouldPause: InferenceGate
 
     public init(
         sessionID: UUID,
@@ -177,7 +188,7 @@ public actor PipelineCoordinator {
         loader: ASRAudioLoader,
         pacingMode: ASRPacingMode,
         sleep: @escaping @Sendable (Duration) async throws -> Void,
-        shouldPause: @escaping @Sendable () async -> InferenceHoldReason?
+        shouldPause: @escaping InferenceGate
     ) {
         self.sessionID = sessionID
         self.segmentationRunID = segmentationRunID
@@ -297,12 +308,12 @@ public actor PipelineCoordinator {
                 for (index, segment) in segments.enumerated() {
                     try Task.checkCancellation()
                     guard await shouldContinue() else { break }
-                    let requestedPauseReason = await shouldPause()
-                    try Task.checkCancellation()
-                    if let requestedPauseReason {
-                        pauseReason = requestedPauseReason
+                    // An active hold stops before the audio is read, so a held segment is never read or failed.
+                    if let activeHoldReason = try await shouldPause(.segmentBoundary) {
+                        pauseReason = activeHoldReason
                         break
                     }
+                    try Task.checkCancellation()
                     if let oldest = pendingDates[index...].min() {
                         metrics.oldestPendingAgeSeconds = max(
                             metrics.oldestPendingAgeSeconds,
@@ -321,6 +332,12 @@ public actor PipelineCoordinator {
                             stopOnPersistenceFailure: stopOnPersistenceFailure,
                             onSegmentPersisted: onSegmentPersisted
                         )
+                        break
+                    }
+                    try Task.checkCancellation()
+                    // Asked again at dispatch, after the audio is loaded, so heat that rose meanwhile still stops it.
+                    if let requestedPauseReason = try await shouldPause(.dispatch) {
+                        pauseReason = requestedPauseReason
                         break
                     }
                     try Task.checkCancellation()

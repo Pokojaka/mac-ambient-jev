@@ -77,7 +77,7 @@ private final class RecoveryCoordinatorEffects: SessionProcessingEffects, Sessio
         { _, _ in }
     }
 
-    func waitForLiveASRDrain(sessionID: UUID) async {}
+    func waitForLiveASRDrain(sessionID: UUID) async -> LiveASRDrainOutcome { .drained }
 
     func liveASRFailure(sessionID: UUID) -> String? { nil }
 

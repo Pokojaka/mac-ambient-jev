@@ -122,7 +122,7 @@ private final class RecordingFinishEffectsFake: RecordingFinishEffects, LiveTran
     func processingUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler {
         preconditionFailure("Paused processing must not request an update handler")
     }
-    func waitForLiveASRDrain(sessionID: UUID) async { preconditionFailure("Paused processing must not drain") }
+    func waitForLiveASRDrain(sessionID: UUID) async -> LiveASRDrainOutcome { preconditionFailure("Paused processing must not drain") }
     func liveASRFailure(sessionID: UUID) -> String? { preconditionFailure("Paused processing must not inspect ASR state") }
     func cleanupLiveASRState(sessionID: UUID) { preconditionFailure("Paused processing must not clean up ASR state") }
     func autoExportIfEnabled(sessionID: UUID) async { preconditionFailure("Paused processing must not export") }
@@ -151,9 +151,10 @@ private actor FinishTestExecutor: LiveTranscriptionExecuting, SessionProcessingE
     }
     func processLiveSegments(
         sessionID: UUID, segments: [SegmentReference], checkpoint: AudioCheckpoint,
+        shouldPause: @escaping NativeSessionProcessor.PauseCheck,
         onStatus: NativeSessionProcessor.StatusHandler?, onUpdate: NativeSessionProcessor.UpdateHandler?
     ) async throws -> LiveASRProgress {
-        _ = (sessionID, segments, checkpoint, onStatus, onUpdate)
+        _ = (sessionID, segments, checkpoint, shouldPause, onStatus, onUpdate)
         preconditionFailure("Unexpected live model work")
     }
     func sealLiveSegmentation(sessionID: UUID, frameCount: Int64) async throws {

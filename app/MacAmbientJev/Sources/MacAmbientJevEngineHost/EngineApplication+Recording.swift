@@ -549,6 +549,7 @@ extension EngineApplicationCore: LiveTranscriptionEffects {
             reportLiveWarning(sessionID, text, stage: .vad)
             if recording.sessionID == sessionID { addLiveFailureNotice(text) }
         case let .recognitionFailed(sessionID, message):
+            processingCoordinator.liveWorkerDidFail(sessionID: sessionID)
             let text = "録音は継続しています。ライブ文字起こしを停止しました: \(message)"
             reportLiveWarning(sessionID, text, stage: .asr)
             if recording.sessionID == sessionID { addLiveFailureNotice(text) }

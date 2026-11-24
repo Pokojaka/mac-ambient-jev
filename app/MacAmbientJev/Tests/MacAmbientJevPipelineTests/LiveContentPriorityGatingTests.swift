@@ -313,7 +313,7 @@ private struct LiveDecisionFixture {
     /// Recognizes one segment the way the processor does: rows are shown, then the decision queue is told.
     func recognize(_ index: Int) async throws {
         let priority = self.priority, recorder = self.recorder
-        _ = try await asr.process(segments: [segments[index]], checkpoint: checkpoint) { status, snapshot in
+        _ = try await asr.process(segments: [segments[index]], checkpoint: checkpoint, onSegmentFinished: { status, snapshot in
             await recorder.record(snapshot.progress.materializedSegments)
             switch status.outcome {
             case .recognized(let source, _):
@@ -333,7 +333,7 @@ private struct LiveDecisionFixture {
                     await recorder.record(failure: "ライブ判定の状態記録に失敗しました: \(error.localizedDescription)")
                 }
             }
-        }
+        }, shouldPause: { _ in nil })
     }
 
     func eventLog() async throws -> Data {
@@ -682,7 +682,8 @@ func decisionRecoveryWaitsForTheMissingSuccessorWithoutRepeatingSavedRequests() 
         }
     }
 
-    _ = try await reopenedASR.process(segments: [], checkpoint: fixture.checkpoint, onSegmentFinished: notify)
+    _ = try await reopenedASR.process(segments: [], checkpoint: fixture.checkpoint, onSegmentFinished: notify,
+                                       shouldPause: { _ in nil })
     await reopened.worker?.value
     #expect(await provider.boundaryRequests.map(\.source.segmentID) == ["seg_1", "seg_2"])
     #expect(await provider.boundaryRequests.map { $0.next?.text } == ["本文", "です。"])
@@ -695,7 +696,8 @@ func decisionRecoveryWaitsForTheMissingSuccessorWithoutRepeatingSavedRequests() 
     await reopened.worker?.value
     #expect(await provider.boundaryRequests.map(\.source.segmentID) == ["seg_1", "seg_2"])
     #expect(await provider.priorityRequests == [["うん。"]])
-    _ = try await reopenedASR.process(segments: [], checkpoint: fixture.checkpoint, onSegmentFinished: notify)
+    _ = try await reopenedASR.process(segments: [], checkpoint: fixture.checkpoint, onSegmentFinished: notify,
+                                       shouldPause: { _ in nil })
     await reopened.worker?.value
     try await recorder.throwIfFailed()
     #expect(await provider.boundaryRequests.map(\.source.segmentID) == ["seg_1", "seg_2", "seg_3"])

@@ -81,7 +81,7 @@ private func makeCoordinator(
     asr: any ASREngine,
     pacingMode: ASRPacingMode,
     sleep: @escaping @Sendable (Duration) async throws -> Void,
-    shouldPause: @escaping @Sendable () async -> InferenceHoldReason?
+    shouldPause: @escaping InferenceGate
 ) throws -> PipelineCoordinator {
     PipelineCoordinator(
         sessionID: UUID(),
@@ -112,7 +112,7 @@ private func recognizedTexts(_ events: [TranscriptEvent]) -> [String] {
 }
 
 private let noSleep: @Sendable (Duration) async throws -> Void = { _ in }
-private let neverPause: @Sendable () async -> InferenceHoldReason? = { nil }
+private let neverPause: InferenceGate = { _ in nil }
 
 @Test
 func durableAudioCommitsWhileASRIsStalled() async throws {
@@ -210,7 +210,7 @@ func resourcePauseInPipelineCoordinatorPreservesReasonBeforeRemainingSegments(
     let coordinator = try makeCoordinator(
         root: root, processing: audioDirectory, checkpoint: checkpoint,
         asr: SequencedPipelineASR(), pacingMode: .normal, sleep: noSleep,
-        shouldPause: {
+        shouldPause: { _ in
             let log = try? String(contentsOf: eventsURL, encoding: .utf8)
             return log?.contains(#""event_type":"asr.completed""#) == true ? reason : nil
         }
@@ -337,6 +337,43 @@ private func asrEventPayloads(in root: URL) throws -> [String: [String: Any]] {
         payloads[segmentID] = try #require(event["payload"] as? [String: Any])
     }
     return payloads
+}
+
+private actor CriticalFromSecondBoundary {
+    private var boundaries = 0
+    func check(at point: InferenceGatePoint) -> InferenceHoldReason? {
+        guard point == .segmentBoundary else { return nil }
+        boundaries += 1
+        return boundaries == 1 ? nil : .thermal
+    }
+}
+
+/// Heat is critical at the second segment's boundary and its audio is unreadable: the active hold stops the run
+/// before the read, so it pauses instead of persisting `asr.failed`. The gate asks at the boundary without pacing.
+@Test
+func anActiveHoldAtTheSegmentBoundaryPausesBeforeAnUnreadableRead() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let processing = root.appending(path: "audio/processing")
+    let audioWriter = try DurableAudioWriter(directory: processing, chunkDurationSeconds: 10.0 / CanonicalAudio.sampleRate, sessionURL: root)
+    try await audioWriter.append(samples: Array(repeating: 0.25, count: 20))
+    let checkpoint = try await audioWriter.finish()
+    try FileManager.default.removeItem(at: processing.appending(path: "chunk-000001.f32le"))
+    let heat = CriticalFromSecondBoundary()
+    let coordinator = try makeCoordinator(
+        root: root, processing: processing, checkpoint: checkpoint,
+        asr: SequencedPipelineASR(), pacingMode: .normal, sleep: noSleep,
+        shouldPause: { await heat.check(at: $0) }
+    )
+
+    let input = segments([("readable", 0, 10), ("unreadable", 10, 20)])
+    let result = try await coordinator.run(segments: input, pendingSince: pendingNow(input), existingEvents: [])
+
+    #expect(result.disposition == .paused(.thermal))
+    #expect(result.completedCount == 1)
+    let payloads = try asrEventPayloads(in: root)
+    #expect(payloads["readable"]?["outcome"] as? String == "recognized")
+    #expect(payloads["unreadable"] == nil)
 }
 
 @Test(arguments: [ASRFailureKind.transcriptionFailed, .audioUnreadable])

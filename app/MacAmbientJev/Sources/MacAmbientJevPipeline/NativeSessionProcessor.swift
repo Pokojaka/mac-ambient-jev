@@ -13,6 +13,8 @@ public struct SessionProcessingResult: Sendable {
     public let message: String?
     public let noSpeech: Bool
     public let retainedTranscript: RetainedTranscript?
+    /// Why a paused run stopped; nil for a cancellation.
+    public var pauseReason: InferenceHoldReason? = nil
 
     public static func completed(metrics: ASRBatchMetrics?, noSpeech: Bool) -> SessionProcessingResult {
         SessionProcessingResult(disposition: .completed, metrics: metrics, message: nil,
@@ -20,9 +22,9 @@ public struct SessionProcessingResult: Sendable {
     }
 
     public static func paused(metrics: ASRBatchMetrics?, retained: RetainedTranscript,
-                               message: String) -> SessionProcessingResult {
+                               message: String, reason: InferenceHoldReason? = nil) -> SessionProcessingResult {
         SessionProcessingResult(disposition: .paused, metrics: metrics, message: message,
-                                noSpeech: false, retainedTranscript: retained)
+                                noSpeech: false, retainedTranscript: retained, pauseReason: reason)
     }
 
     public static func failed(message: String, metrics: ASRBatchMetrics?,
@@ -66,7 +68,7 @@ public actor NativeSessionProcessor {
     public typealias DecisionEventWriterFactory = @Sendable (URL) throws -> any DecisionEventWriting
     public typealias StatusHandler = @Sendable (Status) async -> Void
     public typealias UpdateHandler = @Sendable ([MaterializedTranscriptSegment], ProcessingState) async -> Void
-    public typealias PauseCheck = @Sendable () async -> InferenceHoldReason?
+    public typealias PauseCheck = InferenceGate
     public typealias PhaseHandler = @Sendable (RunPhase) async -> Void
 
     /// The sessions a recording keeps running until stop; stop drains these same sessions.
@@ -186,6 +188,7 @@ public actor NativeSessionProcessor {
         sessionID: UUID,
         segments: [SegmentReference],
         checkpoint: AudioCheckpoint,
+        shouldPause: @escaping PauseCheck,
         onStatus: StatusHandler?,
         onUpdate: UpdateHandler?
     ) async throws -> LiveASRProgress {
@@ -202,7 +205,8 @@ public actor NativeSessionProcessor {
                     sessionID: sessionID, liveSession: liveSession, status: status,
                     snapshot: snapshot, onStatus: onStatus, onUpdate: onUpdate
                 )
-            }
+            },
+            shouldPause: shouldPause
         )
         guard liveASRSessions[sessionID] === liveSession else { return progress }
         if progress.failedCount > 0 {
@@ -598,7 +602,10 @@ public actor NativeSessionProcessor {
                     if reportedMessage == message { await onStatus(.paused(reason)) }
                     else { await onStatus(.message(reportedMessage)) }
                     await onUpdate(rows, .backlogged)
-                    return .paused(metrics: metrics, retained: rows.isEmpty ? .nothing : .finalized, message: reportedMessage)
+                    return .paused(
+                        metrics: metrics, retained: rows.isEmpty ? .nothing : .finalized,
+                        message: reportedMessage, reason: reason
+                    )
                 case .failed(let failure):
                     let message = failure.localizedDescription
                     try saveStatus(sessionID: sessionID, layout: layout, generationID: generationID, state: .failed, reason: message)
@@ -898,7 +905,10 @@ public actor NativeSessionProcessor {
                 result = .failed(message: message, metrics: result.metrics, retained: result.retainedTranscript)
                 await onStatus(.message(message))
             case .paused:
-                result = .paused(metrics: result.metrics, retained: result.retainedTranscript ?? .nothing, message: message)
+                result = .paused(
+                    metrics: result.metrics, retained: result.retainedTranscript ?? .nothing,
+                    message: message, reason: result.pauseReason
+                )
                 await onStatus(.message(message))
             }
         }

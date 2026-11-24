@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import MacAmbientJevCore
 @testable import MacAmbientJevPipeline
@@ -166,6 +167,7 @@ func nativeSessionProcessorStreamsLiveSegmentsWithoutRealModel() async throws {
         sessionID: sessionID,
         segments: segments,
         checkpoint: checkpoint,
+        shouldPause: { _ in nil },
         onStatus: nil,
         onUpdate: { segments, _ in
             await recorder.record(segments)
@@ -217,12 +219,12 @@ private struct StopFixture {
     func stop(resume: Bool = false) async -> SessionProcessingResult {
         if resume {
             return await processor.resumeSession(
-                sessionID: sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
+                sessionID: sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
                 onStatus: { _ in }, onUpdate: { _, _ in }
             )
         }
         return await processor.processSession(
-            sessionID: sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
+            sessionID: sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
             metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
         )
     }
@@ -361,7 +363,7 @@ func aVADThatFailedDoesNotCertifySegmentationAndStopReplaysTheStoredVAD() async 
     await processor.cancelLiveTranscription(sessionID: sessionID)
 
     let result = await processor.processSession(
-        sessionID: sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
+        sessionID: sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
     )
 
@@ -502,6 +504,220 @@ func stopFailsOnAnASRFailureAndResumeRecognizesOnlyTheFailedSegment() async thro
     #expect(try ProcessingMetadataStore(sessionURL: fixture.layout.sessionURL).load()?.state == .complete)
 }
 
+private final class StopThermalMonitor: ThermalMonitoring, Sendable {
+    private let pressure: Mutex<ThermalPressure>
+    init(_ pressure: ThermalPressure) { self.pressure = Mutex(pressure) }
+    func set(_ new: ThermalPressure) { pressure.withLock { $0 = new } }
+    var isCritical: Bool { pressure.withLock { $0 } == .critical }
+    var liveASRDecision: LiveASRThermalDecision { LiveASRThermalPolicy.decision(pressure: pressure.withLock { $0 }) }
+    @MainActor
+    func observeChanges(_ onChange: @escaping @MainActor @Sendable () -> Void) -> any ThermalStateObservation {
+        PublishedRetryThermalObservation()
+    }
+}
+
+/// The queue side of a stop: the live worker is already idle, so the drain wait has nothing to wait for.
+@MainActor
+private final class StopQueueEffects: SessionProcessingEffects {
+    var processingQueue = SessionProcessingQueue()
+    var pausesProcessing = false
+    var modelsReady = true
+    private(set) var finished: [BatchDisposition?] = []
+
+    func prepareModels() {}
+    func awaitIdleRelease() async {}
+    func processingStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler { { _ in } }
+    func processingUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler { { _, _ in } }
+    func waitForLiveASRDrain(sessionID: UUID) async -> LiveASRDrainOutcome { .drained }
+    func liveASRFailure(sessionID: UUID) -> String? { nil }
+    func cleanupLiveASRState(sessionID: UUID) {}
+    func refreshSavedSessions() {}
+    func autoExportIfEnabled(sessionID: UUID) async {}
+    func processingDidChange(_ event: SessionProcessingEvent) {
+        if case .finished(_, let result) = event { finished.append(result?.disposition) }
+    }
+}
+
+/// Resuming a held stop continues the generation it began: same generation and run IDs, no repeated ASR call.
+private func expectStopContinuedTheSameGeneration(
+    _ fixture: StopFixture, before: ProcessingLogState, asr: ScriptedStopASR
+) async throws {
+    #expect(await asr.callCount() == 2)
+    let after = try #require(try ProcessingLogState(eventsURL: fixture.layout.eventsURL, sessionID: fixture.sessionID))
+    #expect(after.generation.id == before.generation.id)
+    #expect(after.segmentationRunID == before.segmentationRunID && after.asrRunID == before.asrRunID)
+    let stored = try EventLogTranscriptReader().validateCompletion(
+        eventsURL: fixture.layout.eventsURL, sessionID: fixture.sessionID, frameCount: fixture.checkpoint.committedFrames
+    )
+    let rows = try TranscriptMaterializer(sampleRate: stored.state.generation.sampleRate)
+        .materialize(events: stored.events, activeRuns: stored.state.runs)
+    #expect(rows.map(\.text) == ["認識1", "認識2"])
+}
+
+@MainActor
+@Test(.timeLimit(.minutes(10)))
+func coolingAfterStopContinuesTheSameGeneration() async throws {
+    let asr = ScriptedStopASR()
+    let fixture = try await makeStopFixture(asr: asr)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let before = try #require(try ProcessingLogState(eventsURL: fixture.layout.eventsURL, sessionID: fixture.sessionID))
+    let thermal = StopThermalMonitor(.critical)
+    let effects = StopQueueEffects()
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects, processor: fixture.processor, thermalMonitor: thermal, resourceHolds: nil
+    )
+
+    coordinator.enqueue(.finalize(sessionID: fixture.sessionID, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+    #expect(effects.processingQueue.held.map(\.reason) == [.inference(.thermal)])
+    #expect(await asr.callCount() == 1)
+
+    thermal.set(.nominal)
+    coordinator.resumeHeldProcessing()
+    await coordinator.waitUntilIdle()
+    #expect(effects.finished == [.completed])
+    try await expectStopContinuedTheSameGeneration(fixture, before: before, asr: asr)
+}
+
+@MainActor
+@Test(.timeLimit(.minutes(10)))
+func aModelHoldAfterStopContinuesTheSameGeneration() async throws {
+    let asr = ScriptedStopASR()
+    let fixture = try await makeStopFixture(asr: asr)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let before = try #require(try ProcessingLogState(eventsURL: fixture.layout.eventsURL, sessionID: fixture.sessionID))
+    let effects = StopQueueEffects()
+    effects.modelsReady = false
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects, processor: fixture.processor, thermalMonitor: StopThermalMonitor(.nominal), resourceHolds: nil
+    )
+
+    coordinator.enqueue(.finalize(sessionID: fixture.sessionID, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+    #expect(effects.processingQueue.modelHeld.count == 1)
+    #expect(await asr.callCount() == 1)
+
+    effects.modelsReady = true
+    coordinator.resumeModelHeldProcessing()
+    await coordinator.waitUntilIdle()
+    #expect(effects.finished == [.completed])
+    try await expectStopContinuedTheSameGeneration(fixture, before: before, asr: asr)
+}
+
+@MainActor
+@Test(.timeLimit(.minutes(10)))
+func aDurableASRFailureIsReportedFailedUnderCriticalThermalNotHeld() async throws {
+    let asr = ScriptedStopASR(failingCalls: [1])
+    let fixture = try await makeStopFixture(asr: asr)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let effects = StopQueueEffects()
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects, processor: fixture.processor, thermalMonitor: StopThermalMonitor(.critical), resourceHolds: nil
+    )
+
+    coordinator.enqueue(.finalize(sessionID: fixture.sessionID, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+
+    #expect(effects.finished == [.failed])
+    #expect(effects.processingQueue.held.isEmpty)
+    #expect(await asr.callCount() == 1)
+    #expect(try ProcessingMetadataStore(sessionURL: fixture.layout.sessionURL).load()?.state == .failed)
+}
+
+/// Heat rises once the first segment is recognized.
+private actor HeatingLiveASR: ASREngine {
+    nonisolated let provenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
+    private let thermal: StopThermalMonitor
+    private var calls = 0
+
+    init(thermal: StopThermalMonitor) { self.thermal = thermal }
+
+    func prepare() async throws {}
+    func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
+        calls += 1
+        if calls == 1 { thermal.set(.critical) }
+        return ASRResult(text: "認識\(calls)", detectedLanguage: "ja")
+    }
+    func unload() async {}
+    func callCount() -> Int { calls }
+}
+
+/// What the live worker's cooling wait does the first time it runs.
+@MainActor
+private final class FirstCoolingWait {
+    var action: (@MainActor () async -> Void)?
+    func run() async {
+        let action = self.action
+        self.action = nil
+        await action?()
+    }
+}
+
+/// Heat stops a two-segment batch after its first segment. While the worker cools, VAD registers a later segment
+/// whose audio lies beyond the batch's checkpoint. After cooling the batch finishes only its own segment, and the
+/// later segment runs in its own batch: every segment completes and no ASR failure is logged.
+@MainActor
+@Test(.timeLimit(.minutes(10)))
+func aBatchStoppedByHeatResumesItsOwnSegmentsWhileALaterSegmentWaitsForItsBatch() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let paths = AppPaths(
+        applicationSupportURL: root.appending(path: "support", directoryHint: .isDirectory),
+        cacheURL: root.appending(path: "cache", directoryHint: .isDirectory), sessionsRootOverride: nil
+    )
+    let sessionID = UUID()
+    let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
+        paths: paths, sessionID: sessionID, source: .recording(.microphone),
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+    let layout = SessionLayout(sessionURL: sessionURL)
+    let audioWriter = try DurableAudioWriter(
+        directory: layout.processingDirectory, chunkDurationSeconds: 0.5, sessionURL: sessionURL
+    )
+    try await audioWriter.append(samples: Array(repeating: Float(0.1), count: 8_000))
+    let firstCheckpoint = await audioWriter.committedSnapshot()
+    try await audioWriter.append(samples: Array(repeating: Float(0.1), count: 8_000))
+    let laterCheckpoint = await audioWriter.committedSnapshot()
+    #expect(firstCheckpoint.committedFrames == 8_000 && laterCheckpoint.committedFrames == 16_000)
+
+    let thermal = StopThermalMonitor(.fair)
+    let asr = HeatingLiveASR(thermal: thermal)
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        engines: SessionProcessingEngines(asr: asr, finalTranscriptVAD: UnusedLiveTestVAD()),
+        audioHandling: RecordingTestAudioHandling(), contentPriority: .disabled, sleep: { _ in }
+    )
+    let runID = try await processor.startLiveTranscription(sessionID: sessionID, sampleRate: 16_000)
+    let segment: (Int) -> SegmentReference = { ordinal in
+        SegmentReference(
+            segmentationRunID: runID, segmentID: String(format: "seg_%06d", ordinal),
+            speechRanges: [Int64(ordinal - 1) * 4_000..<Int64(ordinal) * 4_000]
+        )
+    }
+    let liveState = LiveTranscriptionState()
+    let coolingWait = FirstCoolingWait()
+    let effects = StopTestEffects(sessionID: sessionID)
+    let live = LiveTranscriptionCoordinator(
+        state: liveState, effects: effects, processor: processor,
+        thermalMonitor: thermal, resourceMonitor: nil, sleep: { _ in await coolingWait.run() }
+    )
+    coolingWait.action = {
+        await live.enqueue(sessionID: sessionID, segments: [segment(4)], checkpoint: laterCheckpoint)
+        thermal.set(.fair)
+    }
+
+    await live.enqueue(sessionID: sessionID, segments: [segment(1), segment(2)], checkpoint: firstCheckpoint)
+    while await live.waitForDrain(sessionID: sessionID) == .suspendedForCooling { await Task.yield() }
+
+    #expect(coolingWait.action == nil)
+    #expect(liveState.failure(sessionID: sessionID) == nil)
+    #expect(await asr.callCount() == 3)
+    withExtendedLifetime(effects) {}
+    let log = try String(contentsOf: layout.eventsURL, encoding: .utf8)
+    #expect(!log.contains("\"asr.failed\""))
+    #expect(log.components(separatedBy: "\"asr.completed\"").count - 1 == 3)
+}
+
 private actor GatedLiveProcessorASR: ASREngine {
     nonisolated let provenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
     private var release: CheckedContinuation<Void, Never>?
@@ -606,7 +822,7 @@ func cancelledLiveTranscriptionDoesNotPublishInFlightResult() async throws {
     let processing = Task {
         try await processor.processLiveSegments(
             sessionID: sessionID, segments: [segment], checkpoint: checkpoint,
-            onStatus: nil,
+            shouldPause: { _ in nil }, onStatus: nil,
             onUpdate: { _, _ in await updates.increment() }
         )
     }
@@ -806,7 +1022,8 @@ func cancellingLiveDecisionsAfterAFailedTaggerLoadClearsItsPendingKeys() async t
             SegmentReference(segmentationRunID: liveRunID, segmentID: "a", speechRanges: [0..<4_000]),
             SegmentReference(segmentationRunID: liveRunID, segmentID: "b", speechRanges: [4_000..<8_000])
         ],
-        checkpoint: fixture.checkpoint, onStatus: nil, onUpdate: { rows, _ in await updates.record(rows) }
+        checkpoint: fixture.checkpoint, shouldPause: { _ in nil }, onStatus: nil,
+        onUpdate: { rows, _ in await updates.record(rows) }
     )
     try await updates.waitFor { $0.first?.clauseState == .boundaryPending }
     #expect(await counter.snapshot().pendingBoundarySegmentCount == 1)
@@ -867,7 +1084,7 @@ private final class PublishedRetryEffects: SessionProcessingEffects {
         { segments, state in await self.record(segments: segments, state: state) }
     }
 
-    func waitForLiveASRDrain(sessionID: UUID) async {
+    func waitForLiveASRDrain(sessionID: UUID) async -> LiveASRDrainOutcome {
         preconditionFailure("published retry test does not finish live transcription")
     }
 
@@ -925,7 +1142,7 @@ private func publishedRetryRemainsCompletedAfterLatePause(_ latePause: Published
     defer { try? FileManager.default.removeItem(at: fixture.root) }
 
     let initialResult = await fixture.processor.processSession(
-        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
     )
     #expect(initialResult.disposition == .completed)
@@ -1082,7 +1299,7 @@ func retryAfterAFailedSelectionAppendUsesANewPriorityRunAndKeepsThePublishedSnap
     )
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     _ = await fixture.processor.processSession(
-        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
     )
     let before = try fixture.stored()
@@ -1133,7 +1350,7 @@ func nativeRetryRejectsIncompleteLogBeforeSending() async throws {
     let fixture = try await NativeDecisionFixture(texts: ["保留本文。"], factory: { decisions }, counter: counter)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     _ = await fixture.processor.processSession(
-        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
     )
     let store = ProcessingMetadataStore(sessionURL: fixture.sessionURL)
@@ -1165,7 +1382,7 @@ func unpublishedRetryRebuildsACompleteSnapshotEvenWithoutPendingTargetsAndNeverU
     let fixture = try await NativeDecisionFixture(texts: ["保存済み本文。"], factory: { decisions }, counter: counter)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let result = await fixture.processor.processSession(
-        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
     )
     #expect(result.disposition == .completed)
@@ -1227,7 +1444,7 @@ func nativeRetryWithoutTargetsOrUnpublishedRunFailsAndRetainsPublishedSnapshot()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
 
     let finalized = await fixture.processor.processSession(
-        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
     )
     #expect(finalized.disposition == .completed)
@@ -1272,7 +1489,7 @@ func nativeRetryWithoutContentPriorityFailsAndRetainsPublishedSnapshot() async t
     defer { try? FileManager.default.removeItem(at: fixture.root) }
 
     _ = await fixture.processor.processSession(
-        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
     )
     let store = ProcessingMetadataStore(sessionURL: fixture.sessionURL)
@@ -1321,7 +1538,7 @@ func nativeRetryCoordinatorInitializationFailurePreservesDeferredEngineStatusAnd
     let statuses = ProcessingStatusRecorder()
 
     _ = await fixture.processor.processSession(
-        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { await statuses.record($0) }, onUpdate: { _, _ in }
     )
     let store = ProcessingMetadataStore(sessionURL: fixture.sessionURL)

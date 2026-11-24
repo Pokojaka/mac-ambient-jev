@@ -34,11 +34,11 @@ private actor PausedImportASR: ASREngine {
 }
 
 private actor PauseAfterFirstImportSegment {
-    private var checks = 0
+    private var segments = 0
 
-    func check() -> InferenceHoldReason? {
-        checks += 1
-        return checks == 1 ? nil : .thermal
+    func check(at point: InferenceGatePoint) -> InferenceHoldReason? {
+        if point == .segmentBoundary { segments += 1 }
+        return segments == 1 ? nil : .thermal
     }
 }
 
@@ -91,7 +91,7 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     let paused = await processor.processSession(
         sessionID: sessionID,
         pacingMode: .normal,
-        shouldPause: { await pauseAfterFirstSegment.check() },
+        shouldPause: { await pauseAfterFirstSegment.check(at: $0) },
         onPhase: { _ in },
         metadataPolicy: .reject,
         onStatus: { _ in },
@@ -130,7 +130,7 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     let resumed = await processor.processSession(
         sessionID: sessionID,
         pacingMode: .normal,
-        shouldPause: { nil },
+        shouldPause: { _ in nil },
         onPhase: { _ in },
         metadataPolicy: .reject,
         onStatus: { _ in },

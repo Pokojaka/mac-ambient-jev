@@ -116,7 +116,7 @@ func recordingStopFinalizesTailAtNon16kHzDeviceRate(sampleRate: Double) async th
             let checkpoint = try await drain.committedSnapshot()
             let progress = try await processor.processLiveSegments(sessionID: sessionID,
                 segments: [savedPrefixSegment(runID: segmentationRunID)], checkpoint: checkpoint,
-                onStatus: nil, onUpdate: nil)
+                shouldPause: { _ in nil }, onStatus: nil, onUpdate: nil)
             #expect(progress.materializedSegments.map(\.text) == ["保存済み区間"])
             savedPrefixSource = try #require(progress.materializedSegments.first?.source)
             #expect(await asr.calls == 1)
@@ -130,7 +130,7 @@ func recordingStopFinalizesTailAtNon16kHzDeviceRate(sampleRate: Double) async th
     #expect(checkpoint.committedFrames == 1_716_000)
     #expect(checkpoint.sampleRate == 16_000)
     #expect(checkpoint.gapEvents.isEmpty)
-    let result = await processor.processSession(sessionID: sessionID, pacingMode: .normal, shouldPause: { nil },
+    let result = await processor.processSession(sessionID: sessionID, pacingMode: .normal, shouldPause: { _ in nil },
         onPhase: { _ in }, metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in })
     #expect(result.disposition == .completed, "\(result.message ?? "no failure message")")
     #expect(await asr.calls == 2)

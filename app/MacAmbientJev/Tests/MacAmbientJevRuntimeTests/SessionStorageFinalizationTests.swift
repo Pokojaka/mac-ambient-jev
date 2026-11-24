@@ -112,7 +112,7 @@ private struct Fixture {
         let result = await processor.processSession(
             sessionID: sessionID,
             pacingMode: .normal,
-            shouldPause: { holdReason },
+            shouldPause: { _ in holdReason },
             onPhase: { _ in },
             metadataPolicy: .reject,
             onStatus: { await recorder.record(status: $0.text) },
@@ -241,7 +241,7 @@ func finishingALiveRecordingCompactsItToFLAC() async throws {
 
     let result = await fixture.processor(engines(for: .success))
         .processSession(
-            sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { nil },
+            sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil },
             onPhase: { _ in }, metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
         )
 
@@ -264,7 +264,7 @@ func openGenerationDoesNotPermitPCMCompaction() async throws {
     let segmentationRunID = try await processor.startLiveTranscription(sessionID: fixture.sessionID, sampleRate: checkpoint.sampleRate)
     let segments = [SegmentReference(segmentationRunID: segmentationRunID, segmentID: "fixture_speech", speechRanges: [0..<checkpoint.committedFrames])]
     _ = try await processor.registerLiveSegments(sessionID: fixture.sessionID, segments: segments)
-    let progress = try await processor.processLiveSegments(sessionID: fixture.sessionID, segments: segments, checkpoint: checkpoint, onStatus: nil, onUpdate: nil)
+    let progress = try await processor.processLiveSegments(sessionID: fixture.sessionID, segments: segments, checkpoint: checkpoint, shouldPause: { _ in nil }, onStatus: nil, onUpdate: nil)
 
     #expect(progress.completedCount == 1 && progress.failedCount == 0 && progress.pendingCount == 0)
     let state = try #require(try ProcessingLogState(eventsURL: fixture.layout.eventsURL, sessionID: fixture.sessionID))

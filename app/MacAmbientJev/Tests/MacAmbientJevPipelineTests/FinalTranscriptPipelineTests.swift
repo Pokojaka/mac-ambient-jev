@@ -242,7 +242,7 @@ private func processFinal(
     return await processor.processSession(
         sessionID: sessionID,
         pacingMode: .normal,
-        shouldPause: { nil },
+        shouldPause: { _ in nil },
         onPhase: { await phases.append("phase:\($0.rawValue)") },
         metadataPolicy: metadataPolicy,
         onStatus: { await statuses.append($0.text) },
@@ -260,7 +260,7 @@ private func cancelProcessingWhenGateStarts(
         await processor.processSession(
             sessionID: sessionID,
             pacingMode: pacingMode,
-            shouldPause: { nil },
+            shouldPause: { _ in nil },
             onPhase: { _ in },
             metadataPolicy: .reject,
             onStatus: { _ in },
@@ -327,7 +327,7 @@ func nativeProcessorPauseReasonForSessionProcessingCoordinator(reason: Inference
     let result = await processor.processSession(
         sessionID: sessionID,
         pacingMode: .normal,
-        shouldPause: { reason },
+        shouldPause: { _ in reason },
         onPhase: { _ in },
         metadataPolicy: .reject,
         onStatus: { status in
@@ -677,7 +677,7 @@ func stoppingALiveRecordingEndsWithFinalizationStatus() async throws {
     let finish = await processor.processSession(
         sessionID: sessionID,
         pacingMode: .normal,
-        shouldPause: { nil },
+        shouldPause: { _ in nil },
         onPhase: { _ in },
         metadataPolicy: .reject,
         onStatus: { await statuses.append($0.text) },
@@ -1201,7 +1201,7 @@ func failedVADDoesNotCompleteSegmentationOrReportNoSpeech() async throws {
     #expect(result.metrics == nil)
     let imported = await processor.processSession(
         sessionID: absent,
-        pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in },
+        pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
         metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
     )
     #expect(imported.disposition == .failed)

@@ -798,12 +798,13 @@ private actor PresentationDecisionProvider: DecisionProvider {
         #expect(!(try await inspect(core, context: context, folderID: recorded.folder.lastPathComponent)).canReprocess)
         core.processingQueue.releaseReprocessing(sessionID)
 
-        core.processingQueue.hold(.finalize(sessionID: sessionID, metadataPolicy: .reject), reason: .thermal)
+        core.processingQueue.hold(.finalize(sessionID: sessionID, metadataPolicy: .reject), reason: .inference(.thermal))
         let held = try await inspect(core, context: context, folderID: recorded.folder.lastPathComponent)
         #expect(!held.canReprocess)
         #expect(!held.canRetryDecisions)
         #expect(!held.canExport)
-        let didResumeHeld = core.processingQueue.resumeHeld(holdReason: nil, pausesProcessing: false)
+        let didResumeHeld = core.processingQueue.resumeHeld(
+            activeInferenceHold: nil, releasesPauses: false, pausesProcessing: false)
         #expect(didResumeHeld)
         let dequeued = core.processingQueue.dequeue()
         let resumed = try #require(dequeued)

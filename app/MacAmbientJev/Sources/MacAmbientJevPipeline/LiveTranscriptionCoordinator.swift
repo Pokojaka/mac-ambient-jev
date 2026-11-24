@@ -23,6 +23,7 @@ public protocol LiveTranscriptionExecuting: Sendable {
         sessionID: UUID,
         segments: [SegmentReference],
         checkpoint: AudioCheckpoint,
+        shouldPause: @escaping NativeSessionProcessor.PauseCheck,
         onStatus: NativeSessionProcessor.StatusHandler?,
         onUpdate: NativeSessionProcessor.UpdateHandler?
     ) async throws -> LiveASRProgress
@@ -31,6 +32,12 @@ public protocol LiveTranscriptionExecuting: Sendable {
 }
 
 extension NativeSessionProcessor: LiveTranscriptionExecuting {}
+
+public enum LiveASRDrainOutcome: Sendable, Equatable {
+    case drained
+    /// The live worker waits for cooling and keeps its unfinished segments.
+    case suspendedForCooling
+}
 
 public enum LiveTranscriptionEvent: Sendable, Equatable {
     case started(UUID)
@@ -78,6 +85,11 @@ public final class LiveTranscriptionCoordinator {
     private var asrTaskIDs: [UUID: UUID] = [:]
     private var retiredASRTasks: [UUID: Task<Void, Never>] = [:]
     private var retiredASRTaskSessionIDs: [UUID: UUID] = [:]
+    /// Sessions whose live worker waits for cooling; a finalization must not wait for them.
+    private var thermalSuspensions: Set<UUID> = []
+    /// Sessions whose segment gate stopped a batch, so the worker waits for cooling and continues.
+    private var gatedSessions: Set<UUID> = []
+    private var drainWaiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
 
     public init(
         state: LiveTranscriptionState,
@@ -327,9 +339,35 @@ public final class LiveTranscriptionCoordinator {
         }
     }
 
-    public func waitForDrain(sessionID: UUID) async {
+    /// Returns when the live worker has drained, or when it waits for cooling: a finalization parks then
+    /// and keeps the worker, so the queue never blocks behind heat.
+    @discardableResult
+    public func waitForDrain(sessionID: UUID) async -> LiveASRDrainOutcome {
         while let task = asrTasks[sessionID] {
-            _ = await task.value
+            if thermalSuspensions.contains(sessionID), thermalMonitor.liveASRDecision == .suspendUntilCooled {
+                return .suspendedForCooling
+            }
+            // Woken by the task's end or by a suspension, whichever comes first.
+            await withCheckedContinuation { waiter in
+                drainWaiters[sessionID, default: []].append(waiter)
+                Task { @MainActor [weak self] in
+                    await task.value
+                    self?.wakeDrainWaiters(sessionID: sessionID)
+                }
+            }
+        }
+        return .drained
+    }
+
+    private func wakeDrainWaiters(sessionID: UUID) {
+        for waiter in drainWaiters.removeValue(forKey: sessionID) ?? [] { waiter.resume() }
+    }
+
+    private func setThermalSuspended(_ suspended: Bool, sessionID: UUID) {
+        if suspended {
+            if thermalSuspensions.insert(sessionID).inserted { wakeDrainWaiters(sessionID: sessionID) }
+        } else {
+            thermalSuspensions.remove(sessionID)
         }
     }
 
@@ -372,6 +410,8 @@ public final class LiveTranscriptionCoordinator {
         asrTasks.removeValue(forKey: sessionID)
         asrTaskIDs.removeValue(forKey: sessionID)
         resourceSuspensions.remove(sessionID)
+        thermalSuspensions.remove(sessionID)
+        gatedSessions.remove(sessionID)
         state.cleanup(sessionID: sessionID)
     }
 
@@ -467,6 +507,8 @@ public final class LiveTranscriptionCoordinator {
             if asrTaskIDs[sessionID] == taskID {
                 asrTasks[sessionID] = nil
                 asrTaskIDs[sessionID] = nil
+                thermalSuspensions.remove(sessionID)
+                gatedSessions.remove(sessionID)
             }
         }
         let effects = requiredEffects
@@ -484,30 +526,40 @@ public final class LiveTranscriptionCoordinator {
                 break
             }
             do {
-                try await waitForInferenceHeadroom(sessionID: sessionID)
+                try await waitUntilCooled(sessionID: sessionID)
             } catch {
                 break
             }
+            guard state.failure(sessionID: sessionID) == nil else { break }
 
             guard !suspendForResources(sessionID: sessionID) else { break }
             guard !Task.isCancelled, asrTaskIDs[sessionID] == taskID else { return }
             guard let batch = state.dequeue(sessionID: sessionID) else { break }
-            do {
-                _ = try await processor.processLiveSegments(
-                    sessionID: sessionID,
-                    segments: batch.segments,
-                    checkpoint: batch.checkpoint,
-                    onStatus: effects.liveStatusHandler(sessionID: sessionID),
-                    onUpdate: effects.liveUpdateHandler(sessionID: sessionID)
-                )
-            } catch {
-                guard !Task.isCancelled, asrTaskIDs[sessionID] == taskID else { return }
-                state.recordFailure(
-                    sessionID: sessionID,
-                    message: error.localizedDescription,
-                    discardQueued: true
-                )
-                effects.liveDidChange(.recognitionFailed(sessionID, error.localizedDescription))
+            while true {
+                do {
+                    _ = try await processor.processLiveSegments(
+                        sessionID: sessionID,
+                        segments: batch.segments,
+                        checkpoint: batch.checkpoint,
+                        shouldPause: { [self] point in try await gateBeforeSegment(sessionID: sessionID, at: point) },
+                        onStatus: effects.liveStatusHandler(sessionID: sessionID),
+                        onUpdate: effects.liveUpdateHandler(sessionID: sessionID)
+                    )
+                } catch {
+                    guard !Task.isCancelled, asrTaskIDs[sessionID] == taskID else { return }
+                    state.recordFailure(
+                        sessionID: sessionID,
+                        message: error.localizedDescription,
+                        discardQueued: true
+                    )
+                    effects.liveDidChange(.recognitionFailed(sessionID, error.localizedDescription))
+                    break
+                }
+                // The gate stopped the batch at heat: after cooling the same batch continues its unfinished
+                // segments with its own checkpoint. A failure recorded while cooling ends the worker.
+                guard gatedSessions.remove(sessionID) != nil else { break }
+                do { try await waitUntilCooled(sessionID: sessionID) } catch { break }
+                guard state.failure(sessionID: sessionID) == nil else { break }
             }
         }
 
@@ -522,29 +574,33 @@ public final class LiveTranscriptionCoordinator {
         }
     }
 
-    /// Thermal pressure only throttles live transcription during recording; the queue retains its oldest segments.
-    private func waitForInferenceHeadroom(sessionID: UUID) async throws {
+    /// Thermal pressure throttles the live worker before and after stop alike; the queue retains its oldest segments.
+    private func waitUntilCooled(sessionID: UUID) async throws {
         let effects = requiredEffects
-        while effects.isCurrentRecording(sessionID),
-              state.failure(sessionID: sessionID) == nil {
-            switch thermalMonitor.liveASRDecision {
-            case .processNow:
-                return
-            case .wait(let delay):
-                let pendingCount = state.pendingSegmentCount(sessionID: sessionID)
-                effects.liveDidChange(
-                    .thermal(sessionID, "発熱を抑えるため文字起こしを調整中（未処理 \(pendingCount)区間）")
-                )
-                try await sleep(delay)
-                return
-            case .suspendUntilCooled:
-                effects.liveDidChange(
-                    .thermal(sessionID, UserFacingStatus.liveTranscriptionThermalSuspended.text)
-                )
-                try await sleep(
-                    .milliseconds(LiveTranscriptionCadence.thermalRecheckIntervalMilliseconds)
-                )
-            }
+        while state.failure(sessionID: sessionID) == nil,
+              thermalMonitor.liveASRDecision == .suspendUntilCooled {
+            setThermalSuspended(true, sessionID: sessionID)
+            effects.liveDidChange(
+                .thermal(sessionID, UserFacingStatus.liveTranscriptionThermalSuspended.text)
+            )
+            try await sleep(.milliseconds(LiveTranscriptionCadence.thermalRecheckIntervalMilliseconds))
         }
+        setThermalSuspended(false, sessionID: sessionID)
+    }
+
+    /// The live side of the shared per-segment gate: serious paces, critical stops the batch.
+    private func gateBeforeSegment(sessionID: UUID, at point: InferenceGatePoint) async throws -> InferenceHoldReason? {
+        if point == .dispatch, case .wait = thermalMonitor.liveASRDecision {
+            let pendingCount = state.pendingSegmentCount(sessionID: sessionID)
+            requiredEffects.liveDidChange(
+                .thermal(sessionID, "発熱を抑えるため文字起こしを調整中（未処理 \(pendingCount)区間）")
+            )
+        }
+        let reason = try await thermalMonitor.inferenceGate(at: point, sleep: sleep)
+        if reason != nil {
+            gatedSessions.insert(sessionID)
+            setThermalSuspended(true, sessionID: sessionID)
+        }
+        return reason
     }
 }

@@ -276,6 +276,7 @@ struct MeasureLiveLatencyCommand {
                         sessionID: sessionID,
                         segments: progress.emittedSegments,
                         checkpoint: checkpoint,
+                        shouldPause: { _ in nil },
                         onStatus: nil,
                         onUpdate: { segments, _ in await collector.update(segments) }
                     )
@@ -294,6 +295,7 @@ struct MeasureLiveLatencyCommand {
                     sessionID: sessionID,
                     segments: progress.emittedSegments,
                     checkpoint: checkpoint,
+                    shouldPause: { _ in nil },
                     onStatus: nil,
                     onUpdate: { segments, _ in await collector.update(segments) }
                 )
@@ -306,6 +308,7 @@ struct MeasureLiveLatencyCommand {
                 sessionID: sessionID,
                 segments: finalVAD.emittedSegments,
                 checkpoint: checkpoint,
+                shouldPause: { _ in nil },
                 onStatus: nil,
                 onUpdate: { segments, _ in await collector.update(segments) }
             )
@@ -313,7 +316,7 @@ struct MeasureLiveLatencyCommand {
         let finalResult = await processor.processSession(
             sessionID: sessionID,
             pacingMode: .normal,
-            shouldPause: { MacThermalMonitor().isCritical ? .thermal : nil },
+            shouldPause: { _ in MacThermalMonitor().isCritical ? .thermal : nil },
             onPhase: { _ in },
             metadataPolicy: .reject,
             onStatus: { _ in },

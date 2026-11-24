@@ -131,10 +131,13 @@ private final class CoordinatorEffectsFake: SessionProcessingEffects {
         { _, _ in }
     }
 
-    func waitForLiveASRDrain(sessionID: UUID) async {
+    var liveASRDrainOutcome = LiveASRDrainOutcome.drained
+
+    func waitForLiveASRDrain(sessionID: UUID) async -> LiveASRDrainOutcome {
         liveASRDrainWaitCount += 1
         eventLog.append("waitForLiveASRDrain:\(sessionID.uuidString)")
         onLiveASRDrainWait?()
+        return liveASRDrainOutcome
     }
 
     func liveASRFailure(sessionID: UUID) -> String? {
@@ -186,7 +189,7 @@ private final class CoordinatorEffectsFake: SessionProcessingEffects {
     }
 }
 
-private enum CoordinatorTestProbeOutcome { case noFailure, failure, readError }
+private enum CoordinatorTestProbeOutcome: CustomTestStringConvertible { case noFailure, failure, readError; var testDescription: String { "\(self)" } }
 private struct CoordinatorTestProbeReadError: Error {}
 
 private actor ScriptedSessionProcessingExecutor: SessionProcessingExecuting {
@@ -213,7 +216,18 @@ private actor ScriptedSessionProcessingExecutor: SessionProcessingExecuting {
         onUpdate: @escaping NativeSessionProcessor.UpdateHandler
     ) async -> SessionProcessingResult {
         record("processSession:\(sessionID.uuidString)")
-        let holdReason = await shouldPause()
+        await beforeGate?()
+        // Like the real run: a cancelled gate ends the attempt as a reasonless pause, and no scripted result is used.
+        let holdReason: InferenceHoldReason?
+        do {
+            holdReason = try await shouldPause(.dispatch)
+            try Task.checkCancellation()
+        } catch is CancellationError {
+            record("gateCancelled:\(sessionID.uuidString)")
+            return .paused(metrics: nil, retained: .nothing, message: "処理を中断しました", reason: nil)
+        } catch {
+            preconditionFailure("一時停止の判定が想定外のエラーを返しました: \(error)")
+        }
         recordedShouldPauseValues.append(holdReason != nil)
         let result = nextResult()
         return await applyingPauseReason(to: result, holdReason: holdReason, onStatus: onStatus)
@@ -250,13 +264,18 @@ private actor ScriptedSessionProcessingExecutor: SessionProcessingExecuting {
         beforeRetryResult = callback
     }
 
+    private var beforeGate: (@MainActor @Sendable () -> Void)?
+    func setBeforeGate(_ callback: @escaping @MainActor @Sendable () -> Void) { beforeGate = callback }
+
     /// What the durable-failure probe finds; settable from the synchronous live-drain hook.
     nonisolated let probeOutcome = Mutex(CoordinatorTestProbeOutcome.noFailure)
     private var beforeProbeResult: (@MainActor @Sendable () -> Void)?
     func setBeforeProbeResult(_ callback: @escaping @MainActor @Sendable () -> Void) { beforeProbeResult = callback }
+    /// Reads the log state first and returns it after the hook, as a real read that completes before news arrives.
     func hasUnresolvedASRFailure(sessionID: UUID) async throws -> Bool {
+        let outcome = probeOutcome.withLock { $0 }
         await beforeProbeResult?()
-        switch probeOutcome.withLock({ $0 }) {
+        switch outcome {
         case .noFailure: return false
         case .failure: return true
         case .readError: throw CoordinatorTestProbeReadError()
@@ -391,7 +410,7 @@ func criticalThermalHoldResumesInFIFOOrder() async {
     await coordinator.waitUntilIdle()
 
     #expect(effects.processingQueue.held.map { $0.request.sessionID } == [firstSessionID, secondSessionID])
-    #expect(effects.processingQueue.held.map(\.reason) == [.thermal, .thermal])
+    #expect(effects.processingQueue.held.map(\.reason) == [.inference(.thermal), .inference(.thermal)])
     #expect(effects.processingQueue.claimedSessionIDs == Set([firstSessionID, secondSessionID]))
     #expect(await processor.operations() == ["retryContentPriority:\(retrySessionID.uuidString)"])
     #expect(effects.exportCount == 0)
@@ -447,6 +466,7 @@ func pauseRetainsClaimAndCompletionReleasesIt() async throws {
     await coordinator.waitUntilIdle()
 
     #expect(effects.processingQueue.held.map { $0.request.sessionID } == [sessionID])
+    #expect(effects.processingQueue.held.map(\.reason) == [.paused])
     #expect(effects.processingQueue.claimedSessionIDs == [sessionID])
 
     coordinator.resumeHeldProcessing()
@@ -465,6 +485,145 @@ func pauseRetainsClaimAndCompletionReleasesIt() async throws {
     let heldIndex = try #require(effects.eventOrder.firstIndex(of: "held:\(sessionID.uuidString)"))
     let finishedIndex = try #require(effects.eventOrder.firstIndex(of: "finished:\(sessionID.uuidString):paused"))
     #expect(heldIndex < finishedIndex)
+}
+
+/// A pause that cancels drain A at fair keeps A held across unrelated drain B and a thermal change that ends,
+/// until the explicit resume.
+@MainActor
+@Test(.timeLimit(.minutes(10)))
+func aCancelledDrainStaysHeldUntilTheExplicitResume() async {
+    let thermal = CoordinatorTestThermalMonitor(pressure: .fair)
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    let processor = ScriptedSessionProcessingExecutor(
+        scriptedResults: [makeCoordinatorTestCompletedResult(), makeCoordinatorTestCompletedResult()], eventLog: eventLog)
+    let coordinator = SessionProcessingCoordinator(effects: effects, processor: processor, thermalMonitor: thermal, resourceHolds: nil)
+    let first = UUID(), second = UUID()
+    effects.onLiveASRDrainWait = { coordinator.requestPause(); effects.onLiveASRDrainWait = nil }
+
+    coordinator.enqueue(.finalize(sessionID: first, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+    #expect(effects.processingQueue.held.map { $0.request.sessionID } == [first])
+    #expect(effects.processingQueue.held.map(\.reason) == [.paused])
+
+    coordinator.enqueue(.finalize(sessionID: second, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+    thermal.setPressure(.critical)
+    thermal.setPressure(.fair)
+    await coordinator.waitUntilIdle()
+
+    let pausedFirst = "cancelLiveTranscription:\(first.uuidString)"
+    #expect(await processor.operations() == [pausedFirst, "processSession:\(second.uuidString)"])
+    #expect(effects.processingQueue.held.map { $0.request.sessionID } == [first])
+    #expect(effects.processingQueue.pending.isEmpty)
+
+    coordinator.resumeHeldProcessing()
+    await coordinator.waitUntilIdle()
+    #expect(await processor.operations() == [
+        pausedFirst, "processSession:\(second.uuidString)", "processSession:\(first.uuidString)"
+    ])
+    #expect(effects.processingQueue.held.isEmpty)
+}
+
+/// A pause that cancels the drain while the critical dequeue probe reads the log holds the request as paused,
+/// not as thermal: a later drain at fair does not resume it before the explicit resume.
+@MainActor
+@Test(.timeLimit(.minutes(10)))
+func aPauseDuringTheCriticalDequeueProbeHoldsAsPaused() async {
+    let thermal = CoordinatorTestThermalMonitor(pressure: .critical)
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    let processor = ScriptedSessionProcessingExecutor(
+        scriptedResults: [makeCoordinatorTestCompletedResult(), makeCoordinatorTestCompletedResult()], eventLog: eventLog)
+    let coordinator = SessionProcessingCoordinator(effects: effects, processor: processor, thermalMonitor: thermal, resourceHolds: nil)
+    let first = UUID(), second = UUID()
+    // Only the first probe pauses; the second request's post-drain probe at fair must not.
+    await processor.setBeforeProbeResult { coordinator.requestPause() }
+
+    coordinator.enqueue(.finalize(sessionID: first, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+    #expect(effects.processingQueue.held.map { $0.request.sessionID } == [first])
+    #expect(effects.processingQueue.held.map(\.reason) == [.paused])
+
+    await processor.setBeforeProbeResult {}
+    thermal.setPressure(.fair)
+    coordinator.enqueue(.finalize(sessionID: second, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+    #expect(await processor.operations() == ["processSession:\(second.uuidString)"])
+    #expect(effects.processingQueue.held.map { $0.request.sessionID } == [first])
+
+    coordinator.resumeHeldProcessing()
+    await coordinator.waitUntilIdle()
+    #expect(await processor.operations() == [
+        "processSession:\(second.uuidString)", "processSession:\(first.uuidString)"
+    ])
+    #expect(effects.processingQueue.held.isEmpty)
+}
+
+/// Cooling while another request runs moves the thermally held finalization to the front of `pending`,
+/// so it runs before work that was enqueued after it was held.
+@MainActor
+@Test(.timeLimit(.minutes(10)))
+func coolingDuringAnotherRequestRunsTheHeldFinalizationBeforeTheBacklog() async {
+    let thermal = CoordinatorTestThermalMonitor(pressure: .critical)
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    let processor = ScriptedSessionProcessingExecutor(
+        scriptedResults: [
+            makeCoordinatorTestCompletedResult(), makeCoordinatorTestCompletedResult(), makeCoordinatorTestCompletedResult()
+        ],
+        eventLog: eventLog
+    )
+    let coordinator = SessionProcessingCoordinator(effects: effects, processor: processor, thermalMonitor: thermal, resourceHolds: nil)
+    let held = UUID(), current = UUID(), later = UUID()
+
+    coordinator.enqueue(.finalize(sessionID: held, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+    #expect(effects.processingQueue.held.map(\.reason) == [.inference(.thermal)])
+
+    await processor.setBeforeRetryResult {
+        coordinator.enqueue(.finalize(sessionID: later, metadataPolicy: .reject))
+        thermal.setPressure(.fair)
+    }
+    coordinator.enqueue(.retryContentPriority(sessionID: current, boundarySegments: [], clauses: []))
+    await coordinator.waitUntilIdle()
+
+    #expect(await processor.operations() == [
+        "retryContentPriority:\(current.uuidString)",
+        "processSession:\(held.uuidString)",
+        "processSession:\(later.uuidString)"
+    ])
+    #expect(effects.exportedSessionIDs == [held, later])
+    #expect(effects.processingQueue.held.isEmpty)
+}
+
+/// A pause that cancels the drain while the dispatch gate paces at serious ends the attempt through the gate:
+/// the result is a reasonless pause, no scripted result is used, and the request waits for the explicit resume.
+@MainActor
+@Test(.timeLimit(.minutes(10)))
+func aPauseDuringTheDispatchGateHoldsAsPausedWithoutAResult() async {
+    let thermal = CoordinatorTestThermalMonitor(pressure: .serious)
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    let processor = ScriptedSessionProcessingExecutor(scriptedResults: [makeCoordinatorTestCompletedResult()], eventLog: eventLog)
+    let coordinator = SessionProcessingCoordinator(effects: effects, processor: processor, thermalMonitor: thermal, resourceHolds: nil)
+    let sessionID = UUID()
+    await processor.setBeforeGate { coordinator.requestPause() }
+
+    coordinator.enqueue(.finalize(sessionID: sessionID, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+
+    #expect(await processor.operations() == ["processSession:\(sessionID.uuidString)", "gateCancelled:\(sessionID.uuidString)"])
+    #expect(effects.processingQueue.held.map(\.reason) == [.paused])
+    #expect(effects.eventOrder.contains("finished:\(sessionID.uuidString):paused"))
+    #expect(effects.exportCount == 0)
+
+    await processor.setBeforeGate {}
+    thermal.setPressure(.fair)
+    coordinator.resumeHeldProcessing()
+    await coordinator.waitUntilIdle()
+    #expect(effects.exportedSessionIDs == [sessionID])
+    #expect(effects.processingQueue.held.isEmpty)
 }
 
 @MainActor
@@ -979,7 +1138,7 @@ func inferenceResourcePressureWhileStoppingHoldsTheFinalizationAndReplaysIt() as
 
     #expect(await processor.operations() == ["cancelLiveTranscription:\(sessionID.uuidString)"])
     let held = try #require(effects.processingQueue.held.first)
-    #expect(held.reason == .resourcePressure)
+    #expect(held.reason == .inference(.resourcePressure))
     if case .finalize(let heldID, _) = held.request { #expect(heldID == sessionID) }
     else { #expect(Bool(false), "リソース停止時は確定処理が保持されます") }
     #expect(effects.liveASRCleanupCount == 1 && effects.exportCount == 0)
@@ -1014,7 +1173,7 @@ func inferenceResourceFinalizationPausesAndReplaysWholeAttempt(
     #expect(claimed)
     let operation = "processSession:\(sessionID.uuidString)"
     var beganCount = 0
-    var heldReason: InferenceHoldReason?
+    var heldReason: ProcessingHoldReason?
     var pausedMessage: String?
     effects.onEvent = { event in
         switch event {
@@ -1030,7 +1189,7 @@ func inferenceResourceFinalizationPausesAndReplaysWholeAttempt(
 
     coordinator.enqueue(.finalize(sessionID: sessionID, metadataPolicy: .reject))
     await coordinator.waitUntilIdle()
-    #expect(heldReason == signal.holdReason && pausedMessage == signal.holdReason?.finalizationExplanation)
+    #expect(heldReason == signal.holdReason.map(ProcessingHoldReason.inference) && pausedMessage == signal.holdReason?.finalizationExplanation)
     if !recoverBeforeReturn {
         #expect(effects.processingQueue.claimedSessionIDs == Set([sessionID]) && effects.exportCount == 0)
         monitor.setSignal(.healthy)
@@ -1215,6 +1374,182 @@ func durableASRFailureIsProcessedInsteadOfHeldForModels() async {
     #expect(effects.eventOrder.contains("finished:\(sessionID.uuidString):failed"))
 }
 
+/// Critical thermal holds a finalization at dequeue unless the log shows a durable failure; an unreadable log is unknown.
+@MainActor
+@Test(arguments: [CoordinatorTestProbeOutcome.failure, .readError])
+private func criticalThermalHoldsOnlyWhenNoDurableFailureIsKnown(probe: CoordinatorTestProbeOutcome) async {
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    let processor = ScriptedSessionProcessingExecutor(
+        scriptedResults: [makeCoordinatorTestFailedResult()], eventLog: eventLog
+    )
+    processor.probeOutcome.withLock { $0 = probe }
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects, processor: processor, thermalMonitor: CoordinatorTestThermalMonitor(pressure: .critical),
+        resourceHolds: nil
+    )
+    let sessionID = UUID()
+
+    coordinator.enqueue(.finalize(sessionID: sessionID, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+
+    #expect(effects.queueSnapshots.allSatisfy { $0.countsEachRequestOnce })
+    switch probe {
+    case .failure:
+        #expect(await processor.operations() == ["processSession:\(sessionID.uuidString)"])
+        #expect(effects.processingQueue.held.isEmpty)
+        #expect(effects.eventOrder.contains("finished:\(sessionID.uuidString):failed"))
+    case .readError, .noFailure:
+        #expect(await processor.operations().isEmpty)
+        #expect(effects.processingQueue.held.map { $0.request.sessionID } == [sessionID])
+    }
+}
+
+/// Stop is admitted at fair; heat rises before the live worker's next segment, so the worker waits for cooling.
+/// The request is parked with its worker, and the queue still evaluates the next request.
+@MainActor
+@Test(.timeLimit(.minutes(10)))
+func aLiveWorkerWaitingForCoolingParksTheFinalizationAndFreesTheQueue() async {
+    let thermal = CoordinatorTestThermalMonitor(pressure: .fair)
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    let processor = ScriptedSessionProcessingExecutor(
+        scriptedResults: [makeCoordinatorTestCompletedResult(), makeCoordinatorTestCompletedResult()],
+        eventLog: eventLog
+    )
+    let coordinator = SessionProcessingCoordinator(effects: effects, processor: processor, thermalMonitor: thermal, resourceHolds: nil)
+    let first = UUID(), second = UUID()
+    effects.liveASRDrainOutcome = .suspendedForCooling
+    var heatsOnce = true
+    effects.onLiveASRDrainWait = {
+        if heatsOnce { heatsOnce = false; thermal.setPressure(.critical) }
+    }
+
+    coordinator.enqueue(.finalize(sessionID: first, metadataPolicy: .reject))
+    coordinator.enqueue(.finalize(sessionID: second, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+
+    #expect(effects.processingQueue.held.map { $0.request.sessionID } == [first, second])
+    #expect(effects.processingQueue.held.map(\.reason) == [.inference(.thermal), .inference(.thermal)])
+    #expect(effects.processingQueue.currentSessionID == nil)
+    // The first request keeps its live worker; the second never reached its own.
+    #expect(await processor.operations().isEmpty)
+    #expect(effects.liveASRCleanupCount == 0)
+    #expect(effects.queueSnapshots.allSatisfy { $0.countsEachRequestOnce })
+
+    effects.liveASRDrainOutcome = .drained
+    thermal.setPressure(.fair)
+    coordinator.resumeHeldProcessing()
+    await coordinator.waitUntilIdle()
+    #expect(await processor.operations() == ["processSession:\(first.uuidString)", "processSession:\(second.uuidString)"])
+}
+
+/// A pause that was decided while heat lasted is not lost when heat ended before the request was held.
+@MainActor
+@Test(.timeLimit(.minutes(10)))
+func aPauseThatCooledBeforeTheHoldResumesAtOnce() async {
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    let pausedByHeat = SessionProcessingResult.paused(
+        metrics: nil, retained: .nothing, message: "発熱のため一時停止", reason: .thermal
+    )
+    let processor = ScriptedSessionProcessingExecutor(
+        scriptedResults: [pausedByHeat, makeCoordinatorTestCompletedResult()], eventLog: eventLog
+    )
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects, processor: processor, thermalMonitor: CoordinatorTestThermalMonitor(pressure: .fair),
+        resourceHolds: nil
+    )
+    let sessionID = UUID()
+
+    coordinator.enqueue(.finalize(sessionID: sessionID, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+
+    #expect(await processor.operations() == ["processSession:\(sessionID.uuidString)", "processSession:\(sessionID.uuidString)"])
+    #expect(effects.processingQueue.held.isEmpty)
+    #expect(effects.exportedSessionIDs == [sessionID])
+    #expect(effects.queueSnapshots.allSatisfy { $0.countsEachRequestOnce })
+}
+
+/// A live worker's durable failure decides a thermally held finalization again: it ends failed without inference.
+@MainActor
+@Test(.timeLimit(.minutes(10)))
+func aDurableFailureWhileThermallyHeldEndsTheRequestFailed() async {
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    let processor = ScriptedSessionProcessingExecutor(scriptedResults: [makeCoordinatorTestFailedResult()], eventLog: eventLog)
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects, processor: processor, thermalMonitor: CoordinatorTestThermalMonitor(pressure: .critical),
+        resourceHolds: nil
+    )
+    let sessionID = UUID()
+    coordinator.enqueue(.finalize(sessionID: sessionID, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+    #expect(effects.processingQueue.held.map { $0.request.sessionID } == [sessionID])
+
+    processor.probeOutcome.withLock { $0 = .failure }
+    coordinator.liveWorkerDidFail(sessionID: UUID())
+    #expect(effects.processingQueue.held.count == 1)
+    coordinator.liveWorkerDidFail(sessionID: sessionID)
+    await coordinator.waitUntilIdle()
+
+    #expect(effects.processingQueue.held.isEmpty)
+    #expect(effects.eventOrder.contains("finished:\(sessionID.uuidString):failed"))
+}
+
+/// Under critical thermal the probe reads "no failure"; the live worker's failure arrives after that read and
+/// before the hold. The latched report wakes the request, the next probe sees the failure, and it ends failed.
+@MainActor
+@Test(.timeLimit(.minutes(10)))
+func aLiveFailureBetweenTheProbeReadAndTheHoldIsNotLost() async {
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    let processor = ScriptedSessionProcessingExecutor(scriptedResults: [makeCoordinatorTestFailedResult()], eventLog: eventLog)
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects, processor: processor, thermalMonitor: CoordinatorTestThermalMonitor(pressure: .critical),
+        resourceHolds: nil
+    )
+    let sessionID = UUID()
+    await processor.setBeforeProbeResult {
+        let isNew = processor.probeOutcome.withLock { outcome in
+            defer { outcome = .failure }
+            return outcome == .noFailure
+        }
+        if isNew { coordinator.liveWorkerDidFail(sessionID: sessionID) }
+    }
+
+    coordinator.enqueue(.finalize(sessionID: sessionID, metadataPolicy: .reject))
+    await coordinator.waitUntilIdle()
+
+    #expect(await processor.operations() == ["processSession:\(sessionID.uuidString)"])
+    #expect(effects.processingQueue.held.isEmpty)
+    #expect(effects.eventOrder.contains("finished:\(sessionID.uuidString):failed"))
+}
+
+/// The stored drain waits before each segment under serious thermal, like the live worker.
+@MainActor
+@Test(.timeLimit(.minutes(10)))
+func seriousThermalPacesTheStoredDrain() async {
+    let eventLog = CoordinatorTestEventLog()
+    let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
+    let processor = ScriptedSessionProcessingExecutor(
+        scriptedResults: [makeCoordinatorTestCompletedResult()], eventLog: eventLog
+    )
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects, processor: processor, thermalMonitor: CoordinatorTestThermalMonitor(pressure: .serious),
+        resourceHolds: nil
+    )
+    let clock = ContinuousClock()
+
+    let elapsed = await clock.measure {
+        coordinator.enqueue(.finalize(sessionID: UUID(), metadataPolicy: .reject))
+        await coordinator.waitUntilIdle()
+    }
+
+    #expect(elapsed >= .milliseconds(750))
+    #expect(await processor.shouldPauseValues() == [false])
+}
+
 /// Memory pressure is active at admission or arrives during the drain; the live call fails durably meanwhile.
 @MainActor
 @Test(arguments: [true, false])
@@ -1263,7 +1598,7 @@ func aProbeReadErrorLeavesTheDecisionToTheHolds(underPressure: Bool) async {
 
     if underPressure {
         #expect(await processor.operations() == ["cancelLiveTranscription:\(sessionID.uuidString)"])
-        #expect(effects.processingQueue.held.map(\.reason) == [.resourcePressure])
+        #expect(effects.processingQueue.held.map(\.reason) == [.inference(.resourcePressure)])
         #expect(effects.queueSnapshots.allSatisfy { $0.countsEachRequestOnce })
     } else {
         #expect(await processor.operations() == ["processSession:\(sessionID.uuidString)"])
@@ -1289,7 +1624,7 @@ func pressureArrivingDuringTheProbeHoldsTheFinalization() async {
     await coordinator.waitUntilIdle()
 
     #expect(await processor.operations() == ["cancelLiveTranscription:\(sessionID.uuidString)"])
-    #expect(effects.processingQueue.held.map(\.reason) == [.resourcePressure])
+    #expect(effects.processingQueue.held.map(\.reason) == [.inference(.resourcePressure)])
     #expect(effects.eventOrder.contains("finished:\(sessionID.uuidString):paused"))
 }
 

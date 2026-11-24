@@ -3,6 +3,9 @@ import Testing
 @testable import MacAmbientJevCore
 @testable import MacAmbientJevPipeline
 
+/// The gate for tests about recognition rather than pausing: it never holds.
+private let noThermalGate: NativeSessionProcessor.PauseCheck = { _ in nil }
+
 private actor CountingASREngine: ASREngine {
     nonisolated let provenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
     private var prepareCalls = 0
@@ -274,13 +277,13 @@ func reopeningProcessesOnlySegmentsWithoutSuccessfulResults(_ interruption: Int)
     if interruption == 0 {
         _ = try await fixture.session.register(segments: [first, second, third])
     } else {
-        let initial = try await fixture.session.process(segments: [first], reader: reader)
+        let initial = try await fixture.session.process(segments: [first], reader: reader, shouldPause: noThermalGate)
         #expect(initial.completedCount == 1)
         _ = try await fixture.session.register(segments: [second, third])
         if interruption == 2 {
-            let failed = try await fixture.session.process(reader: reader)
+            let failed = try await fixture.session.process(reader: reader, shouldPause: noThermalGate)
             #expect(failed.completedCount == 1 && failed.failedCount == 1 && failed.pendingCount == 2)
-            _ = try await fixture.session.process(reader: reader)
+            _ = try await fixture.session.process(reader: reader, shouldPause: noThermalGate)
             #expect(await fixture.engine.inputCounts() == [1_500, 2_000])
         }
     }
@@ -302,7 +305,7 @@ func reopeningProcessesOnlySegmentsWithoutSuccessfulResults(_ interruption: Int)
             && hydrated.segments.map(\.startFrame) == [0, 4_000, 8_000]
     )
 
-    let progress = try await resumed.process(reader: reader)
+    let progress = try await resumed.process(reader: reader, shouldPause: noThermalGate)
     #expect(progress.completedCount == 3 && progress.failedCount == 0 && progress.pendingCount == 0)
     let expectedTexts = interruption == 0
         ? ["", "segment-2", "segment-3"]
@@ -328,7 +331,7 @@ func reopeningProcessesOnlySegmentsWithoutSuccessfulResults(_ interruption: Int)
         sessionID: fixture.sessionID, sessionURL: fixture.root,
         writer: try SessionWriter(sessionURL: fixture.root), asr: repeatedEngine
     )
-    #expect(try await repeated.process(reader: reader).completedCount == 3)
+    #expect(try await repeated.process(reader: reader, shouldPause: noThermalGate).completedCount == 3)
     #expect(await repeatedEngine.inputCounts().isEmpty)
     #expect(try Data(contentsOf: fixture.root.appending(path: "events.jsonl")) == bytes)
 }
@@ -338,7 +341,7 @@ func reopeningRejectsDuplicateSuccessfulResult() async throws {
     let fixture = try await makeLiveASRFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let segment = SegmentReference(segmentationRunID: "seg_pipeline_test", segmentID: "seg_000001", speechRanges: [0..<4_000])
-    _ = try await fixture.session.process(segments: [segment], checkpoint: fixture.checkpoint)
+    _ = try await fixture.session.process(segments: [segment], checkpoint: fixture.checkpoint, shouldPause: noThermalGate)
     let payload = ASRCompletedEventPayload(
         text: "segment-1",
         detectedLanguage: nil,
@@ -354,6 +357,31 @@ func reopeningRejectsDuplicateSuccessfulResult() async throws {
             writer: try SessionWriter(sessionURL: fixture.root), asr: CountingASREngine()
         )
     }
+}
+
+/// A segment passed with its checkpoint must lie inside it: the batch throws before registering anything
+/// instead of returning a result that silently skipped the segment.
+@Test
+func aSuppliedSegmentBeyondItsCheckpointThrowsBeforeRegistration() async throws {
+    let fixture = try await makeLiveASRFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    let committed = fixture.checkpoint.committedFrames
+    let segment = SegmentReference(
+        segmentationRunID: "seg_pipeline_test", segmentID: "seg_000001",
+        speechRanges: [(committed - 4_000)..<(committed + 1)]
+    )
+
+    let error = await #expect(throws: LiveASRSessionError.self) {
+        try await fixture.session.process(segments: [segment], checkpoint: fixture.checkpoint, shouldPause: noThermalGate)
+    }
+
+    guard case .segmentBeyondCheckpoint(let segmentID, let endFrame, let committedFrames) = error else {
+        Issue.record("expected segmentBeyondCheckpoint, got \(String(describing: error))")
+        return
+    }
+    #expect(segmentID == segment.segmentID && endFrame == committed + 1 && committedFrames == committed)
+    #expect(await fixture.session.snapshot().segments.isEmpty)
+    #expect(await fixture.engine.inputCounts().isEmpty)
 }
 
 @Test
@@ -374,21 +402,21 @@ func liveASRPreparesOnceAndDoesNotDuplicateSegments() async throws {
 
     let first = try await fixture.session.process(
         segments: [firstSegment],
-        checkpoint: fixture.checkpoint
+        checkpoint: fixture.checkpoint, shouldPause: noThermalGate
     )
     #expect(first.completedCount == 1)
     #expect(first.materializedSegments.count == 1)
 
     let repeated = try await fixture.session.process(
         segments: [firstSegment],
-        checkpoint: fixture.checkpoint
+        checkpoint: fixture.checkpoint, shouldPause: noThermalGate
     )
     #expect(repeated.completedCount == 1)
     #expect(repeated.materializedSegments.count == 1)
 
     let second = try await fixture.session.process(
         segments: [secondSegment],
-        checkpoint: fixture.checkpoint
+        checkpoint: fixture.checkpoint, shouldPause: noThermalGate
     )
     #expect(second.completedCount == 2)
     #expect(second.materializedSegments.map(\.text) == [
@@ -416,7 +444,7 @@ func liveASRProgressPreservesRowsAcrossRegistrationAndShowsOnlySavedClauseEvents
     let finished = Locked<[LiveASRSegmentStatus]>([])
     let recognized = try await fixture.session.process(
         segments: [first], checkpoint: fixture.checkpoint,
-        onSegmentFinished: { status, _ in finished.withValue { $0.append(status) } }
+        onSegmentFinished: { status, _ in finished.withValue { $0.append(status) } }, shouldPause: noThermalGate
     )
     // Saved ASR is shown at once as normal text while the clause waits for the next segment.
     #expect(recognized.materializedSegments.map(\.clauseState) == [.awaitingNextSegment])
@@ -432,7 +460,7 @@ func liveASRProgressPreservesRowsAcrossRegistrationAndShowsOnlySavedClauseEvents
         return
     }
     #expect(finished.value.map(\.outcome) == [.recognized(source, "segment-1")])
-    _ = try await fixture.session.process(segments: [second], checkpoint: fixture.checkpoint)
+    _ = try await fixture.session.process(segments: [second], checkpoint: fixture.checkpoint, shouldPause: noThermalGate)
     let ready = await fixture.session.snapshot()
     guard case .recognized(let nextSource, let nextText) = ready.segments[1].outcome else {
         Issue.record("successor is not recognized")
@@ -491,7 +519,7 @@ func liveASRProgressPreservesRowsAcrossRegistrationAndShowsOnlySavedClauseEvents
     #expect(await fixture.session.snapshot().events == classified.events)
 
     let completed = try await fixture.session.process(
-        segments: [second], checkpoint: fixture.checkpoint
+        segments: [second], checkpoint: fixture.checkpoint, shouldPause: noThermalGate
     )
     #expect(completed.materializedSegments.map(\.text) == ["segment-1", "segment-2"])
     #expect(completed.materializedSegments.map(\.clauseState) == [.classified, .awaitingNextSegment])
@@ -518,7 +546,7 @@ func liveASRAppendFailurePreservesVisibleRowsAndCounts(completing: Bool) async t
         segmentationRunID: "seg_pipeline_test", segmentID: "seg_000002",
         speechRanges: [4_000..<8_000]
     )
-    _ = try await fixture.session.process(segments: [first], checkpoint: fixture.checkpoint)
+    _ = try await fixture.session.process(segments: [first], checkpoint: fixture.checkpoint, shouldPause: noThermalGate)
     if completing {
         _ = try await fixture.session.register(segments: [second])
     }
@@ -529,7 +557,7 @@ func liveASRAppendFailurePreservesVisibleRowsAndCounts(completing: Bool) async t
     try FileManager.default.createDirectory(at: eventsURL, withIntermediateDirectories: false)
     await #expect(throws: (any Error).self) {
         if completing {
-            _ = try await fixture.session.process(segments: [second], checkpoint: fixture.checkpoint)
+            _ = try await fixture.session.process(segments: [second], checkpoint: fixture.checkpoint, shouldPause: noThermalGate)
         } else {
             _ = try await fixture.session.register(segments: [second])
         }
@@ -542,7 +570,7 @@ func liveASRAppendFailurePreservesVisibleRowsAndCounts(completing: Bool) async t
     #expect(registered.failedCount == 0)
     #expect(registered.pendingCount == 1)
     #expect(registered.materializedSegments == before.progress.materializedSegments)
-    let completed = try await fixture.session.process(segments: [second], checkpoint: fixture.checkpoint)
+    let completed = try await fixture.session.process(segments: [second], checkpoint: fixture.checkpoint, shouldPause: noThermalGate)
     #expect(completed.materializedSegments.map(\.text) == [
         "segment-1", completing ? "segment-3" : "segment-2"
     ])
@@ -571,7 +599,7 @@ func liveASRFinishIsIdempotentAndMarksSuccessfulRun() async throws {
     )
     _ = try await fixture.session.process(
         segments: [segment],
-        checkpoint: fixture.checkpoint
+        checkpoint: fixture.checkpoint, shouldPause: noThermalGate
     )
 
     try await sealLiveSegmentation(
@@ -640,7 +668,7 @@ func liveASRConcurrentFinishCallersAwaitTheSameCompletion() async throws {
     let processing = Task {
         try await session.process(reader: try ProcessingTimelineReader(
             directory: SessionLayout(sessionURL: root).processingDirectory, checkpoint: checkpoint, sessionURL: root
-        ))
+        ), shouldPause: noThermalGate)
     }
     await engine.waitUntilTranscribing()
     let firstFinish = Task { try await session.finish() }
@@ -683,7 +711,7 @@ func liveASRFinishRetriesAfterCompletionAppendFailure() async throws {
         speechRanges: [0..<4_000]
     )
     _ = try await fixture.session.process(
-        segments: [segment], checkpoint: fixture.checkpoint
+        segments: [segment], checkpoint: fixture.checkpoint, shouldPause: noThermalGate
     )
 
     let eventsURL = fixture.root.appending(path: "events.jsonl")
@@ -748,7 +776,7 @@ func liveASRFailureKeepsRunUnsuccessful() async throws {
 
     let progress = try await fixture.session.process(
         segments: segments,
-        checkpoint: fixture.checkpoint
+        checkpoint: fixture.checkpoint, shouldPause: noThermalGate
     )
     #expect(progress.completedCount == 1)
     #expect(progress.failedCount == 1)
@@ -774,14 +802,14 @@ func liveASRUnwritableFailureStopsProcessingAndLeavesSegmentPending() async thro
     let segment = SegmentReference(
         segmentationRunID: "seg_pipeline_test", segmentID: "seg_000002", speechRanges: [4_000..<8_000]
     )
-    let saved = try await fixture.session.process(segments: [first], checkpoint: fixture.checkpoint)
+    let saved = try await fixture.session.process(segments: [first], checkpoint: fixture.checkpoint, shouldPause: noThermalGate)
     _ = try await fixture.session.register(segments: [segment])
     let eventsURL = fixture.root.appending(path: "events.jsonl")
     let backupURL = fixture.root.appending(path: "events.backup")
     try FileManager.default.moveItem(at: eventsURL, to: backupURL)
     try FileManager.default.createDirectory(at: eventsURL, withIntermediateDirectories: false)
     await #expect(throws: (any Error).self) {
-        try await fixture.session.process(segments: [segment], checkpoint: fixture.checkpoint)
+        try await fixture.session.process(segments: [segment], checkpoint: fixture.checkpoint, shouldPause: noThermalGate)
     }
     let pending = await fixture.session.snapshot().progress
     #expect(pending.completedCount == 1)
@@ -790,7 +818,7 @@ func liveASRUnwritableFailureStopsProcessingAndLeavesSegmentPending() async thro
     #expect(pending.materializedSegments == saved.materializedSegments)
     try FileManager.default.removeItem(at: eventsURL)
     try FileManager.default.moveItem(at: backupURL, to: eventsURL)
-    let retried = try await fixture.session.process(segments: [segment], checkpoint: fixture.checkpoint)
+    let retried = try await fixture.session.process(segments: [segment], checkpoint: fixture.checkpoint, shouldPause: noThermalGate)
     #expect(retried.failedCount == 0)
     #expect(retried.completedCount == 2)
     #expect(retried.pendingCount == 0)
@@ -853,7 +881,7 @@ func liveASRDoesNotAppendResultsAfterRunCompleted() async throws {
 
     let processing = Task {
         try await session.process(
-            segments: [segment, nextSegment], checkpoint: checkpoint
+            segments: [segment, nextSegment], checkpoint: checkpoint, shouldPause: noThermalGate
         )
     }
     await engine.waitUntilTranscribing()
@@ -918,7 +946,7 @@ func cancelledLiveASRProcessingRetainsRegisteredSegmentsForRetry() async throws 
     _ = try await session.register(segments: segments)
 
     let processing = Task {
-        try await session.process(segments: segments, checkpoint: checkpoint)
+        try await session.process(segments: segments, checkpoint: checkpoint, shouldPause: noThermalGate)
     }
     await engine.waitUntilTranscribing()
     processing.cancel()
@@ -941,7 +969,7 @@ func cancelledLiveASRProcessingRetainsRegisteredSegmentsForRetry() async throws 
     #expect(cancelledEvents.filter { $0.type == "segment.created" }.compactMap(\.segmentID) == segments.map(\.segmentID))
     #expect(cancelledEvents.allSatisfy { $0.type != "asr.completed" && $0.type != "asr.failed" })
 
-    let retried = try await session.process(segments: segments, checkpoint: checkpoint)
+    let retried = try await session.process(segments: segments, checkpoint: checkpoint, shouldPause: noThermalGate)
     #expect(retried.completedCount == segments.count)
     #expect(retried.failedCount == 0)
     #expect(retried.pendingCount == 0)
@@ -1107,10 +1135,10 @@ func liveAndStoredExecutionSaveTheSameSegmentResults() async throws {
         )
     ]
     let liveEventsURL = fixture.root.appending(path: "events.jsonl")
-    let first = try await fixture.session.process(segments: [segments[0]], checkpoint: fixture.checkpoint)
+    let first = try await fixture.session.process(segments: [segments[0]], checkpoint: fixture.checkpoint, shouldPause: noThermalGate)
     #expect(first.completedCount == 1)
     #expect(!String(decoding: try Data(contentsOf: liveEventsURL), as: UTF8.self).contains("processing.run.completed"))
-    let second = try await fixture.session.process(segments: [segments[1]], checkpoint: fixture.checkpoint)
+    let second = try await fixture.session.process(segments: [segments[1]], checkpoint: fixture.checkpoint, shouldPause: noThermalGate)
     #expect(second.completedCount == 2)
     #expect(!String(decoding: try Data(contentsOf: liveEventsURL), as: UTF8.self).contains("processing.run.completed"))
     try await sealLiveSegmentation(
@@ -1153,7 +1181,7 @@ func liveAndStoredExecutionSaveTheSameSegmentResults() async throws {
     let coordinator = PipelineCoordinator(
         sessionID: storedSessionID, segmentationRunID: "seg_pipeline_test", asrRunID: "asr_pipeline_test",
         writer: storedWriter, asr: storedEngine, loader: ASRAudioLoader(reader: reader),
-        pacingMode: .normal, sleep: { try await Task.sleep(for: $0) }, shouldPause: { nil }
+        pacingMode: .normal, sleep: { try await Task.sleep(for: $0) }, shouldPause: noThermalGate
     )
     let stored = try await coordinator.run(segments: segments, pendingSince: pendingSince, existingEvents: [])
     if case .completed = stored.disposition { } else { Issue.record("stored ASR run did not complete") }

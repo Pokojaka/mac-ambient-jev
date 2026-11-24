@@ -27,9 +27,16 @@ public enum PendingProcessing: Sendable {
     }
 }
 
+/// Why a request waits in `held`. An inference hold ends with its condition; a pause (a cancellation or the
+/// app pausing processing) ends only by an explicit resume.
+public enum ProcessingHoldReason: Sendable, Equatable {
+    case inference(InferenceHoldReason)
+    case paused
+}
+
 public struct SessionProcessingQueue: Sendable {
     public private(set) var pending: [PendingProcessing] = []
-    public private(set) var held: [(request: PendingProcessing, reason: InferenceHoldReason)] = []
+    public private(set) var held: [(request: PendingProcessing, reason: ProcessingHoldReason)] = []
     /// Finalizing work that waits for the models to be fetched, verified and loaded.
     public private(set) var modelHeld: [PendingProcessing] = []
     public private(set) var currentSessionID: UUID?
@@ -85,7 +92,7 @@ public struct SessionProcessingQueue: Sendable {
         currentSessionID = nil
     }
 
-    public mutating func hold(_ request: PendingProcessing, reason: InferenceHoldReason) {
+    public mutating func hold(_ request: PendingProcessing, reason: ProcessingHoldReason) {
         held.append((request: request, reason: reason))
     }
 
@@ -104,14 +111,37 @@ public struct SessionProcessingQueue: Sendable {
         return true
     }
 
+    /// Moves the held work whose hold has ended to the front of `pending`, in its original order.
+    /// Inference holds end when no inference hold is active; pauses end only when `releasesPauses`.
     @discardableResult
     public mutating func resumeHeld(
-        holdReason: InferenceHoldReason?,
+        activeInferenceHold: InferenceHoldReason?,
+        releasesPauses: Bool,
         pausesProcessing: Bool
     ) -> Bool {
-        guard holdReason == nil, !held.isEmpty, !pausesProcessing else { return false }
-        pending.insert(contentsOf: held.map { $0.request }, at: 0)
-        held = []
+        guard !pausesProcessing else { return false }
+        var ended: [PendingProcessing] = []
+        var remaining: [(request: PendingProcessing, reason: ProcessingHoldReason)] = []
+        for entry in held {
+            let hasEnded = switch entry.reason {
+            case .inference: activeInferenceHold == nil
+            case .paused: releasesPauses
+            }
+            if hasEnded { ended.append(entry.request) } else { remaining.append(entry) }
+        }
+        guard !ended.isEmpty else { return false }
+        held = remaining
+        pending.insert(contentsOf: ended, at: 0)
+        return true
+    }
+
+    /// Moves a thermally held finalization back to the front of `pending`, so it is decided again now.
+    @discardableResult
+    public mutating func wakeHeldFinalization(sessionID: UUID) -> Bool {
+        guard let index = held.firstIndex(where: {
+            $0.reason == .inference(.thermal) && $0.request.finalizesTranscript && $0.request.sessionID == sessionID
+        }) else { return false }
+        pending.insert(held.remove(at: index).request, at: 0)
         return true
     }
 
