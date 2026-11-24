@@ -13,6 +13,11 @@ public protocol SessionEventAppending: Sendable {
 public protocol DecisionEventWriting: SessionEventAppending {
     var eventsURL: URL { get }
 
+    /// Appends the event selecting a replacement decision pair, failing with
+    /// `DecisionEnrichmentError.selectionConflict` and writing nothing when the log's selected pair
+    /// is no longer `selection.previous`.
+    func appendSelection(_ selection: DecisionRunReplacement, sessionID: UUID) async throws
+
     @discardableResult
     func appendFailedRetryCompletion(
         _ draft: EventDraft<ProcessingRunCompletedPayload>
@@ -89,6 +94,14 @@ public actor SessionWriter: DecisionEventWriting {
         return (size, recovered.lastEventSequence ?? 0)
     }
 
+    /// One event line as the log stores it, without the trailing newline.
+    static func encode<Payload: Codable & Sendable>(_ envelope: EventEnvelope<Payload>) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(envelope)
+    }
+
     @discardableResult
     public func append<Payload: Codable & Sendable>(
         _ draft: EventDraft<Payload>
@@ -104,9 +117,27 @@ public actor SessionWriter: DecisionEventWriting {
         return try append(draft, checkingCancellation: false)
     }
 
+    /// Selects a replacement decision pair only while the log still selects `selection.previous`; the
+    /// check and the write share one file lock. Cancellation never interrupts it.
+    public func appendSelection(_ selection: DecisionRunReplacement, sessionID: UUID) async throws {
+        try append(selection.selectionEvent(sessionID: sessionID), checkingCancellation: false) { handle in
+            try handle.seek(toOffset: 0)
+            let data = try handle.readToEnd() ?? Data()
+            try handle.seekToEnd()
+            let lines = try EventLogLine.decode(SessionRecovery.recoverJSONL(data).lines)
+            guard let current = try GenerationEventLog(lines: lines, sessionID: sessionID),
+                  current.generation.id == selection.generationID,
+                  current.runs.clauseBoundary == selection.previous?.boundary,
+                  current.runs.contentPriority == selection.previous?.priority else {
+                throw DecisionEnrichmentError.selectionConflict
+            }
+        }
+    }
+
     private func append<Payload: Codable & Sendable>(
         _ draft: EventDraft<Payload>,
-        checkingCancellation: Bool
+        checkingCancellation: Bool,
+        beforeWriting verify: ((FileHandle) throws -> Void)? = nil
     ) throws -> EventEnvelope<Payload> {
         if checkingCancellation { try Task.checkCancellation() }
         let handle = try Self.lockedHandle(eventsURL)
@@ -115,6 +146,7 @@ public actor SessionWriter: DecisionEventWriting {
             (knownLogSize, lastEventSequence) = try Self.recover(handle)
             try handle.seekToEnd()
         }
+        try verify?(handle)
         if checkingCancellation { try Task.checkCancellation() }
 
         let envelope = EventEnvelope(
@@ -131,10 +163,7 @@ public actor SessionWriter: DecisionEventWriting {
             payload: draft.payload
         )
 
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        encoder.dateEncodingStrategy = .iso8601
-        var line = try encoder.encode(envelope)
+        var line = try Self.encode(envelope)
         switch draft.eventType {
         case ClauseEventType.boundaryAssessed, ClauseEventType.boundaryPending,
              ClauseEventType.clauseClosed, ClauseEventType.priorityAssigned:

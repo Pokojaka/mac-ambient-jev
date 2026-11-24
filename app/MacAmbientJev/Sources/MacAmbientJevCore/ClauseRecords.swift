@@ -174,11 +174,8 @@ public struct DecisionRequestRecord: Codable, Sendable, Equatable {
 }
 
 public enum ClausePendingReason: String, Codable, Sendable {
-    /// No decision run was published for the source, so it was never requested.
-    case notRequested = "not_requested"
     case initializationFailed = "initialization_failed"
     case requestFailed = "request_failed"
-    case asrGap = "asr_gap"
 }
 
 public enum BoundaryDecisionSource: Codable, Sendable, Equatable {
@@ -521,44 +518,6 @@ public struct ContentPriorityAssignedPayload: Codable, Sendable, Equatable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(assignments, forKey: .assignments)
         try c.encode(request, forKey: .request)
-    }
-}
-
-/// Exact filler-and-backchannel-removed clause text. Equality and hashing use the UTF-8 bytes, not
-/// Swift's canonical string equivalence.
-public struct ExactClauseTextKey: Sendable, Hashable {
-    public let text: String
-    public init(text: String) { self.text = text }
-
-    public static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.text.utf8.elementsEqual(rhs.text.utf8)
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        for byte in text.utf8 { hasher.combine(byte) }
-    }
-}
-
-/// A durable classified live decision that finalization may carry over.
-public struct ReusableClauseDecision: Sendable, Equatable {
-    public let sourcePriorityRunID: String
-    public let sourceEventSeq: UInt64
-    public let sourceClause: ClauseReference
-    public let decision: ContentPriorityDecision
-    public let visiblePriority: ContentPriority
-
-    public init(
-        sourcePriorityRunID: String,
-        sourceEventSeq: UInt64,
-        sourceClause: ClauseReference,
-        decision: ContentPriorityDecision,
-        visiblePriority: ContentPriority
-    ) {
-        self.sourcePriorityRunID = sourcePriorityRunID
-        self.sourceEventSeq = sourceEventSeq
-        self.sourceClause = sourceClause
-        self.decision = decision
-        self.visiblePriority = visiblePriority
     }
 }
 

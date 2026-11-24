@@ -211,6 +211,24 @@ public struct EventLogTranscriptReader: Sendable {
         return stored
     }
 
+    /// The transcript the log will read as once `replacement`'s selection event is appended, validated
+    /// as complete. Nothing is written: a pair that would not read back is never selected.
+    public func validateReplacement(
+        eventsURL: URL, sessionID: UUID, frameCount: Int64, replacement: DecisionRunReplacement
+    ) throws -> StoredTranscriptEvents {
+        let recovered = try SessionRecovery.recoverJSONL(SessionWriter.readDurableLog(eventsURL: eventsURL))
+        let draft = replacement.selectionEvent(sessionID: sessionID)
+        let selection = try SessionWriter.encode(EventEnvelope(
+            eventSeq: (recovered.lastEventSequence ?? 0) + 1, eventID: UUID(), eventType: draft.eventType,
+            sessionID: sessionID, processingRunID: nil, segmentationRunID: nil, segmentID: nil,
+            sourceStartFrame: nil, sourceEndFrame: nil, createdAt: draft.createdAt, payload: draft.payload
+        ))
+        guard let stored = try project(lines: recovered.lines + [selection], sessionID: sessionID, frameCount: frameCount) else {
+            throw ProcessingLogStateError.missingGeneration
+        }
+        return stored
+    }
+
     private func project(lines: [Data], sessionID: UUID, frameCount: Int64?) throws -> StoredTranscriptEvents? {
         let decoded = try EventLogLine.decode(lines)
         guard let generation = try GenerationEventLog(lines: decoded, sessionID: sessionID) else { return nil }
@@ -303,6 +321,11 @@ public struct DecisionSessionRecovery: Sendable {
               let priorityRunID = initialRuns.contentPriority else {
             throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: "", reason: "この世代では判定 run が選択されていません")
         }
+        guard generation.runs == initialRuns else {
+            throw EventLogTranscriptReaderError.inconsistentClauseRun(
+                runID: generation.runs.contentPriority ?? "", reason: "選択された判定 run が世代の初期 run と異なるため、判定セッションを再開できません"
+            )
+        }
         let log = try ClauseEventLog(
             lines: generation.lines,
             selectedRuns: [segmentationRunID, asrRunID, boundaryRunID, priorityRunID],
@@ -321,9 +344,6 @@ public struct DecisionSessionRecovery: Sendable {
             let source = input.source
             guard source.segmentationRunID == segmentationRunID, source.asrRunID == asrRunID else {
                 throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: boundaryRunID, reason: "境界判定の原文参照が指定 run と一致しません")
-            }
-            if case .pending(reason: .asrGap, _) = input.state {
-                throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: boundaryRunID, reason: "ASR gap を含む境界判定は recovery に使用できません")
             }
             switch log.successor(of: source, before: seq) {
             case .missing:

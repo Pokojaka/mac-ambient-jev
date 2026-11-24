@@ -182,45 +182,139 @@ func saveCompletedStatus(root: URL, sessionID: UUID) throws {
     ))
 }
 
-/// Runs one decision snapshot and appends the event selecting its returned runs.
+struct BuiltDecisions {
+    let events: [TranscriptEvent]
+    let materializedSegments: [MaterializedTranscriptSegment]
+    let pendingBoundarySegments: [SegmentTextReference]
+    let pendingPriorityClauses: [ClauseReference]
+    let boundaryRunID: String
+    let priorityRunID: String
+
+    var pendingTargets: Set<DecisionPendingTarget> {
+        Set(pendingBoundarySegments.map(DecisionPendingTarget.boundary))
+            .union(pendingPriorityClauses.map(DecisionPendingTarget.priority))
+    }
+}
+
+/// Writes a complete boundary run and priority run for every recognized source of the stored
+/// transcript, then the event selecting them: a fixture for readers, not a second implementation.
+/// Every source is requested; a source whose next ASR result is missing is not supported.
 func buildAndPublish(
     root: URL,
     sessionID: UUID,
     provider: any DecisionProvider,
-    scope: DecisionEnrichmentScope,
-    reusable: [ExactClauseTextKey: ReusableClauseDecision] = [:],
-    counter: DecisionUsageCounter = DecisionUsageCounter(),
-    boundaryRunID: String? = nil,
-    priorityRunID: String = "priority_\(UUID().uuidString.lowercased())"
-) async throws -> DecisionEnrichmentBatchResult {
+    counter: DecisionUsageCounter = DecisionUsageCounter()
+) async throws -> BuiltDecisions {
     let stored = try readStored(root: root, sessionID: sessionID)
     let activeRuns = stored.state.runs
-    let coordinator = DecisionEnrichmentCoordinator(
-        sessionID: sessionID,
-        boundaryRunID: boundaryRunID ?? "boundary_\(UUID().uuidString.lowercased())",
-        priorityRunID: priorityRunID,
-        writer: try SessionWriter(sessionURL: root),
-        decisions: DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter),
-        usageCounter: counter,
-        materializer: TranscriptMaterializer(sampleRate: stored.state.generation.sampleRate)
-    )
-    let result = try await coordinator.process(
-        existingEvents: stored.events, activeRuns: activeRuns, scope: scope,
-        reusableDecisions: reusable, onEvent: nil
-    )
+    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    let writer = try SessionWriter(sessionURL: root)
+    let boundaryRunID = "boundary_\(UUID().uuidString.lowercased())"
+    let priorityRunID = "priority_\(UUID().uuidString.lowercased())"
+    let timeline = try SourceTimeline(events: stored.events, activeRuns: activeRuns)
+    var events = stored.events
+
+    func append<Payload: Codable & Sendable>(
+        _ eventType: String, runID: String, _ payload: Payload, kind: TranscriptEventKind? = nil
+    ) async throws {
+        let envelope = try await writer.append(EventDraft(
+            eventType: eventType, sessionID: sessionID, processingRunID: runID, payload: payload
+        ))
+        if let kind { events.append(.clause(seq: envelope.eventSeq, runID: runID, kind: kind)) }
+    }
+
+    try await append("processing.run.started", runID: boundaryRunID, ProcessingRunStartedPayload(
+        stage: .clauseBoundary, provenance: decisions.boundaryProvenance()
+    ))
+    var assembly = ClauseBoundaryAssembly(boundaryRunID: boundaryRunID)
+    var clauses: [ClauseUnit] = []
+    var pendingBoundary: [SegmentTextReference] = []
+    for (index, entry) in timeline.sources.enumerated() {
+        if timeline.hasEmptySeparator(beforeSourceAt: index) { _ = try assembly.endTextStream() }
+        let next: NextSegmentHead?
+        switch timeline.successor(ofSourceAt: index) {
+        case .missing: throw MissingTestValue()
+        case .none, .empty: next = nil
+        case .recognized(let source, let text):
+            next = try NextSegmentHead(source: source, text: String(text.prefix(ClauseBoundaryPolicy.nextHeadCharacterLimit)))
+        }
+        let state = try await ClauseBoundaryStep.assess(source: entry.source, text: entry.text, next: next, decisions: decisions)
+        switch state {
+        case .assessed(let assessment):
+            try await append(ClauseEventType.boundaryAssessed, runID: boundaryRunID, assessment,
+                             kind: .clauseBoundaryAssessed(assessment))
+        case .pending(let reason, let message):
+            let payload = ClauseBoundaryPendingPayload(source: entry.source, reason: reason, message: message)
+            try await append(ClauseEventType.boundaryPending, runID: boundaryRunID, payload,
+                             kind: .clauseBoundaryPending(payload))
+            pendingBoundary.append(entry.source)
+        }
+        let delta = try assembly.consume(ClauseAssemblyInput(source: entry.source, text: entry.text, state: state))
+        for unit in delta.closed {
+            try await append(ClauseEventType.clauseClosed, runID: boundaryRunID, unit, kind: .clauseClosed(unit))
+        }
+        clauses += delta.closed
+        if case .empty = timeline.successor(ofSourceAt: index) { _ = try assembly.endTextStream() }
+    }
+    for unit in try assembly.finish().closed {
+        try await append(ClauseEventType.clauseClosed, runID: boundaryRunID, unit, kind: .clauseClosed(unit))
+        clauses.append(unit)
+    }
+    try await append("processing.run.completed", runID: boundaryRunID, ProcessingRunCompletedPayload(
+        stage: .clauseBoundary, succeeded: true,
+        completedCount: timeline.sources.count - pendingBoundary.count, failedCount: pendingBoundary.count
+    ))
+
+    try await append("processing.run.started", runID: priorityRunID, ProcessingRunStartedPayload(
+        stage: .contentPriority, provenance: decisions.priorityProvenance()
+    ))
+    var composer = ClauseTextComposer()
+    for event in events where event.processingRunID == boundaryRunID {
+        if case .clauseBoundaryAssessed(let assessment) = event.kind {
+            composer.setFillerRanges(assessment.fillerRanges, for: assessment.source)
+        }
+    }
+    var targets: [(reference: ClauseReference, text: String)] = []
+    for unit in clauses {
+        let text = try composer.text(of: unit.parts, sourceText: timeline.text(of:))
+        if !ClauseTextComposer.isBlank(text) { targets.append((unit.reference, text)) }
+    }
+    var assignments: [ClausePriorityAssignment] = []
+    var batches = try ClausePriorityBatches(targets: targets)
+    while batches.hasRemaining {
+        let payload = try await batches.next { .available(decisions) }
+        try await append(ClauseEventType.priorityAssigned, runID: priorityRunID, payload,
+                         kind: .contentPriorityAssigned(payload))
+        assignments += payload.assignments
+    }
+    let pendingCount = assignments.filter(\.needsRetry).count
+    try await append("processing.run.completed", runID: priorityRunID, ProcessingRunCompletedPayload(
+        stage: .contentPriority, succeeded: true,
+        completedCount: assignments.count - pendingCount, failedCount: pendingCount
+    ))
+
     let previous: DecisionRunIDs?
     if let boundary = activeRuns.clauseBoundary, let priority = activeRuns.contentPriority {
         previous = DecisionRunIDs(boundary: boundary, priority: priority)
     } else {
         previous = nil
     }
-    let replacement = DecisionRunReplacement(
+    try await writer.append(DecisionRunReplacement(
         generationID: stored.state.generation.id, previous: previous,
-        replacement: DecisionRunIDs(boundary: result.boundaryRunID, priority: result.priorityRunID)
+        replacement: DecisionRunIDs(boundary: boundaryRunID, priority: priorityRunID)
+    ).selectionEvent(sessionID: sessionID))
+    let selected = activeRuns.withDecisionRuns(clauseBoundary: boundaryRunID, contentPriority: priorityRunID)
+    let built = BuiltDecisions(
+        events: events,
+        materializedSegments: try TranscriptMaterializer(sampleRate: stored.state.generation.sampleRate)
+            .materialize(events: events, activeRuns: selected),
+        pendingBoundarySegments: pendingBoundary,
+        pendingPriorityClauses: assignments.filter(\.needsRetry).map(\.reference),
+        boundaryRunID: boundaryRunID, priorityRunID: priorityRunID
     )
-    try await SessionWriter(sessionURL: root).append(replacement.selectionEvent(sessionID: sessionID))
-    await coordinator.recordPublished(result, replacing: stored.pendingDecisions.pendingTargets)
-    return result
+    await counter.clearDeferred(sessionID: sessionID, targets: stored.pendingDecisions.pendingTargets)
+    await counter.recordDeferred(sessionID: sessionID, targets: built.pendingTargets)
+    return built
 }
 
 func readStored(root: URL, sessionID: UUID) throws -> StoredTranscriptEvents {

@@ -6,9 +6,11 @@ public enum LiveContentPriorityError: LocalizedError {
     case segmentOrderChanged
     case unfinishedASR
     case invalidRecovery
+    case missingCarriedDecision
 
     public var errorDescription: String? {
         switch self {
+        case .missingCarriedDecision: "再試行で引き継ぐ判定が選択中の判定にありません"
         case .unknownSource: "ライブ文字起こしにない区間を判定に渡そうとしました"
         case .segmentOrderChanged: "ライブ文字起こしの区間順序が判定済みの区間と一致しません"
         case .unfinishedASR: "未完了の音声認識区間があります"
@@ -20,6 +22,9 @@ public enum LiveContentPriorityError: LocalizedError {
 /// Runs live boundary and priority decision stages independently of ASR and recording drain.
 /// Each segment's boundary request waits until the next segment's ASR is saved; rows stay
 /// visible as normal text meanwhile. Only durable results reach the screen.
+///
+/// The same session writes a replacement decision pair for a retry: it carries over the results of the
+/// selected pair, requests only the targets again, and fails instead of saving a pending request.
 public actor LiveContentPrioritySession {
     public typealias StatusHandler = @Sendable (String) async -> Void
     public typealias UpdateHandler = @Sendable (LiveASRSnapshot) async -> Void
@@ -33,11 +38,43 @@ public actor LiveContentPrioritySession {
         let successor: NextSegmentHead?
     }
 
+    /// What a session starts from: nothing for new runs, the saved progress for reopened ones.
+    private struct Seed {
+        var handledSources: [SegmentTextReference] = []
+        var assembly: ClauseBoundaryAssembly
+        var composer = ClauseTextComposer()
+        var startedRuns: Set<ProcessingStage> = []
+        var completedRuns: Set<ProcessingStage> = []
+        var boundaryCounts = (assessed: 0, pending: 0)
+        var priorityCounts = (classified: 0, pending: 0)
+        var pendingTargets: Set<DecisionPendingTarget> = []
+        var unsavedClauses: [ClauseUnit] = []
+        var unassignedClauses: [ClauseUnit] = []
+        var events: [TranscriptEvent] = []
+
+        init(assembly: ClauseBoundaryAssembly) { self.assembly = assembly }
+
+        init(_ recovery: DecisionSessionRecovery) {
+            handledSources = recovery.handledSources
+            assembly = recovery.assembly
+            composer = recovery.composer
+            startedRuns = recovery.startedRuns
+            completedRuns = recovery.completedRuns
+            boundaryCounts = recovery.boundaryCounts
+            priorityCounts = recovery.priorityCounts
+            pendingTargets = recovery.pendingTargets
+            unsavedClauses = recovery.unsavedClauses
+            unassignedClauses = recovery.unassignedClauses
+            events = recovery.events
+        }
+    }
+
     private let sessionID: UUID
-    private let writer: SessionWriter
-    private let liveASR: LiveASRSession
+    private let writer: any DecisionEventWriting
+    private let liveASR: any DecisionTranscriptSource
     private let makeDecisions: NativeSessionProcessor.DecisionCoordinatorFactory
     private let usageCounter: DecisionUsageCounter
+    private let plan: ReplacementPlan?
 
     private var segments: [LiveASRSegmentStatus] = []
     private var handledCount = 0
@@ -66,10 +103,11 @@ public actor LiveContentPrioritySession {
         sessionID: UUID,
         boundaryRunID: String,
         priorityRunID: String,
-        writer: SessionWriter,
-        liveASR: LiveASRSession,
+        writer: any DecisionEventWriting,
+        liveASR: any DecisionTranscriptSource,
         makeDecisions: @escaping NativeSessionProcessor.DecisionCoordinatorFactory,
-        usageCounter: DecisionUsageCounter
+        usageCounter: DecisionUsageCounter,
+        plan: ReplacementPlan?
     ) {
         self.sessionID = sessionID
         self.boundaryRunID = boundaryRunID
@@ -78,20 +116,20 @@ public actor LiveContentPrioritySession {
         self.liveASR = liveASR
         self.makeDecisions = makeDecisions
         self.usageCounter = usageCounter
+        self.plan = plan
         self.assembly = ClauseBoundaryAssembly(boundaryRunID: boundaryRunID)
     }
 
     public static func open(
         sessionID: UUID,
-        writer: SessionWriter,
+        writer: any DecisionEventWriting,
         liveASR: LiveASRSession,
         makeDecisions: @escaping NativeSessionProcessor.DecisionCoordinatorFactory,
         usageCounter: DecisionUsageCounter,
         onStatus: @escaping StatusHandler,
         onUpdate: @escaping UpdateHandler
     ) async throws -> LiveContentPrioritySession {
-        let eventsURL = await writer.eventsURL
-        let recovery = try DecisionSessionRecovery(eventsURL: eventsURL, sessionID: sessionID)
+        let recovery = try DecisionSessionRecovery(eventsURL: writer.eventsURL, sessionID: sessionID)
         let session = LiveContentPrioritySession(
             sessionID: sessionID,
             boundaryRunID: recovery.boundaryRunID,
@@ -99,14 +137,53 @@ public actor LiveContentPrioritySession {
             writer: writer,
             liveASR: liveASR,
             makeDecisions: makeDecisions,
-            usageCounter: usageCounter
+            usageCounter: usageCounter,
+            plan: nil
         )
-        try await session.hydrate(recovery, onStatus: onStatus, onUpdate: onUpdate)
+        try await session.hydrate(Seed(recovery), onStatus: onStatus, onUpdate: onUpdate)
+        return session
+    }
+
+    /// Opens the session of a replacement decision pair over a finished generation's saved ASR results.
+    /// It starts empty (an unselected earlier attempt is abandoned), or keeps the selected boundary run.
+    static func openReplacement(
+        sessionID: UUID,
+        writer: any DecisionEventWriting,
+        source: any DecisionTranscriptSource,
+        plan: ReplacementPlan,
+        makeDecisions: @escaping NativeSessionProcessor.DecisionCoordinatorFactory,
+        usageCounter: DecisionUsageCounter,
+        onStatus: @escaping StatusHandler,
+        onUpdate: @escaping UpdateHandler
+    ) async throws -> LiveContentPrioritySession {
+        var seed = Seed(assembly: ClauseBoundaryAssembly(boundaryRunID: plan.boundaryRunID))
+        if plan.keepsBoundaryRun {
+            seed.handledSources = await source.snapshot().segments.compactMap { status in
+                if case .recognized(let reference, let text) = status.outcome,
+                   ASRRecognitionOutcome(text: text) == .recognized { reference } else { nil }
+            }
+            seed.composer = plan.carry.composer()
+            seed.startedRuns = [.clauseBoundary]
+            seed.completedRuns = [.clauseBoundary]
+            seed.unassignedClauses = plan.carry.clauses
+            seed.events = plan.carry.boundaryEvents
+        }
+        let session = LiveContentPrioritySession(
+            sessionID: sessionID,
+            boundaryRunID: plan.boundaryRunID,
+            priorityRunID: plan.priorityRunID,
+            writer: writer,
+            liveASR: source,
+            makeDecisions: makeDecisions,
+            usageCounter: usageCounter,
+            plan: plan
+        )
+        try await session.hydrate(seed, onStatus: onStatus, onUpdate: onUpdate)
         return session
     }
 
     private func hydrate(
-        _ recovery: DecisionSessionRecovery, onStatus: @escaping StatusHandler, onUpdate: @escaping UpdateHandler
+        _ recovery: Seed, onStatus: @escaping StatusHandler, onUpdate: @escaping UpdateHandler
     ) async throws {
         try update(await liveASR.snapshot().segments)
         var recoveredSourceIndex = 0
@@ -143,7 +220,7 @@ public actor LiveContentPrioritySession {
         recordedPendingTargets = recovery.pendingTargets
         unsavedClauses = recovery.unsavedClauses
         unassignedClauses = recovery.unassignedClauses
-        _ = try await liveASR.applyClauseEvents(recovery.events)
+        if !recovery.events.isEmpty { _ = try await liveASR.applyClauseEvents(recovery.events) }
         if !recordedPendingTargets.isEmpty {
             await usageCounter.recordDeferred(sessionID: sessionID, targets: recordedPendingTargets)
         }
@@ -247,13 +324,33 @@ public actor LiveContentPrioritySession {
     }
 
     private func startWorker() {
-        guard worker == nil, onUpdate != nil, workerError == nil, !stopped else { return }
+        guard plan == nil, worker == nil, onUpdate != nil, workerError == nil, !stopped else { return }
         worker = Task { await drain() }
+    }
+
+    /// Runs a replacement pair to completion in the caller's task, so the caller's cancellation applies
+    /// before the first write. Nothing is written when the task is already cancelled.
+    func replace(snapshot: LiveASRSnapshot) async throws {
+        guard plan != nil, !stopped else { throw CancellationError() }
+        guard snapshot.segments.allSatisfy({
+            if case .recognized = $0.outcome { true } else { false }
+        }) else { throw LiveContentPriorityError.unfinishedASR }
+        try update(snapshot.segments)
+        inputFinished = true
+        try Task.checkCancellation()
+        await drainQueue()
+        try Task.checkCancellation()
+        if let workerError { throw workerError }
     }
 
     private func drain() async {
         defer { worker = nil }
+        await drainQueue()
+    }
+
+    private func drainQueue() async {
         do {
+            try await startReplacementRuns()
             while true {
                 try ensureActive()
                 if !unsavedClauses.isEmpty || !unassignedClauses.isEmpty {
@@ -277,9 +374,52 @@ public actor LiveContentPrioritySession {
         } catch {
             guard !(error is CancellationError && (stopped || Task.isCancelled)) else { return }
             workerError = error
-            guard !stopped && !Task.isCancelled else { return }
+            guard !stopped && !Task.isCancelled, plan == nil else { return }
             await onStatus?("発話文の判定を保存できませんでした: \(error.localizedDescription)")
         }
+    }
+
+    /// A replacement pair is selected only with both runs complete, so both start before any result.
+    private func startReplacementRuns() async throws {
+        guard plan != nil else { return }
+        for stage in [ProcessingStage.clauseBoundary, .contentPriority] where !startedRuns.contains(stage) {
+            if case .pending(_, let message) = availableDecisions(stage: stage) {
+                throw DecisionEnrichmentError.retryRequestFailed(message)
+            }
+            try await startRun(stage)
+        }
+    }
+
+    /// Records the failure of the runs this replacement started and did not complete, so no later
+    /// retry mistakes them for an interrupted attempt. Returns whether any record was written.
+    func recordFailure(originalError: Error) async throws -> Bool {
+        var persistenceErrors: [String] = []
+        var appendedAny = false
+        for stage in [ProcessingStage.clauseBoundary, .contentPriority]
+        where startedRuns.contains(stage) && !completedRuns.contains(stage) {
+            completedRuns.insert(stage)
+            let counts = stage == .clauseBoundary
+                ? (completed: boundaryCounts.assessed, failed: boundaryCounts.pending)
+                : (completed: priorityCounts.classified, failed: priorityCounts.pending)
+            do {
+                _ = try await writer.appendFailedRetryCompletion(EventDraft(
+                    eventType: "processing.run.completed", sessionID: sessionID,
+                    processingRunID: stage == .clauseBoundary ? boundaryRunID : priorityRunID,
+                    payload: ProcessingRunCompletedPayload(
+                        stage: stage, succeeded: false, completedCount: counts.completed, failedCount: counts.failed
+                    )
+                ))
+                appendedAny = true
+            } catch {
+                persistenceErrors.append(error.localizedDescription)
+            }
+        }
+        if !persistenceErrors.isEmpty {
+            throw DecisionEnrichmentError.retryCompletionPersistenceFailed(
+                original: originalError.localizedDescription, persistence: persistenceErrors.joined(separator: "; ")
+            )
+        }
+        return appendedAny
     }
 
     /// Consumes successful text in order and waits at every unfinished ASR status.
@@ -350,14 +490,22 @@ public actor LiveContentPrioritySession {
 
     private func handle(_ step: Step) async throws {
         let state: ClauseBoundaryState
-        switch availableDecisions(stage: .clauseBoundary) {
-        case .pending(let reason, let message):
-            state = .pending(reason: reason, message: message)
-        case .available(let decisions):
-            await report(UserFacingStatus.classifyingContent.text)
-            state = try await ClauseBoundaryStep.assess(
-                source: step.source, text: step.text, next: step.successor, decisions: decisions
-            )
+        if let plan, !plan.boundaryTargets.contains(step.source) {
+            state = try plan.carry.carriedState(of: step.source)
+        } else {
+            switch availableDecisions(stage: .clauseBoundary) {
+            case .pending(let reason, let message):
+                state = .pending(reason: reason, message: message)
+            case .available(let decisions):
+                await report(UserFacingStatus.classifyingContent.text)
+                state = try await ClauseBoundaryStep.assess(
+                    source: step.source, text: step.text, next: step.successor, decisions: decisions
+                )
+            }
+            if plan != nil, case .pending(_, let message) = state {
+                boundaryCounts.pending += 1
+                throw DecisionEnrichmentError.retryRequestFailed(message)
+            }
         }
         try ensureActive()
 
@@ -389,6 +537,8 @@ public actor LiveContentPrioritySession {
             let counts = stage == .clauseBoundary
                 ? (completed: boundaryCounts.assessed, failed: boundaryCounts.pending)
                 : (completed: priorityCounts.classified, failed: priorityCounts.pending)
+            // A write that fails may still have reached the log, so a run's completion is attempted once.
+            completedRuns.insert(stage)
             _ = try await save(EventDraft(
                 eventType: "processing.run.completed", sessionID: sessionID,
                 processingRunID: stage == .clauseBoundary ? boundaryRunID : priorityRunID,
@@ -396,7 +546,6 @@ public actor LiveContentPrioritySession {
                     stage: stage, succeeded: true, completedCount: counts.completed, failedCount: counts.failed
                 )
             ))
-            completedRuns.insert(stage)
         }
     }
 
@@ -408,6 +557,7 @@ public actor LiveContentPrioritySession {
     ) async throws {
         var events = preceding
         var targets: [(reference: ClauseReference, text: String)] = []
+        var carried: [ClausePriorityAssignment] = []
         do {
             for unit in units {
                 events.append(try await append(ClauseEventType.clauseClosed, stage: .clauseBoundary, payload: unit,
@@ -418,7 +568,12 @@ public actor LiveContentPrioritySession {
                     guard let text = self.sourceTexts[source] else { throw LiveContentPriorityError.unknownSource }
                     return text
                 }
-                if !ClauseTextComposer.isBlank(text) { targets.append((unit.reference, text)) }
+                guard !ClauseTextComposer.isBlank(text) else { continue }
+                if let assignment = try carriedAssignment(of: unit) {
+                    carried.append(assignment)
+                } else {
+                    targets.append((unit.reference, text))
+                }
             }
         } catch {
             // A later save failure must not hide the independent results already durable.
@@ -427,23 +582,53 @@ public actor LiveContentPrioritySession {
         }
         try await show(events)
 
+        if !carried.isEmpty {
+            try await savePriorities(ContentPriorityAssignedPayload(assignments: carried, request: nil))
+        }
         var batches = try ClausePriorityBatches(targets: targets)
         while batches.hasRemaining {
             try ensureActive()
             let payload = try await batches.next { self.availableDecisions(stage: .contentPriority) }
             try ensureActive()
-            let event = try await append(ClauseEventType.priorityAssigned, stage: .contentPriority, payload: payload,
-                                         kind: .contentPriorityAssigned(payload))
-            let pending = payload.assignments.filter(\.needsRetry).map(\.reference)
-            priorityCounts.classified += payload.assignments.count - pending.count
-            priorityCounts.pending += pending.count
-            try await show([event])
-            if !pending.isEmpty {
-                try await recordPending(Set(pending.map(DecisionPendingTarget.priority)))
-                if let assignment = payload.assignments.first(where: \.needsRetry),
-                   case .retryPending(_, let message) = assignment.decision {
-                    await reportPending(message: message)
-                }
+            if plan != nil, let failure = payload.assignments.first(where: {
+                if case .retryPending = $0.decision { true } else { false }
+            }), case .retryPending(_, let message) = failure.decision {
+                priorityCounts.pending += payload.assignments.count
+                throw DecisionEnrichmentError.retryRequestFailed(message)
+            }
+            try await savePriorities(payload)
+        }
+    }
+
+    /// The selected pair's assignment for a clause this replacement does not request again: the same
+    /// parts, none of them re-requested, and not a pending target. Its text is therefore unchanged.
+    private func carriedAssignment(of unit: ClauseUnit) throws -> ClausePriorityAssignment? {
+        guard let plan, !unit.parts.contains(where: { plan.boundaryTargets.contains($0.source) }),
+              let origin = plan.carry.assignment(forParts: unit.parts),
+              !(origin.assignment.needsRetry && plan.clauseTargets.contains(origin.assignment.reference)),
+              let sourceRunID = plan.carry.priorityRunID else { return nil }
+        return try ClausePriorityAssignment(
+            reference: unit.reference, priority: origin.assignment.priority,
+            needsRetry: origin.assignment.needsRetry,
+            decision: .carriedOver(
+                sourcePriorityRunID: sourceRunID, sourceEventSeq: origin.seq,
+                sourceClause: origin.assignment.reference, sourceNeedsRetry: origin.assignment.needsRetry
+            )
+        )
+    }
+
+    private func savePriorities(_ payload: ContentPriorityAssignedPayload) async throws {
+        let event = try await append(ClauseEventType.priorityAssigned, stage: .contentPriority, payload: payload,
+                                     kind: .contentPriorityAssigned(payload))
+        let pending = payload.assignments.filter(\.needsRetry).map(\.reference)
+        priorityCounts.classified += payload.assignments.count - pending.count
+        priorityCounts.pending += pending.count
+        try await show([event])
+        if !pending.isEmpty {
+            try await recordPending(Set(pending.map(DecisionPendingTarget.priority)))
+            if let assignment = payload.assignments.first(where: \.needsRetry),
+               case .retryPending(_, let message) = assignment.decision {
+                await reportPending(message: message)
             }
         }
     }
@@ -464,28 +649,30 @@ public actor LiveContentPrioritySession {
     ) async throws -> TranscriptEvent {
         guard !completedRuns.contains(stage) else { throw LiveContentPriorityError.invalidRecovery }
         let runID = stage == .clauseBoundary ? boundaryRunID : priorityRunID
-        if !startedRuns.contains(stage) {
-            let provenance: RunProvenance
-            switch stage {
-            case .clauseBoundary:
-                provenance = boundaryProvenance
-                    ?? DecisionRunProvenance.unavailable()
-            case .contentPriority:
-                provenance = priorityProvenance
-                    ?? DecisionRunProvenance.unavailable()
-            default:
-                preconditionFailure("Live decisions require a boundary or priority stage")
-            }
-            _ = try await save(EventDraft(
-                eventType: "processing.run.started", sessionID: sessionID, processingRunID: runID,
-                payload: ProcessingRunStartedPayload(stage: stage, provenance: provenance)
-            ))
-            startedRuns.insert(stage)
-        }
+        try await startRun(stage)
         let envelope = try await save(EventDraft(
             eventType: eventType, sessionID: sessionID, processingRunID: runID, payload: payload
         ))
         return TranscriptEvent.clause(seq: envelope.eventSeq, runID: runID, kind: kind)
+    }
+
+    private func startRun(_ stage: ProcessingStage) async throws {
+        guard !startedRuns.contains(stage) else { return }
+        let provenance: RunProvenance
+        switch stage {
+        case .clauseBoundary:
+            provenance = boundaryProvenance ?? DecisionRunProvenance.unavailable()
+        case .contentPriority:
+            provenance = priorityProvenance ?? DecisionRunProvenance.unavailable()
+        default:
+            preconditionFailure("Live decisions require a boundary or priority stage")
+        }
+        _ = try await save(EventDraft(
+            eventType: "processing.run.started", sessionID: sessionID,
+            processingRunID: stage == .clauseBoundary ? boundaryRunID : priorityRunID,
+            payload: ProcessingRunStartedPayload(stage: stage, provenance: provenance)
+        ))
+        startedRuns.insert(stage)
     }
 
     /// Every log write goes through here so that `stop` can wait for the ones already started.
@@ -506,7 +693,8 @@ public actor LiveContentPrioritySession {
     private func recordPending(_ targets: Set<DecisionPendingTarget>) async throws {
         try ensureActive()
         recordedPendingTargets.formUnion(targets)
-        await usageCounter.recordDeferred(sessionID: sessionID, targets: targets)
+        // A replacement's pending set is reconciled with the selected pair's only once it is selected.
+        if plan == nil { await usageCounter.recordDeferred(sessionID: sessionID, targets: targets) }
     }
 
     private func ensureActive() throws {

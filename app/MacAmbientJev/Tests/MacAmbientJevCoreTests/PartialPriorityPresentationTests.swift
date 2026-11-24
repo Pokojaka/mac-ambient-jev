@@ -25,7 +25,7 @@ func storedLowClausesStayRemovedWhenAnotherPriorityBatchFails() async throws {
     let raw = String(repeating: "うん。", count: 41)
     let events = try await writeTranscript([raw], root: root, sessionID: id)
     try saveCompletedStatus(root: root, sessionID: id)
-    let result = try await buildAndPublish(root: root, sessionID: id, provider: PartialPriorityProvider(), scope: .all)
+    let result = try await buildAndPublish(root: root, sessionID: id, provider: PartialPriorityProvider())
     let segments = try readPublished(root: root, sessionID: id)
     let row = try #require(try LiveTranscriptProjection().rows(for: segments).first)
     #expect(segments[0].clauseSlices.filter { $0.priority == .lowPriority }.count == 40)

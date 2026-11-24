@@ -447,8 +447,7 @@ func materializerProjectsOneCrossRowClauseWithoutChangingRawRowsOrTiming() async
                 ]
             ),
             priority: lowForBackchannel
-        ),
-        scope: .all
+        )
     )
     let segments = result.materializedSegments
     #expect(segments.map(\.text) == ["えー、第一。うん", "えー、続き"])

@@ -122,7 +122,7 @@ func invalidPriorityDecisionLeavesDurablePriorityPendingWithoutRetry(
         }
     )
     let counter = DecisionUsageCounter()
-    let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all, counter: counter)
+    let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, counter: counter)
     #expect(result.pendingPriorityClauses.count == 1)
     let published = try readPublished(root: root, sessionID: sessionID)
     #expect(published.first?.clauseState == .priorityPending)

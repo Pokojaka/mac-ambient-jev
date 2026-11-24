@@ -166,7 +166,7 @@ func assemblyRejectsInputsThatDoNotMatchTheTextOrOrder() throws {
         try other.consume(ClauseAssemblyInput(source: a, text: "一つ二つ", state: wrongText.state))
     }
     #expect(throws: ClauseAssemblyError.emptyText) {
-        try other.consume(ClauseAssemblyInput(source: a, text: " ", state: .pending(reason: .notRequested, message: "")))
+        try other.consume(ClauseAssemblyInput(source: a, text: " ", state: .pending(reason: .requestFailed, message: "")))
     }
     #expect(throws: ClauseAssemblyError.unknownSource) { try other.state(for: b) }
 }
@@ -195,6 +195,4 @@ func clauseRecordsRejectInconsistentPayloads() throws {
     #expect(throws: ClauseRecordError.invalidPriorityEvent) {
         try ContentPriorityAssignedPayload(assignments: [classified], request: nil)
     }
-    #expect(ExactClauseTextKey(text: "が") != ExactClauseTextKey(text: "か\u{3099}"))
-    #expect(ExactClauseTextKey(text: "が") == ExactClauseTextKey(text: "が"))
 }

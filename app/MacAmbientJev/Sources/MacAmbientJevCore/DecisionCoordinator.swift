@@ -67,6 +67,10 @@ public actor DecisionCoordinator {
             guard answeredIDs == requestedIDs else {
                 throw DecisionResponseError.unexpectedAnswers
             }
+            guard response.probabilities.values.allSatisfy(isValidProbability),
+                  response.continuationProbability.map(isValidProbability) ?? true else {
+                throw DecisionResponseError.unexpectedAnswers
+            }
             if request.next != nil, response.continuationProbability == nil {
                 throw DecisionResponseError.unexpectedAnswers
             }

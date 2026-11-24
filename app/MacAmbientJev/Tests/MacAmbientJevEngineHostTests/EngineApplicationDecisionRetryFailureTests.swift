@@ -78,6 +78,10 @@ private actor DecisionRetryFailureEventWriter: DecisionEventWriting {
         return try await writer.append(draft)
     }
 
+    func appendSelection(_ selection: DecisionRunReplacement, sessionID: UUID) async throws {
+        try await writer.appendSelection(selection, sessionID: sessionID)
+    }
+
     func appendFailedRetryCompletion(
         _ draft: EventDraft<ProcessingRunCompletedPayload>
     ) async throws -> EventEnvelope<ProcessingRunCompletedPayload> {
