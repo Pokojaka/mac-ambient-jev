@@ -84,11 +84,20 @@ struct FakeASR: ASREngine {
 struct FakeFinalVAD: FinalTranscriptVADSegmenter {
     let provenance = RunProvenance(engine: "host-test-vad", model: nil, version: "test", configuration: [:])
 
+    /// Splits the recording into `segmentCount` segments; `FakeLiveVAD` and the multi-segment live VAD emit the same ones.
+    var segmentCount = 1
+
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
-        guard reader.info.committedFrames > 0 else { return [] }
-        return [SegmentReference(
-            segmentationRunID: runID, segmentID: "final_segment_1", speechRanges: [0..<reader.info.committedFrames]
-        )]
+        let frames = reader.info.committedFrames
+        guard frames > 0 else { return [] }
+        if segmentCount == 2 {
+            guard frames / 2 > 0 else { return [] }
+            return [
+                SegmentReference(segmentationRunID: runID, segmentID: "segment_1", speechRanges: [0..<(frames / 2)]),
+                SegmentReference(segmentationRunID: runID, segmentID: "segment_2", speechRanges: [(frames / 2)..<frames]),
+            ]
+        }
+        return [SegmentReference(segmentationRunID: runID, segmentID: "segment_1", speechRanges: [0..<frames])]
     }
 }
 
@@ -105,7 +114,7 @@ struct FakeLiveVAD: LiveVADProcessing {
             return LiveVADProgress(emittedSegments: [], totalSegmentCount: 0, committedFrames: 0, micSpeechLevels: [])
         }
         let segment = SegmentReference(
-            segmentationRunID: segmentationRunID, segmentID: "live_segment_1", speechRanges: [0..<checkpoint.committedFrames]
+            segmentationRunID: segmentationRunID, segmentID: "segment_1", speechRanges: [0..<checkpoint.committedFrames]
         )
         return LiveVADProgress(
             emittedSegments: [segment], totalSegmentCount: 1, committedFrames: checkpoint.committedFrames, micSpeechLevels: []

@@ -227,7 +227,7 @@ public struct SessionFileProcessingService: Sendable {
             await callbacks.onStatus(.message("処理を開始します: \(request.audioURL.path)"))
             let result = try await finalizeAndExport(
                 sessionID: retained.finalize.sessionID,
-                metadataPolicy: retained.finalize.metadataPolicy,
+                isResume: false,
                 pacingMode: request.pacingMode,
                 outputURL: request.outputURL,
                 withDecisions: request.withDecisions,
@@ -264,7 +264,7 @@ public struct SessionFileProcessingService: Sendable {
             outputURL: request.outputURL
         )
         let scanner = SessionRecoveryScanner(sessionsRoot: operationPaths.sessionsRoot)
-        let initialInspection = try scanner.inspect(sessionID: request.sessionID)
+        let initialInspection = try scanner.inspect(sessionID: request.sessionID, includeFailed: true)
         let requiresInference = SessionRecoveryPlan(initialInspection.recovery?.action)
             .requiresInference(withDecisions: request.withDecisions)
         let resources: SessionFileProcessingResources?
@@ -292,7 +292,7 @@ public struct SessionFileProcessingService: Sendable {
             }
         }
 
-        let currentInspection = try scanner.inspect(sessionID: request.sessionID)
+        let currentInspection = try scanner.inspect(sessionID: request.sessionID, includeFailed: true)
         switch SessionRecoveryPlan(currentInspection.recovery?.action) {
         case .finalize:
             guard let resources else {
@@ -302,7 +302,7 @@ public struct SessionFileProcessingService: Sendable {
             }
             return try await finalizeAndExport(
                 sessionID: request.sessionID,
-                metadataPolicy: .reject,
+                isResume: true,
                 pacingMode: request.pacingMode,
                 outputURL: request.outputURL,
                 withDecisions: request.withDecisions,
@@ -350,7 +350,7 @@ public struct SessionFileProcessingService: Sendable {
 
     private func finalizeAndExport(
         sessionID: UUID,
-        metadataPolicy: UnreadableMetadataPolicy,
+        isResume: Bool,
         pacingMode: ASRPacingMode,
         outputURL: URL,
         withDecisions: Bool,
@@ -362,16 +362,29 @@ public struct SessionFileProcessingService: Sendable {
     ) async throws -> SessionProcessingResult {
         let processor = makeProcessor(paths: paths, resources: resources)
         let collector = ProcessingResultCollector()
+        let onUpdate = updateHandler(callbacks: callbacks, collector: collector)
         do {
-            let result = await processor.processSession(
-                sessionID: sessionID,
-                pacingMode: pacingMode,
-                shouldPause: callbacks.shouldPause,
-                onPhase: callbacks.onPhase,
-                metadataPolicy: metadataPolicy,
-                onStatus: callbacks.onStatus,
-                onUpdate: updateHandler(callbacks: callbacks, collector: collector)
-            )
+            let result: SessionProcessingResult
+            if isResume {
+                result = await processor.resumeSession(
+                    sessionID: sessionID,
+                    pacingMode: pacingMode,
+                    shouldPause: callbacks.shouldPause,
+                    onPhase: callbacks.onPhase,
+                    onStatus: callbacks.onStatus,
+                    onUpdate: onUpdate
+                )
+            } else {
+                result = await processor.processSession(
+                    sessionID: sessionID,
+                    pacingMode: pacingMode,
+                    shouldPause: callbacks.shouldPause,
+                    onPhase: callbacks.onPhase,
+                    metadataPolicy: .reject,
+                    onStatus: callbacks.onStatus,
+                    onUpdate: onUpdate
+                )
+            }
             guard result.disposition == .completed else {
                 await processor.releaseIdleResources()
                 return result
@@ -445,39 +458,29 @@ public struct SessionFileProcessingService: Sendable {
         withDecisions: Bool
     ) throws {
         do {
-            guard let metadata = try ProcessingMetadataStore(sessionURL: sessionURL).load(),
-                  let runs = metadata.activeRuns,
-                  runs.segmentation != nil,
-                  runs.asr != nil else {
+            let layout = SessionLayout(sessionURL: sessionURL)
+            let manifest = try layout.loadManifest()
+            guard let timeline = try layout.audioSource(for: manifest)?.timeline else {
                 throw SessionFileProcessingError.processingFailed(
-                    "export validation for session \(sessionURL.path) requires active segmentation and ASR runs"
+                    "export validation for session \(sessionURL.path) requires a saved audio timeline"
                 )
             }
-            let recovered = try SessionRecovery.recoverJSONL(
-                SessionFileAccess.read(
-                    sessionURL.appending(path: "events.jsonl"),
-                    relativeTo: sessionURL
-                )
+            let stored = try EventLogTranscriptReader().validateCompletion(
+                eventsURL: layout.eventsURL,
+                sessionID: manifest.sessionID,
+                frameCount: timeline.committedFrames
             )
-            guard !recovered.droppedIncompleteTail else {
-                throw SessionFileProcessingError.processingFailed(
-                    "export validation for session \(sessionURL.path) found an incomplete events.jsonl tail"
-                )
-            }
-            let targets = try DecisionRetryAnalyzer().retryTargets(lines: recovered.lines, metadata: metadata)
-            let events = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: runs)
-            let segments = try TranscriptMaterializer(sampleRate: CanonicalAudio.sampleRate)
-                .materialize(events: events, activeRuns: runs)
+            let runs = stored.state.runs
+            let segments = try TranscriptMaterializer(sampleRate: stored.state.generation.sampleRate)
+                .materialize(events: stored.events, activeRuns: runs)
                 .filter(\.hasRecognizedText)
 
             if withDecisions, !segments.isEmpty {
                 guard runs.clauseBoundary != nil,
                       runs.contentPriority != nil,
-                      targets.boundarySegments.isEmpty,
-                      targets.clauses.isEmpty,
-                      metadata.pendingDecisionTargets.isEmpty else {
+                      stored.pendingDecisions.pendingTargets.isEmpty else {
                     throw SessionFileProcessingError.processingFailed(
-                        "decision export validation for session \(sessionURL.path) requires active clause-boundary and content-priority runs with no pending analyzer targets"
+                        "decision export validation for session \(sessionURL.path) requires a complete selected decision run pair with no pending analyzer targets"
                     )
                 }
             }

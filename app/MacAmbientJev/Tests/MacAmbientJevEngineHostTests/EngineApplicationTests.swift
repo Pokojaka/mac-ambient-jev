@@ -247,7 +247,7 @@ import MacAmbientJevTestSupport
             .inspect(sessionID: sessionID).recovery)
         #expect(recovery.action == .finalize)
         let pausedMetadata = try #require(try ProcessingMetadataStore(sessionURL: recovery.sessionURL).load())
-        let interruptedState = try #require(pausedMetadata.finalizationAttempt?.state)
+        let interruptedState = try #require(pausedMetadata.state)
         #expect(interruptedState == .paused || interruptedState == .running)
         #expect(interruptedState != .failed)
 
@@ -260,7 +260,7 @@ import MacAmbientJevTestSupport
         #expect(completed.sessionID == started.sessionID)
         #expect(try await second.state().recovery == .completed)
         let completedMetadata = try #require(try ProcessingMetadataStore(sessionURL: recovery.sessionURL).load())
-        #expect(completedMetadata.finalizationAttempt?.state == .complete)
+        #expect(completedMetadata.state == .complete)
         guard case let .transcriptRead(page) = try await second.call(
             "transcript.read",
             payload: "{\"session_id\":\"\(started.sessionID)\",\"revision\":null,\"cursor\":null,\"limit\":10}"
@@ -437,13 +437,13 @@ private actor OfflineFinalizationGate {
 
 private struct GatedOfflineFinalTranscriptVAD: FinalTranscriptVADSegmenter {
     let gate: OfflineFinalizationGate
-    let provenance = RunProvenance(engine: "host-test-gated-finalization-vad", model: nil, version: "test", configuration: [:])
+    let provenance = RunProvenance(engine: "host-test-vad", model: nil, version: "test", configuration: [:])
 
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
         try await gate.suspend()
         guard reader.info.committedFrames > 0 else { return [] }
         return [SegmentReference(
-            segmentationRunID: runID, segmentID: "final_segment_1", speechRanges: [0..<reader.info.committedFrames]
+            segmentationRunID: runID, segmentID: "segment_1", speechRanges: [0..<reader.info.committedFrames]
         )]
     }
 }

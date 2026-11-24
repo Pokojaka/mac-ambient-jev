@@ -8,7 +8,7 @@ import MacAmbientJevPipeline
 import MacAmbientJevRuntime
 
 private func launchMaintenanceRecording(
-    paths: AppPaths, attempt: FinalizationAttempt.State = .complete
+    paths: AppPaths, state: ProcessingMetadata.State = .complete
 ) async throws -> SessionLayout {
     let sessionID = UUID()
     let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
@@ -16,20 +16,33 @@ private func launchMaintenanceRecording(
         createdAt: Date(timeIntervalSince1970: 1_700_000_000), timeZone: TimeZone(secondsFromGMT: 0)!
     )
     let layout = SessionLayout(sessionURL: sessionURL)
-    let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 1, sessionURL: layout.sessionURL)
-    try await writer.append(samples: Array(repeating: 0.125, count: 16_000))
-    _ = try await writer.finish()
-    let runs = ActiveRuns(segmentation: "seg_saved", asr: "asr_saved")
-    let eventWriter = try SessionWriter(sessionURL: sessionURL)
+    let audioWriter = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 1, sessionURL: layout.sessionURL)
+    try await audioWriter.append(samples: Array(repeating: 0.125, count: 16_000))
+    _ = try await audioWriter.finish()
     let provenance = RunProvenance(engine: "launch-maintenance-test", model: nil, version: "test", configuration: [:])
-    for (stage, runID) in [
-        (ProcessingStage.segmentation, runs.segmentation), (.asr, runs.asr)
-    ] {
-        _ = try await eventWriter.append(EventDraft(
+    let runs = ActiveRuns(segmentation: "local_segmentation", asr: "local_asr")
+    let generation = PipelineGeneration(
+        id: UUID(), runs: runs, sampleRate: 16_000,
+        segmentationProvenance: provenance, asrProvenance: provenance
+    )
+    let eventWriter = try SessionWriter(sessionURL: sessionURL)
+    try await eventWriter.append(generation.startEvent(sessionID: sessionID))
+    for (stage, runID) in [(ProcessingStage.segmentation, "local_segmentation"), (.asr, "local_asr")] {
+        try await eventWriter.append(EventDraft(
             eventType: "processing.run.started", sessionID: sessionID, processingRunID: runID,
             payload: ProcessingRunStartedPayload(stage: stage, provenance: provenance)
         ))
-        _ = try await eventWriter.append(EventDraft(
+    }
+    try await eventWriter.append(EventDraft(
+        eventType: "segmentation.input.sealed", sessionID: sessionID, segmentationRunID: "local_segmentation",
+        payload: SegmentationInputSealedPayload(frameCount: 16_000)
+    ))
+    try await eventWriter.append(EventDraft(
+        eventType: "segmentation.completed", sessionID: sessionID, segmentationRunID: "local_segmentation",
+        payload: SegmentationCompletedPayload(consumedFrames: 16_000, segmentCount: 0)
+    ))
+    for (stage, runID) in [(ProcessingStage.segmentation, "local_segmentation"), (.asr, "local_asr")] {
+        try await eventWriter.append(EventDraft(
             eventType: "processing.run.completed", sessionID: sessionID, processingRunID: runID,
             payload: ProcessingRunCompletedPayload(
                 stage: stage, succeeded: true, completedCount: 0, failedCount: 0
@@ -37,12 +50,7 @@ private func launchMaintenanceRecording(
         ))
     }
     try ProcessingMetadataStore(sessionURL: sessionURL).save(ProcessingMetadata(
-        finalizationAttempt: FinalizationAttempt(
-            attemptID: "finalize_saved", state: attempt, failureReason: nil
-        ),
-        activeRuns: runs,
-        pendingClauseBoundarySegments: [],
-        pendingContentPriorityClauses: []
+        generationID: generation.id, state: state, failureReason: nil
     ))
     return layout
 }
@@ -138,7 +146,7 @@ func failedLaunchMaintenanceReportsFailureWithoutStaleStatus() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let (defaults, suiteName) = try temporaryDefaults()
     defer { defaults.removePersistentDomain(forName: suiteName) }
-    let layout = try await launchMaintenanceRecording(paths: paths, attempt: .paused)
+    let layout = try await launchMaintenanceRecording(paths: paths, state: .paused)
     _ = try RecordingAudioCompactor(interrupt: nil).compact(layout: layout)
     try FileManager.default.createDirectory(at: layout.processingDirectory, withIntermediateDirectories: true)
     try Data("invalid FLAC".utf8).write(to: layout.recordingFLACURL)
@@ -177,7 +185,7 @@ func interruptedLaunchMaintenanceRemainsRetryableAfterCancellation() async throw
     defer { try? FileManager.default.removeItem(at: root) }
     let (defaults, suiteName) = try temporaryDefaults()
     defer { defaults.removePersistentDomain(forName: suiteName) }
-    let layout = try await launchMaintenanceRecording(paths: paths, attempt: .paused)
+    let layout = try await launchMaintenanceRecording(paths: paths, state: .complete)
     let manifest = try layout.loadManifest()
     let state = launchMaintenanceState(paths: paths, defaults: defaults)
     let previousProcessingState = state.processingState
@@ -231,7 +239,7 @@ func interruptedLaunchMaintenanceRemainsRetryableAfterCancellation() async throw
 
     let retryScan = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()
     #expect(retryScan.maintenance.count == 1)
-    #expect(retryScan.candidates.count == 1)
+    #expect(retryScan.candidates.isEmpty)
     #expect(retryScan.maintenance[0].sessionURL == layout.sessionURL)
 }
 

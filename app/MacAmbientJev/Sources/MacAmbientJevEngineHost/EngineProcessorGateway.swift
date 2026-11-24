@@ -90,7 +90,6 @@ final class EngineProcessorGateway: SessionProcessingExecuting, LiveTranscriptio
     func finishLiveTranscription(
         sessionID: UUID,
         checkpoint: AudioCheckpoint,
-        finalSegments: [SegmentReference],
         pacingMode: ASRPacingMode,
         shouldPause: @escaping NativeSessionProcessor.PauseCheck,
         onPhase: @escaping NativeSessionProcessor.PhaseHandler,
@@ -106,7 +105,6 @@ final class EngineProcessorGateway: SessionProcessingExecuting, LiveTranscriptio
         return await current.processor.finishLiveTranscription(
             sessionID: sessionID,
             checkpoint: checkpoint,
-            finalSegments: finalSegments,
             pacingMode: current.pacing,
             shouldPause: shouldPause,
             onPhase: onPhase,

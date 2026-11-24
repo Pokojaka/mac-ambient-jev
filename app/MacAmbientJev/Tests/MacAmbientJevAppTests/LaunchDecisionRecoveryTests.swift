@@ -5,7 +5,7 @@ import MacAmbientJevCore
 import MacAmbientJevPipeline
 import MacAmbientJevRuntime
 
-/// A completed recording whose published local transcript has one segment pending boundary decision.
+/// A completed recording whose local transcript has one segment pending boundary decision.
 private func pendingDecisionRecording(paths: AppPaths) async throws -> (sessionID: UUID, layout: SessionLayout, source: SegmentTextReference) {
     let sessionID = UUID()
     let sessionURL = try SessionBootstrapper(fileManager: .default).createSession(
@@ -16,40 +16,50 @@ private func pendingDecisionRecording(paths: AppPaths) async throws -> (sessionI
     let audio = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 1, sessionURL: sessionURL)
     try await audio.append(samples: Array(repeating: 0.125, count: 16_000))
     _ = try await audio.finish()
-    let runs = ActiveRuns(segmentation: "seg", asr: "asr")
     let writer = try SessionWriter(sessionURL: sessionURL)
     let provenance = RunProvenance(engine: "launch-recovery-test", model: nil, version: "1", configuration: [:])
-    let stages: [(ProcessingStage, String, Int)] = [(.segmentation, "seg", 1), (.asr, "asr", 1)]
-    for (stage, runID, _) in stages {
+    let generation = PipelineGeneration(
+        id: UUID(), runs: ActiveRuns(segmentation: "seg", asr: "asr"), sampleRate: 16_000,
+        segmentationProvenance: provenance, asrProvenance: provenance
+    )
+    _ = try await writer.append(generation.startEvent(sessionID: sessionID))
+    for (stage, runID) in [(ProcessingStage.segmentation, "seg"), (.asr, "asr")] {
         _ = try await writer.append(EventDraft(
             eventType: "processing.run.started", sessionID: sessionID, processingRunID: runID,
             payload: ProcessingRunStartedPayload(stage: stage, provenance: provenance)
         ))
     }
+    _ = try await writer.append(EventDraft.segmentCreated(
+        sessionID: sessionID,
+        segment: SegmentReference(segmentationRunID: "seg", segmentID: "s01", speechRanges: [0..<16_000])
+    ))
     _ = try await writer.append(EventDraft(
-        eventType: "segment.created", sessionID: sessionID, segmentationRunID: "seg", segmentID: "s01",
-        sourceStartFrame: 0, sourceEndFrame: 16_000, payload: EmptyPayload()
+        eventType: "segmentation.input.sealed", sessionID: sessionID, segmentationRunID: "seg",
+        payload: SegmentationInputSealedPayload(frameCount: 16_000)
+    ))
+    _ = try await writer.append(EventDraft(
+        eventType: "segmentation.completed", sessionID: sessionID, segmentationRunID: "seg",
+        payload: SegmentationCompletedPayload(consumedFrames: 16_000, segmentCount: 1)
+    ))
+    _ = try await writer.append(EventDraft(
+        eventType: "processing.run.completed", sessionID: sessionID, processingRunID: "seg",
+        payload: ProcessingRunCompletedPayload(stage: .segmentation, succeeded: true, completedCount: 1, failedCount: 0)
     ))
     let recognized = try await writer.append(EventDraft(
         eventType: "asr.completed", sessionID: sessionID, processingRunID: "asr", segmentationRunID: "seg",
         segmentID: "s01", sourceStartFrame: 0, sourceEndFrame: 16_000,
         payload: ASRCompletedEventPayload(text: "本文です", detectedLanguage: "ja", provenance: provenance)
     ))
-    for (stage, runID, completed) in stages {
-        _ = try await writer.append(EventDraft(
-            eventType: "processing.run.completed", sessionID: sessionID, processingRunID: runID,
-            payload: ProcessingRunCompletedPayload(stage: stage, succeeded: true, completedCount: completed, failedCount: 0)
-        ))
-    }
+    _ = try await writer.append(EventDraft(
+        eventType: "processing.run.completed", sessionID: sessionID, processingRunID: "asr",
+        payload: ProcessingRunCompletedPayload(stage: .asr, succeeded: true, completedCount: 1, failedCount: 0)
+    ))
     let source = try SegmentTextReference(
         segmentationRunID: "seg", segmentID: "s01", asrRunID: "asr", asrEventSeq: recognized.eventSeq
     )
-    try ProcessingMetadataStore(sessionURL: sessionURL).save(ProcessingMetadata(
-        finalizationAttempt: FinalizationAttempt(attemptID: "finalize_saved", state: .complete, failureReason: nil),
-        activeRuns: runs,
-        pendingClauseBoundarySegments: [source],
-        pendingContentPriorityClauses: []
-    ))
+    try ProcessingMetadataStore(sessionURL: sessionURL).save(
+        ProcessingMetadata(generationID: generation.id, state: .complete, failureReason: nil)
+    )
     return (sessionID, layout, source)
 }
 

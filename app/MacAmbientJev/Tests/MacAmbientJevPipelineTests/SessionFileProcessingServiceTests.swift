@@ -365,15 +365,20 @@ private func importedSession(
     )
 }
 
-private func materializedRows(sessionURL: URL) throws -> [MaterializedTranscriptSegment] {
-    guard let metadata = try ProcessingMetadataStore(sessionURL: sessionURL).load(),
-          let activeRuns = metadata.activeRuns else {
+private func storedTranscript(sessionURL: URL) throws -> StoredTranscriptEvents {
+    let layout = SessionLayout(sessionURL: sessionURL)
+    guard let stored = try EventLogTranscriptReader().read(
+        eventsURL: layout.eventsURL, sessionID: try layout.loadManifest().sessionID
+    ) else {
         throw ServiceTestFailure.expected
     }
-    let lines = try SessionRecovery.recoverJSONL(Data(contentsOf: SessionLayout(sessionURL: sessionURL).eventsURL)).lines
-    let events = try EventLogTranscriptReader().events(lines: lines, activeRuns: activeRuns)
+    return stored
+}
+
+private func materializedRows(sessionURL: URL) throws -> [MaterializedTranscriptSegment] {
+    let stored = try storedTranscript(sessionURL: sessionURL)
     return try TranscriptMaterializer(sampleRate: CanonicalAudio.sampleRate)
-        .materialize(events: events, activeRuns: activeRuns)
+        .materialize(events: stored.events, activeRuns: stored.state.runs)
 }
 
 private func canonicalJSON(_ data: Data) throws -> Data {
@@ -417,9 +422,8 @@ struct SessionFileProcessingServiceTests {
         #expect(try Data(contentsOf: originalURL) == bytes)
 
         let metadata = try #require(try ProcessingMetadataStore(sessionURL: created.url).load())
-        let runs = try #require(metadata.activeRuns)
-        #expect(runs.segmentation != nil)
-        #expect(runs.asr != nil)
+        #expect(metadata.state == .complete)
+        #expect(metadata.generationID == (try storedTranscript(sessionURL: created.url)).state.generation.id)
         let rows = try materializedRows(sessionURL: created.url)
         #expect(rows.map(\.text) == ["日本語のテストです。"])
         try assertExportMatchesMaterialization(outputURL: outputURL, rows: rows)
@@ -498,15 +502,15 @@ struct SessionFileProcessingServiceTests {
         #expect(try canonicalJSON(Data(contentsOf: outputURL)) == canonicalJSON(beforeExport))
         try assertExportMatchesMaterialization(outputURL: outputURL, rows: rows)
         if withDecisions {
-            let metadata = try #require(try ProcessingMetadataStore(sessionURL: created.url).load())
-            #expect(metadata.pendingDecisionTargets.isEmpty)
-            #expect(metadata.activeRuns?.clauseBoundary != nil)
-            #expect(metadata.activeRuns?.contentPriority != nil)
+            let stored = try storedTranscript(sessionURL: created.url)
+            #expect(stored.pendingDecisions.pendingTargets.isEmpty)
+            #expect(stored.state.runs.clauseBoundary != nil)
+            #expect(stored.state.runs.contentPriority != nil)
         }
     }
 
     @Test
-    func interruptedImportedFinalizationResumesFromRunningMetadata() async throws {
+    func unprocessedImportedSessionResumesByFinalizing() async throws {
         let environment = try ServiceEnvironment()
         defer { environment.remove() }
         let audioURL = try environment.makeInput()
@@ -520,10 +524,6 @@ struct SessionFileProcessingServiceTests {
         )
         let imported = try AudioImporter().importFile(audioURL, into: sessionURL)
         #expect(try Data(contentsOf: imported.originalURL) == Data(contentsOf: audioURL))
-        try ProcessingMetadataStore(sessionURL: sessionURL).beginFinalization(
-            attemptID: "finalize_interrupted_fixture",
-            policy: .reject
-        )
         let harness = ServiceTestHarness(environment: environment)
         let recorder = ServiceEventRecorder()
         let outputURL = environment.root.appending(path: "resumed.json")
@@ -544,9 +544,7 @@ struct SessionFileProcessingServiceTests {
         #expect(result.disposition == .completed)
         #expect(harness.resourceFactoryCalls.snapshot() == 1)
         let metadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
-        #expect(metadata.finalizationAttempt?.state == .complete)
-        #expect(metadata.activeRuns?.segmentation != nil)
-        #expect(metadata.activeRuns?.asr != nil)
+        #expect(metadata.state == .complete)
         #expect(try Data(contentsOf: imported.originalURL) == Data(contentsOf: audioURL))
         try assertExportMatchesMaterialization(outputURL: outputURL, rows: try materializedRows(sessionURL: sessionURL))
         #expect(await recorder.exportCount() == 1)
@@ -566,8 +564,7 @@ struct SessionFileProcessingServiceTests {
         let imported = try await importedSession(using: harness, audioURL: audioURL, outputURL: outputURL, recorder: recorder)
         #expect(imported.disposition == .completed)
         let created = try #require(await recorder.createdSessions().first)
-        let beforeMetadata = try #require(try ProcessingMetadataStore(sessionURL: created.url).load())
-        #expect(!beforeMetadata.pendingDecisionTargets.isEmpty)
+        #expect(!(try storedTranscript(sessionURL: created.url)).pendingDecisions.pendingTargets.isEmpty)
         let engineCallsBefore = await harness.engineCalls.snapshot()
 
         if recoverUnpublishedRun {
@@ -578,7 +575,7 @@ struct SessionFileProcessingServiceTests {
                 processingRunID: "priority_unpublished_fixture",
                 payload: ProcessingRunStartedPayload(
                     stage: .contentPriority,
-                    provenance: DecisionRunProvenance.priority(mode: "retry", identity: testDecisionIdentity)
+                    provenance: DecisionRunProvenance.priority(identity: testDecisionIdentity)
                 )
             ))
         }
@@ -601,10 +598,10 @@ struct SessionFileProcessingServiceTests {
         #expect(harness.resourceFactoryCalls.snapshot() == resourceCallsBeforeResume + 1)
         #expect(await harness.engineCalls.snapshot().asr == engineCallsBefore.asr)
         #expect(await harness.engineCalls.snapshot().vad == engineCallsBefore.vad)
-        let metadata = try #require(try ProcessingMetadataStore(sessionURL: created.url).load())
-        #expect(metadata.pendingDecisionTargets.isEmpty)
-        #expect(metadata.activeRuns?.clauseBoundary != nil)
-        #expect(metadata.activeRuns?.contentPriority != nil)
+        let stored = try storedTranscript(sessionURL: created.url)
+        #expect(stored.pendingDecisions.pendingTargets.isEmpty)
+        #expect(stored.state.runs.clauseBoundary != nil)
+        #expect(stored.state.runs.contentPriority != nil)
         #expect(try materializedRows(sessionURL: created.url).map(\.text) == ["日本語のテストです。"])
         try assertExportMatchesMaterialization(outputURL: outputURL, rows: try materializedRows(sessionURL: created.url))
         let requestCounts = await decisions.provider.requestCounts()
@@ -639,10 +636,8 @@ struct SessionFileProcessingServiceTests {
 
         let created = try #require(await recorder.createdSessions().first)
         let metadata = try #require(try ProcessingMetadataStore(sessionURL: created.url).load())
-        #expect(metadata.finalizationAttempt?.state == .complete)
-        #expect(metadata.activeRuns?.segmentation != nil)
-        #expect(metadata.activeRuns?.asr != nil)
-        #expect(!metadata.pendingDecisionTargets.isEmpty)
+        #expect(metadata.state == .complete)
+        #expect(!(try storedTranscript(sessionURL: created.url)).pendingDecisions.pendingTargets.isEmpty)
         #expect(try materializedRows(sessionURL: created.url).map(\.text) == ["日本語のテストです。"])
         #expect(!FileManager.default.fileExists(atPath: outputURL.path))
         #expect(await recorder.exportCount() == 0)
@@ -674,8 +669,8 @@ struct SessionFileProcessingServiceTests {
         let metadataStore = ProcessingMetadataStore(sessionURL: created.url)
         let published = try #require(try metadataStore.load())
         let publishedRows = try materializedRows(sessionURL: created.url)
-        #expect(published.finalizationAttempt?.state == .complete)
-        #expect(!published.pendingDecisionTargets.isEmpty)
+        #expect(published.state == .complete)
+        #expect(!(try storedTranscript(sessionURL: created.url)).pendingDecisions.pendingTargets.isEmpty)
         #expect(!FileManager.default.fileExists(atPath: outputURL.path))
         #expect(await recorder.exportCount() == 0)
 
@@ -734,7 +729,7 @@ struct SessionFileProcessingServiceTests {
         #expect(!FileManager.default.fileExists(atPath: outputURL.path))
         if keepSession {
             let metadata = try #require(try ProcessingMetadataStore(sessionURL: created.url).load())
-            #expect(metadata.finalizationAttempt?.state == .failed)
+            #expect(metadata.state == .failed)
         }
         #expect(await recorder.cleanupFailureCount() == 0)
     }
@@ -814,10 +809,8 @@ struct SessionFileProcessingServiceTests {
         let exported = try JSONSerialization.jsonObject(with: Data(contentsOf: outputURL)) as? [Any]
         #expect(exported?.isEmpty == true)
         let created = try #require(await recorder.createdSessions().first)
-        let metadata = try #require(try ProcessingMetadataStore(sessionURL: created.url).load())
-        #expect(metadata.pendingDecisionTargets.isEmpty)
-        #expect(metadata.activeRuns?.clauseBoundary == nil)
-        #expect(metadata.activeRuns?.contentPriority == nil)
+        let stored = try storedTranscript(sessionURL: created.url)
+        #expect(stored.pendingDecisions.pendingTargets.isEmpty)
         #expect(await decisions.provider.requestCounts().boundary == 0)
         #expect(await decisions.provider.requestCounts().priority == 0)
         let usage = await decisions.usageCounter.snapshot()
@@ -840,7 +833,7 @@ struct SessionFileProcessingServiceTests {
         #expect(try SessionLayout(sessionURL: retained.sessionURL).loadManifest().sessionID == retained.sessionID)
         #expect(retained.finalize == SessionFinalizeRequest(sessionID: retained.sessionID, metadataPolicy: .reject))
         #expect(retained.finalize.pending.sessionID == retained.sessionID)
-        #expect(try ProcessingMetadataStore(sessionURL: retained.sessionURL).load()?.activeRuns == nil)
+        #expect(try ProcessingMetadataStore(sessionURL: retained.sessionURL).load() == nil)
         let sessionEntries = try FileManager.default.contentsOfDirectory(
             at: environment.paths.sessionsRoot, includingPropertiesForKeys: nil
         )

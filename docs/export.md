@@ -10,11 +10,11 @@
 
 「聞き取れませんでした」などの文字列だけで発話を除外しない。認識不能は ASR の構造化状態 `outcome: empty` で扱う。イベントには空本文を含む区間が残る。
 
-`SavedTranscriptLoader` は保存済み active run のイベントと原文から本文・行内 slice を materialize し、保存された境界評価の `filler_ranges`（F・B除去範囲）を使う。別の辞書から範囲を取得したり、読取時に判定を再実行したりしない。読み込み・書き出しは ASR イベントと原文を変更しない。CLI の `segments.json` は原文が非空の行を保持し、`text` は原文、`display_text` は上記と同じ表示本文、`source` は ASR 参照、`clause_state` と `clause_slices` は節の状態と行内範囲を表す。フィラー・相槌除去後に空になる発話・全 LOW の発話（空の `display_text`）も JSON に含むため、画面・txt と JSON の行集合は異なる。跨ぎ節の全文を各行へ複製せず、全 parts はイベントの `clauses.closed` から追跡する。GUI は JSON を書き出さず、`transcript.txt` と音声だけを書き出す。[保存形式](storage.md)を参照。
+`SavedTranscriptLoader` は最新 generation の選択 run のイベントと原文から本文・行内 slice を materialize し、保存された境界評価の `filler_ranges`（F・B除去範囲）を使う。別の辞書から範囲を取得したり、読取時に判定を再実行したりしない。読み込み・書き出しは ASR イベントと原文を変更しない。CLI の `segments.json` は原文が非空の行を保持し、`text` は原文、`display_text` は上記と同じ表示本文、`source` は ASR 参照、`clause_state` と `clause_slices` は節の状態と行内範囲を表す。フィラー・相槌除去後に空になる発話・全 LOW の発話（空の `display_text`）も JSON に含むため、画面・txt と JSON の行集合は異なる。跨ぎ節の全文を各行へ複製せず、全 parts はイベントの `clauses.closed` から追跡する。GUI は JSON を書き出さず、`transcript.txt` と音声だけを書き出す。[保存形式](storage.md)を参照。
 
-処理 CLI とキャプチャ CLI は発話区間検出・音声認識の2段階すべての公開済み run を必須とし、保存済み metadata の保留一覧とイベント参照を検証してから materialize する。必須 run の欠損、不正なログ・不完全な末尾・保留一覧の不一致は明示エラーで、読取時に発話文判定を再実行しない。キャプチャ CLI の `transcriptText` は `displayText` を行ごとに改行で連結し、原文を trim して代用しない。処理 CLI の `ContentPriorityAccess.disabled` は判定を実行せず、フィラー・相槌や LOW の除去は行わないが、表示専用の漢数字から算用数字への整形は適用する。判定再試行待ちセッションの resume も判定せず、公開済みの原文・表示本文を含む JSON を書き出す。
+処理 CLI とキャプチャ CLI はイベントログ最新の `pipeline.started` 世代から選択 run を得て、音声書き出し・transcript 出力では seal 済み入力、checkpoint frame 数、segmentation / ASR の成功完了と正確な count を検証してから materialize します。必須 run の欠損、不正なログ・不完全な末尾・参照不一致は明示エラーで、読取時に発話文判定を再実行しません。判定 pending は選択済み event log から読み、metadata からは選びません。キャプチャ CLI の `transcriptText` は `displayText` を行ごとに改行で連結し、原文を trim して代用しません。処理 CLI の `ContentPriorityAccess.disabled` は decision run を作らず、フィラー・相槌や LOW の除去は行いませんが、表示専用の漢数字から算用数字への整形は適用します。
 
-イベントログと `processing_metadata.json` は `schema_version: 3` を必須とする。欠損・未対応の version は読取エラーとして拒否し、明示的な再処理でも metadata を置換しない。
+イベントログと `processing_metadata.json` は `schema_version: 4` を必須とする。metadata は `generation_id`、`state`、optional `failure_reason` の状態記録だけで、最新 `pipeline.started` と世代 ID が一致しない status は reset 後の stale status として無視します。欠損・未対応 version は読取エラーとして拒否し、移行しません。
 
 ## transcript.txt
 
@@ -30,7 +30,7 @@
 
 ## 音声とフォルダー名
 
-録音は保存済みの `recording.flac`（16 kHz・mono・16-bit FLAC）を全フレーム復号し、CRC-8・CRC-16 と MD5 を検証してから `audio.flac` に無変換でコピーする。コピー後の FLAC の長さは `committedFrames` と正確に一致する。保存状態が FLAC でない録音は「録音の FLAC 化が終わっていないため書き出せません。確定処理をやり直してください」で失敗し、その場で符号化はしない。起動時の保存整理中（`isMaintainingStorage`）に、まだ `recordingPCM` の録音を書き出そうとした場合は、アプリが書き出しの前に止め、「保存済み録音の音声を整理しています。整理が終わってから書き出してください」と表示する。読み込み音声は保存済み original を再圧縮せず複製し、ファイル名は `audio` と元の拡張子を結合する。音声の選択はセッションの種類で決まり、派生 timeline の有無では切り替えない。書き出しはセッション内の音声を読むだけで、`recording.flac`、original、`storage.json` のいずれも削除・変更しない。保存状態は書き出しの開始時に `storage.json` から決める。
+録音は保存済みの `recording.flac`（16 kHz・mono・16-bit FLAC）を全フレーム復号し、CRC-8・CRC-16 と MD5 を検証してから `audio.flac` に無変換でコピーする。コピー後の FLAC の長さは `committedFrames` と正確に一致する。保存状態が FLAC でない録音は「録音の FLAC 化が終わっていないため書き出せません。確定処理をやり直してください」で失敗し、その場で符号化はしない。起動時の保存整理中（`isMaintainingStorage`）に、まだ `recordingPCM` の録音を書き出そうとした場合は、アプリが書き出しの前に止め、「保存済み録音の音声を整理しています。整理が終わってから書き出してください」と表示する。読み込み音声は保存済み original を再圧縮せず複製し、ファイル名は `audio` と元の拡張子を結合する。音声の選択はセッションの種類で決まり、派生 timeline の有無では切り替えない。書き出しはセッション内の音声を読むだけで、`recording.flac`、original、`storage.json` のいずれも削除・変更しない。保存状態は書き出しの開始時に `storage.json` から決める。書き出しは最新 generation を保存済み音声の timeline に対して完了検証（seal 済み入力、segmentation / ASR の成功完了と count）してから作業用フォルダーを作る。再処理の失敗などで未完了なら明示エラーで失敗し、何も書かず、既存の書き出しも変更しない。画面表示は未完了の部分行も読む。
 
 書き出しフォルダー名は保存済みセッションの実フォルダー名をそのまま使う。作成時に固定したタイムゾーンで決めた名前を再計算しないため、現在のタイムゾーンや書き出し時刻で変化しない。
 
@@ -91,7 +91,7 @@ Dock と Finder のアプリアイコンは、暗い角丸タイルに白い紙�
 
 再処理には読めるセッション情報と利用できる原音声が必要。派生 metadata の一般的な破損だけなら原音声から再処理できるが、schema version の欠損・未対応は再処理でも拒否する。破損状態の書き出しは許可しない。書き出しにはさらに公開済み文字起こしが必要。録音中は保存済み録音の選択を無効にし、録音・読み込み中や同じセッションの処理待ち・処理中は再処理を重ねて開始しない。
 
-一覧は active ASR run のイベントログと active transcript payload を読み取り専用で検証する。ログが欠損・不正、または不完全な末尾を含む場合は破損状態となり、文字起こしを公開せず書き出しを無効にする。再処理は利用可能な原音声から行える。
+一覧は最新 `pipeline.started` 世代の選択 ASR run と transcript payload を読み取り専用で検証する。open な段階の保存済み部分行も表示し、新しい generation marker で reset した場合は前世代の行を再選択せず空から始める。ログが欠損・不正、または不完全な末尾を含む場合は破損状態となり、文字起こしを公開せず書き出しを無効にする。再処理は利用可能な原音声から行える。
 
 Windows では保存済み録音を選ぶと、文字起こしを録音名とともにメイン画面に表示する。録音中・録音の開始または停止中は一覧選択を無効にする。文字起こしが未生成・利用不能、または録音を読めない場合は、以前の録音の行を消去して理由を表示する。音声 import が受け付けられて session ID が返ると、その session を選択し、処理で生成・公開される行を完成前から順次表示する。新しい録音を開始すると、保存済み録音の表示は新しい live transcript に置き換わる。開いている一覧は import の受け付け、録音停止、処理完了に伴う engine state の変化から自動更新する（[Windows の保存済み録音](windows.md#winui-shell)）。
 

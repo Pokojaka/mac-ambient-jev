@@ -70,14 +70,14 @@ private actor FakeFinalASR: ASREngine {
     nonisolated let provenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
     private let log: FinalizationCallLog
     private let values: [String]
-    private let shouldFail: Bool
+    private let failOnCall: Int?
     private var callIndex = 0
     private var audioFrameCounts: [Int] = []
 
-    init(log: FinalizationCallLog, values: [String], shouldFail: Bool = false) {
+    init(log: FinalizationCallLog, values: [String], failOnCall: Int? = nil) {
         self.log = log
         self.values = values
-        self.shouldFail = shouldFail
+        self.failOnCall = failOnCall
     }
 
     func prepare() async throws {}
@@ -87,7 +87,7 @@ private actor FakeFinalASR: ASREngine {
         callIndex += 1
         audioFrameCounts.append(input.samples.count)
         await log.append("asr:\(index)")
-        guard !shouldFail else { throw FakeFinalizationError.expected }
+        guard index != failOnCall else { throw FakeFinalizationError.expected }
         return ASRResult(text: values[index], detectedLanguage: "ja")
     }
 
@@ -138,7 +138,7 @@ private actor CancellationGate {
 }
 
 private actor CancellationGatedFinalASR: ASREngine {
-    nonisolated let provenance = RunProvenance(engine: "cancellation-gated-asr", model: nil, version: "test", configuration: [:])
+    nonisolated let provenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
     private let gate: CancellationGate
 
     init(gate: CancellationGate) {
@@ -156,7 +156,7 @@ private actor CancellationGatedFinalASR: ASREngine {
 }
 
 private struct CancellationGatedFinalVAD: FinalTranscriptVADSegmenter {
-    let provenance = RunProvenance(engine: "cancellation-gated-vad", model: nil, version: "test", configuration: [:])
+    let provenance = RunProvenance(engine: "fake-vad", model: nil, version: "test", configuration: [:])
     let gate: CancellationGate
 
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
@@ -230,35 +230,6 @@ private func finalizationFixture(
     return (paths, sessionURL, await writer.committedSnapshot())
 }
 
-private func savePreviousRuns(sessionURL: URL) async throws -> ActiveRuns {
-    let runs = ActiveRuns(
-        segmentation: "seg_previous",
-        asr: "asr_previous"
-    )
-    let sessionID = try SessionLayout(sessionURL: sessionURL).loadManifest().sessionID
-    let writer = try SessionWriter(sessionURL: sessionURL)
-    let provenance = RunProvenance(engine: "fixture", model: nil, version: "1", configuration: [:])
-    for (stage, runID) in [
-        (ProcessingStage.segmentation, "seg_previous"), (.asr, "asr_previous")
-    ] {
-        try await writer.append(EventDraft(
-            eventType: "processing.run.started", sessionID: sessionID, processingRunID: runID,
-            payload: ProcessingRunStartedPayload(stage: stage, provenance: provenance)
-        ))
-        try await writer.append(EventDraft(
-            eventType: "processing.run.completed", sessionID: sessionID, processingRunID: runID,
-            payload: ProcessingRunCompletedPayload(stage: stage, succeeded: true, completedCount: 0, failedCount: 0)
-        ))
-    }
-    try ProcessingMetadataStore(sessionURL: sessionURL).save(ProcessingMetadata(
-        finalizationAttempt: FinalizationAttempt(attemptID: "finalize_previous", state: .complete, failureReason: nil),
-        activeRuns: runs,
-        pendingClauseBoundarySegments: [],
-        pendingContentPriorityClauses: []
-    ))
-    return runs
-}
-
 private func processFinal(
     _ processor: NativeSessionProcessor,
     sessionID: UUID,
@@ -301,13 +272,19 @@ private func cancelProcessingWhenGateStarts(
     return await task.value
 }
 
+private func resumableDecisionPriority() -> ContentPriorityAccess {
+    let counter = DecisionUsageCounter()
+    let provider = FrozenReuseProvider(fillerRangesByText: ["再開した本文": [], "前半": []])
+    return .localTagger({
+        DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
+    }, usageCounter: counter)
+}
+
 private func recoveryProcessor(
     paths: AppPaths,
     log: FinalizationCallLog,
     audioHandling: any SessionProcessingAudioHandling = RecordingTestAudioHandling()
 ) -> NativeSessionProcessor {
-    let counter = DecisionUsageCounter()
-    let provider = FrozenReuseProvider(fillerRangesByText: ["再開した本文": []])
     return NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
@@ -318,9 +295,7 @@ private func recoveryProcessor(
             )
         ),
         audioHandling: audioHandling,
-        contentPriority: .localTagger({
-            DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
-        }, usageCounter: counter),
+        contentPriority: resumableDecisionPriority(),
         sleep: { _ in }
     )
 }
@@ -375,7 +350,7 @@ func nativeProcessorPauseReasonForSessionProcessingCoordinator(reason: Inference
         #expect(statusTexts.allSatisfy { !$0.contains(otherReason.finalizationExplanation) })
     }
     #expect(await typedStatusLog.snapshot() == ["selected-pause-reason"])
-    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .paused)
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.state == .paused)
     #expect(!(await log.snapshot()).contains { $0.hasPrefix("asr:") })
     #expect(InferenceHoldReason.thermal.finalizationExplanation == UserFacingStatus.finalizationPausedForHeat.text)
 }
@@ -397,7 +372,7 @@ func nativeProcessorCancellationDuringASRPausesDurablyAndRecoversOnRelaunch() as
             )
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled,
+        contentPriority: resumableDecisionPriority(),
         sleep: { _ in }
     )
 
@@ -406,7 +381,7 @@ func nativeProcessorCancellationDuringASRPausesDurablyAndRecoversOnRelaunch() as
     #expect(cancelled.disposition == .paused)
     #expect(cancelled.message == "確定処理が中断されたため、一時停止しました")
     #expect(cancelled.metrics?.initialPendingCount == 1)
-    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .paused)
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.state == .paused)
     #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery?.action == .finalize)
 
     let relaunch = recoveryProcessor(paths: paths, log: log)
@@ -415,53 +390,9 @@ func nativeProcessorCancellationDuringASRPausesDurablyAndRecoversOnRelaunch() as
         statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
     #expect(resumed.disposition == .completed)
-    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .complete)
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.state == .complete)
     #expect(try readFinalRows(sessionURL: sessionURL).map(\.text) == ["再開した本文"])
     #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery == nil)
-}
-
-@Test(.timeLimit(.minutes(10)))
-func nativeProcessorCancellationRetainsPublishedTranscriptAndRuns() async throws {
-    let sessionID = UUID()
-    let (paths, sessionURL, _) = try await finalizationFixture(sessionID: sessionID)
-    defer { try? FileManager.default.removeItem(at: paths.applicationSupportURL.deletingLastPathComponent()) }
-    let initialLog = FinalizationCallLog()
-    let initialProcessor = recoveryProcessor(paths: paths, log: initialLog)
-    let initial = try await processFinal(
-        initialProcessor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
-        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
-    )
-    #expect(initial.disposition == .completed)
-    let publishedText = try readFinalRows(sessionURL: sessionURL).map(\.text)
-    #expect(!publishedText.isEmpty)
-    let previousMetadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
-    let previousRuns = try #require(previousMetadata.activeRuns)
-
-    let gate = CancellationGate()
-    let log = FinalizationCallLog()
-    let cancellingProcessor = NativeSessionProcessor(
-        paths: paths,
-        engines: SessionProcessingEngines(
-            asr: CancellationGatedFinalASR(gate: gate),
-            finalTranscriptVAD: FakeFinalVAD(
-                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
-                log: log
-            )
-        ),
-        audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled,
-        sleep: { _ in }
-    )
-
-    let cancelled = await cancelProcessingWhenGateStarts(cancellingProcessor, sessionID: sessionID, gate: gate)
-
-    #expect(cancelled.disposition == .paused)
-    #expect(cancelled.retainedTranscript == .finalized)
-    let cancelledMetadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
-    #expect(cancelledMetadata.finalizationAttempt?.state == .paused)
-    #expect(cancelledMetadata.activeRuns == previousRuns)
-    #expect(try readFinalRows(sessionURL: sessionURL).map(\.text) == publishedText)
-    #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery?.action == .finalize)
 }
 
 @Test(.timeLimit(.minutes(10)))
@@ -478,7 +409,7 @@ func nativeProcessorCancellationDuringVADPausesDurablyAndRecoversOnRelaunch() as
             finalTranscriptVAD: CancellationGatedFinalVAD(gate: gate)
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled,
+        contentPriority: resumableDecisionPriority(),
         sleep: { _ in }
     )
 
@@ -488,7 +419,7 @@ func nativeProcessorCancellationDuringVADPausesDurablyAndRecoversOnRelaunch() as
     #expect(cancelled.message == "確定処理が中断されたため、一時停止しました")
     #expect(cancelled.metrics == nil)
     #expect(await log.snapshot().isEmpty)
-    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .paused)
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.state == .paused)
     #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery?.action == .finalize)
 
     let relaunch = recoveryProcessor(paths: paths, log: log)
@@ -497,7 +428,7 @@ func nativeProcessorCancellationDuringVADPausesDurablyAndRecoversOnRelaunch() as
         statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
     #expect(resumed.disposition == .completed)
-    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .complete)
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.state == .complete)
     #expect(try readFinalRows(sessionURL: sessionURL).map(\.text) == ["再開した本文"])
     #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery == nil)
 }
@@ -522,7 +453,7 @@ func nativeProcessorCancellationDuringPacingPausesDurablyAndRecoversOnRelaunch()
             )
         ),
         audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled,
+        contentPriority: resumableDecisionPriority(),
         sleep: { _ in try await gate.suspendUntilCancelled() }
     )
 
@@ -534,7 +465,7 @@ func nativeProcessorCancellationDuringPacingPausesDurablyAndRecoversOnRelaunch()
     #expect(cancelled.message == "確定処理が中断されたため、一時停止しました")
     #expect(cancelled.metrics?.initialPendingCount == 2)
     #expect(cancelled.metrics?.pacingWaitCount == 1)
-    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .paused)
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.state == .paused)
     #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery?.action == .finalize)
 
     let relaunch = recoveryProcessor(paths: paths, log: log)
@@ -543,13 +474,13 @@ func nativeProcessorCancellationDuringPacingPausesDurablyAndRecoversOnRelaunch()
         statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
     #expect(resumed.disposition == .completed)
-    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .complete)
-    #expect(try readFinalRows(sessionURL: sessionURL).map(\.text) == ["再開した本文"])
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.state == .complete)
+    #expect(try readFinalRows(sessionURL: sessionURL).map(\.text) == ["前半", "再開した本文"])
     #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery == nil)
 }
 
 @Test(.timeLimit(.minutes(10)))
-func nativeProcessorCancellationDuringCompactionKeepsPublishedRunsCompleteForMaintenance() async throws {
+func nativeProcessorCancellationDuringCompactionKeepsTheCompleteTranscriptForMaintenance() async throws {
     let sessionID = UUID()
     let (paths, sessionURL, _) = try await finalizationFixture(sessionID: sessionID)
     defer { try? FileManager.default.removeItem(at: paths.applicationSupportURL.deletingLastPathComponent()) }
@@ -564,11 +495,11 @@ func nativeProcessorCancellationDuringCompactionKeepsPublishedRunsCompleteForMai
     let cancelled = await cancelProcessingWhenGateStarts(processor, sessionID: sessionID, gate: gate)
 
     #expect(cancelled.disposition == .paused)
-    #expect(cancelled.message == "確定処理が中断されたため、一時停止しました")
+    #expect(cancelled.message == "文字起こしは完了しましたが、音声の保存整理が中断されました")
     #expect(cancelled.retainedTranscript == .finalized)
     let metadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
-    #expect(metadata.finalizationAttempt?.state == .complete)
-    #expect(metadata.activeRuns?.asr != nil)
+    #expect(metadata.state == .complete)
+    #expect(try storedFinal(sessionURL: sessionURL).state.recognitionCompleted)
     #expect(try readFinalRows(sessionURL: sessionURL).map(\.text) == ["再開した本文"])
     let inspection = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID)
     #expect(inspection.recovery == nil)
@@ -608,18 +539,9 @@ func finalTranscriptPipelinePreservesVADContextForASR() async throws {
     #expect(await log.snapshot() == ["vad", "asr:0"])
     let loadedMetadata = try ProcessingMetadataStore(sessionURL: sessionURL).load()
     let metadata = try #require(loadedMetadata)
-    #expect(metadata.finalizationAttempt?.state == .complete)
-    #expect(metadata.activeRuns?.segmentation != "seg_previous")
-    #expect(metadata.activeRuns?.asr != "asr_previous")
+    #expect(metadata.state == .complete)
     let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: sessionURL.appending(path: "events.jsonl")))
-    let events = try EventLogTranscriptReader().events(
-        lines: recovered.lines,
-        activeRuns: try #require(metadata.activeRuns)
-    )
-    let rows = try TranscriptMaterializer(sampleRate: 16_000).materialize(
-        events: events,
-        activeRuns: try #require(metadata.activeRuns)
-    )
+    let rows = try readFinalRows(sessionURL: sessionURL)
     #expect(rows.map(\.text) == ["文脈を保った発話"])
     #expect(rows.map(\.startMilliseconds) == [0])
     #expect(rows.map(\.endMilliseconds) == [1_000])
@@ -687,41 +609,47 @@ func decisionsSkipWhitespaceOnlyFinalTranscript() async throws {
 }
 
 @Test
-func finalTranscriptPipelineFailureLeavesPreviousActiveRunsUntouched() async throws {
+func failedASRMarksTheGenerationFailedAndKeepsTheRecognizedRows() async throws {
     let sessionID = UUID()
-    let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
-    defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
-    let previousRuns = try await savePreviousRuns(sessionURL: sessionURL)
+    let (paths, sessionURL, _) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: paths.applicationSupportURL.deletingLastPathComponent()) }
     let log = FinalizationCallLog()
-    let asr = FakeFinalASR(log: log, values: ["text"], shouldFail: true)
-    let vad = FakeFinalVAD(
-        segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
-        log: log
-    )
     let processor = NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
-            asr: asr,
-            finalTranscriptVAD: vad
+            asr: FakeFinalASR(log: log, values: ["最初の確定", "失敗"], failOnCall: 1),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [
+                    SegmentReference(segmentationRunID: "ignored", segmentID: "vad_1", speechRanges: [0..<8_000]),
+                    SegmentReference(segmentationRunID: "ignored", segmentID: "vad_2", speechRanges: [8_000..<16_000])
+                ],
+                log: log
+            )
         ),
         audioHandling: RecordingTestAudioHandling(),
         contentPriority: .disabled,
         sleep: { _ in }
     )
     let statuses = FinalizationStatusRecorder()
+    let states = FinalizationStateRecorder()
 
     let result = try await processFinal(
         processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
-        statuses: statuses, states: FinalizationStateRecorder(), phases: FinalizationCallLog()
+        statuses: statuses, states: states, phases: FinalizationCallLog()
     )
 
     #expect(result.disposition == .failed)
-    #expect(result.metrics != nil)
+    #expect(result.metrics?.initialPendingCount == 2)
     #expect(result.retainedTranscript == .finalized)
     #expect(await statuses.snapshot().last?.contains("確定処理に失敗") == true)
-    let failedMetadata = try ProcessingMetadataStore(sessionURL: sessionURL).load()
-    #expect(failedMetadata?.activeRuns == previousRuns)
-    #expect(failedMetadata?.finalizationAttempt?.state == .failed)
+    let last = try #require(await states.snapshot().last)
+    #expect(last.texts == ["最初の確定"])
+    guard case .partialFailure = last.state else {
+        Issue.record("a failed finalization reports a partial failure")
+        return
+    }
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.state == .failed)
+    #expect(try readFinalRows(sessionURL: sessionURL).map(\.text) == ["最初の確定"])
 }
 
 @Test
@@ -753,7 +681,6 @@ func finishLiveTranscriptionEndsWithFinalizationStatus() async throws {
     let finish = await processor.finishLiveTranscription(
         sessionID: sessionID,
         checkpoint: checkpoint,
-        finalSegments: [],
         pacingMode: .normal,
         shouldPause: { nil },
         onPhase: { _ in },
@@ -798,9 +725,7 @@ func noSpeechFinalizationSkipsASRPreparationAndCompletesZeroCountRun() async thr
     #expect(await asr.prepareCallCount == 0)
     #expect(decisionFactoryCalls.count() == 0)
     #expect(await statuses.snapshot().last == "発話区間は検出されませんでした")
-    let metadata = try ProcessingMetadataStore(sessionURL: sessionURL).load()
-    #expect(metadata?.pendingClauseBoundarySegments == [])
-    #expect(metadata?.pendingContentPriorityClauses == [])
+    #expect(try storedFinal(sessionURL: sessionURL).pendingDecisions.pendingTargets.isEmpty)
     let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: sessionURL.appending(path: "events.jsonl")))
     let completions = try recovered.lines.compactMap { line -> (String, Bool, Int, Int)? in
         guard let object = try JSONSerialization.jsonObject(with: line) as? [String: Any],
@@ -854,12 +779,8 @@ func deferredDecisionsKeepFinalizationRunningUntilLocalTranscriptIsVisible() asy
     #expect(observedStates.last?.state == .complete)
     #expect(await statuses.snapshot().last
         == "\(UserFacingStatus.decisionDeferred.text)。判定エンジンを初期化できませんでした: モデルがありません")
-    let loadedMetadata = try ProcessingMetadataStore(sessionURL: sessionURL).load()
-    let metadata = try #require(loadedMetadata)
-    #expect(metadata.activeRuns?.asr != nil)
-    // The local transcript is published with every segment boundary-pending in the same write.
-    #expect(metadata.pendingClauseBoundarySegments.map(\.segmentID) == ["seg_000001"])
-    #expect(metadata.activeRuns?.clauseBoundary == nil)
+    // The local transcript is complete with every segment boundary-pending.
+    #expect(try storedFinal(sessionURL: sessionURL).pendingDecisions.boundarySegments.map(\.segmentID) == ["seg_000001"])
     let rows = try readFinalRows(sessionURL: sessionURL)
     #expect(rows.map(\.clauseState) == [.boundaryPending])
     #expect(rows.map(\.displayText) == ["表示する本文"])
@@ -897,10 +818,9 @@ func failedModelRequestsDeferFinalizationAndRetryDecisions() async throws {
         ),
         audioHandling: RecordingTestAudioHandling(),
         contentPriority: .localTagger({
-            let factoryCall = decisionFactoryCalls.count()
-            decisionFactoryCalls.recordCall()
+            // Every decision request asks the factory for a coordinator; requests fail until the retry starts.
             let provider: any DecisionProvider
-            if factoryCall == 0 {
+            if decisionFactoryCalls.count() == 0 {
                 provider = FailingDecisionProvider()
             } else {
                 provider = FrozenReuseProvider(fillerRangesByText: [:])
@@ -918,11 +838,11 @@ func failedModelRequestsDeferFinalizationAndRetryDecisions() async throws {
 
     #expect(result.disposition == .completed)
     #expect(await statuses.snapshot().last == UserFacingStatus.decisionDeferred.text)
-    let pending = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
-        .pendingClauseBoundarySegments
+    let pending = try storedFinal(sessionURL: sessionURL).pendingDecisions.boundarySegments
     // Terminal segments still require boundary inference; failed requests leave both sources pending.
     #expect(pending.map(\.segmentID) == ["seg_000001", "seg_000002"])
 
+    decisionFactoryCalls.recordCall()
     let retryStatuses = FinalizationStatusRecorder()
     let retryResult = await processor.retryContentPrioritySession(
         sessionID: sessionID,
@@ -934,9 +854,7 @@ func failedModelRequestsDeferFinalizationAndRetryDecisions() async throws {
     #expect(retryResult.disposition == .completed)
     #expect(retryResult.message == nil)
     #expect(await retryStatuses.snapshot().last == "保留中の判定を更新しました")
-    let recoveredMetadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
-    #expect(recoveredMetadata.pendingClauseBoundarySegments.isEmpty)
-    #expect(recoveredMetadata.pendingContentPriorityClauses.isEmpty)
+    #expect(try storedFinal(sessionURL: sessionURL).pendingDecisions.pendingTargets.isEmpty)
 }
 
 @Test
@@ -974,280 +892,8 @@ func finalTranscriptPipelineEmitsASRPhaseBeforeTranscription() async throws {
     ])
 }
 
-private actor SegmentLineDroppingASR: ASREngine {
-    nonisolated let provenance = RunProvenance(engine: "log-mutating-asr", model: nil, version: "test", configuration: [:])
-    let eventsURL: URL
-    let log: FinalizationCallLog
-    private var callIndex = 0
-
-    init(eventsURL: URL, log: FinalizationCallLog) {
-        self.eventsURL = eventsURL
-        self.log = log
-    }
-
-    func prepare() async throws {}
-    func unload() async {}
-
-    func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
-        let index = callIndex
-        callIndex += 1
-        await log.append("asr:\(index)")
-        let lines = try String(contentsOf: eventsURL, encoding: .utf8)
-            .split(separator: "\n", omittingEmptySubsequences: true)
-        let created = try lines.indices.compactMap { index -> (index: Int, runID: String)? in
-            let object = try JSONSerialization.jsonObject(with: Data(lines[index].utf8)) as? [String: Any]
-            guard object?["event_type"] as? String == "segment.created",
-                  let runID = object?["segmentation_run_id"] as? String else { return nil }
-            return (index, runID)
-        }
-        let currentRunID = created.last?.runID
-        let createdIndices = created.filter { $0.runID == currentRunID }.map(\.index)
-        if createdIndices.count == 2 {
-            var kept = lines
-            kept.remove(at: createdIndices[0])
-            try (kept.joined(separator: "\n") + "\n").write(to: eventsURL, atomically: false, encoding: .utf8)
-        }
-        return ASRResult(text: index == 0 ? "前半" : "後半", detectedLanguage: "ja")
-    }
-}
-
 @Test
-func finalTranscriptPipelineRejectsPersistedLogMissingVADSegment() async throws {
-    let sessionID = UUID()
-    let (_, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
-    defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
-    let log = FinalizationCallLog()
-    let pipeline = FinalTranscriptPipeline(
-        sessionID: sessionID,
-        sessionURL: sessionURL,
-        audio: try SessionAudioReaders.open(
-            try #require(try SessionLayout(sessionURL: sessionURL).audioSource(
-                for: SessionLayout(sessionURL: sessionURL).loadManifest()
-            )),
-            layout: SessionLayout(sessionURL: sessionURL)
-        ),
-        asr: SegmentLineDroppingASR(eventsURL: sessionURL.appending(path: "events.jsonl"), log: log),
-        vadSegmenter: FakeFinalVAD(
-            segments: [
-                SegmentReference(segmentationRunID: "ignored", segmentID: "vad_1", speechRanges: [0..<8_000]),
-                SegmentReference(segmentationRunID: "ignored", segmentID: "vad_2", speechRanges: [8_000..<16_000])
-            ],
-            log: log
-        ),
-        sleep: { _ in }
-    )
-
-    await #expect {
-        _ = try await pipeline.process(
-            onStatus: { _ in }, pacingMode: .normal, shouldPause: { nil }, onPhase: { _ in }
-        )
-    } throws: { error in
-        guard let failure = error as? FinalTranscriptPipelineFailure else { return false }
-        return failure.message.contains("の保存済み区間が一致しません") && failure.metrics != nil
-    }
-    #expect(await log.snapshot() == ["vad", "asr:0", "asr:1"])
-}
-
-
-@Test
-func persistedValidationFailureKeepsPublishedRunsAndDisplayAndReturnsASRMetrics() async throws {
-    let sessionID = UUID()
-    let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
-    defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
-    let log = FinalizationCallLog()
-    let processor = NativeSessionProcessor(
-        paths: paths,
-        engines: SessionProcessingEngines(
-            asr: FakeFinalASR(log: log, values: ["最初の確定"]),
-            finalTranscriptVAD: FakeFinalVAD(
-                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
-                log: log
-            )
-        ),
-        audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled,
-        sleep: { _ in }
-    )
-    let first = try await processFinal(
-        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
-        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
-    )
-    #expect(first.disposition == .completed)
-    let publishedValue = try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns
-    let published = try #require(publishedValue)
-
-    let failing = NativeSessionProcessor(
-        paths: paths,
-        engines: SessionProcessingEngines(
-            asr: SegmentLineDroppingASR(eventsURL: sessionURL.appending(path: "events.jsonl"), log: log),
-            finalTranscriptVAD: FakeFinalVAD(
-                segments: [
-                    SegmentReference(segmentationRunID: "ignored", segmentID: "vad_1", speechRanges: [0..<8_000]),
-                    SegmentReference(segmentationRunID: "ignored", segmentID: "vad_2", speechRanges: [8_000..<16_000])
-                ],
-                log: log
-            )
-        ),
-        audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled,
-        sleep: { _ in }
-    )
-    let states = FinalizationStateRecorder()
-    let result = try await processFinal(
-        failing, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
-        statuses: FinalizationStatusRecorder(), states: states, phases: FinalizationCallLog()
-    )
-    #expect(result.disposition == .failed)
-    #expect(result.metrics?.initialPendingCount == 2)
-    #expect(await states.snapshot().last?.texts == ["最初の確定"])
-    #expect(try readFinalRows(sessionURL: sessionURL).map(\.text) == ["最初の確定"])
-    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns == published)
-    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .failed)
-}
-
-@Test
-func failedFinalizationShowsThePreviousFinalizedTranscript() async throws {
-    let sessionID = UUID()
-    let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
-    defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
-    let log = FinalizationCallLog()
-    let vad = FakeFinalVAD(
-        segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
-        log: log
-    )
-    let succeeding = NativeSessionProcessor(
-        paths: paths,
-        engines: SessionProcessingEngines(
-            asr: FakeFinalASR(log: log, values: ["最初の確定"]),
-            finalTranscriptVAD: vad
-        ),
-        audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled,
-        sleep: { _ in }
-    )
-    _ = try await processFinal(
-        succeeding, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
-        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
-    )
-    let published = try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns
-
-    let failing = NativeSessionProcessor(
-        paths: paths,
-        engines: SessionProcessingEngines(
-            asr: FakeFinalASR(log: log, values: ["失敗"], shouldFail: true),
-            finalTranscriptVAD: vad
-        ),
-        audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .disabled,
-        sleep: { _ in }
-    )
-    let states = FinalizationStateRecorder()
-    let result = try await processFinal(
-        failing, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
-        statuses: FinalizationStatusRecorder(), states: states, phases: FinalizationCallLog()
-    )
-
-    #expect(result.disposition == .failed)
-    #expect(result.retainedTranscript == .finalized)
-    #expect(result.metrics?.initialPendingCount == 1)
-    #expect(result.message?.contains("認識できない 1区間") == true)
-    let last = try #require(await states.snapshot().last)
-    #expect(last.texts == ["最初の確定"])
-    guard case .partialFailure = last.state else {
-        Issue.record("a failed finalization reports a partial failure")
-        return
-    }
-    let metadata = try ProcessingMetadataStore(sessionURL: sessionURL).load()
-    #expect(metadata?.activeRuns == published)
-    #expect(metadata?.finalizationAttempt?.state == .failed)
-}
-
-@Test
-func recordingInterruptedBeforeStopIsFinalizedIntoNewRunsOnly() async throws {
-    let sessionID = UUID()
-    let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
-    defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
-    let writer = try SessionWriter(sessionURL: sessionURL)
-    for (stage, runID, provenance) in [
-        (ProcessingStage.clauseBoundary, "boundary_live_interrupted", DecisionRunProvenance.boundary(mode: "live", identity: testDecisionIdentity)),
-        (.contentPriority, "priority_live_interrupted", DecisionRunProvenance.priority(mode: "live", identity: testDecisionIdentity))
-    ] {
-        try await writer.append(EventDraft(
-            eventType: "processing.run.started",
-            sessionID: sessionID,
-            processingRunID: runID,
-            payload: ProcessingRunStartedPayload(stage: stage, provenance: provenance)
-        ))
-    }
-    try await writer.append(EventDraft(
-        eventType: "segment.created",
-        sessionID: sessionID,
-        segmentationRunID: "seg_live",
-        segmentID: "live_000001",
-        sourceStartFrame: 0,
-        sourceEndFrame: 16_000,
-        payload: EmptyPayload()
-    ))
-    try await writer.append(EventDraft(
-        eventType: "asr.pending",
-        sessionID: sessionID,
-        processingRunID: "asr_live_interrupted",
-        segmentationRunID: "seg_live",
-        segmentID: "live_000001",
-        sourceStartFrame: 0,
-        sourceEndFrame: 16_000,
-        payload: EmptyPayload()
-    ))
-    let scanner = SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot)
-    let candidate = try #require(try scanner.inspect(sessionID: sessionID).recovery)
-    #expect(candidate.action == .finalize)
-    guard case .recordedPCM(let recovered) = try SessionLayout(sessionURL: sessionURL)
-        .audioSource(for: candidate.manifest) else {
-        Issue.record("a recording recovers from its timeline")
-        return
-    }
-    #expect(recovered == checkpoint)
-
-    let log = FinalizationCallLog()
-    let counter = DecisionUsageCounter()
-    let processor = NativeSessionProcessor(
-        paths: paths,
-        engines: SessionProcessingEngines(
-            asr: FakeFinalASR(log: log, values: ["復旧した本文"]),
-            finalTranscriptVAD: FakeFinalVAD(
-                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
-                log: log
-            )
-        ),
-        audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .localTagger({
-            DecisionCoordinator(
-                provider: FrozenReuseProvider(fillerRangesByText: [:]),
-                identity: testDecisionIdentity,
-                usageCounter: counter
-            )
-        }, usageCounter: counter),
-        sleep: { _ in }
-    )
-    let result = try await processFinal(
-        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
-        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
-    )
-
-    #expect(result.disposition == .completed)
-    let runsValue = try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns
-    let runs = try #require(runsValue)
-    #expect(runs.segmentation?.hasPrefix("seg_final_") == true)
-    #expect(runs.asr?.hasPrefix("asr_final_") == true)
-    #expect(runs.clauseBoundary != "boundary_live_interrupted")
-    #expect(runs.contentPriority != "priority_live_interrupted")
-    #expect(try readFinalRows(sessionURL: sessionURL).map(\.text) == ["復旧した本文"])
-    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.pendingDecisionTargets == [])
-    #expect(try scanner.inspect(sessionID: sessionID).recovery == nil)
-}
-
-@Test
-func everyRunRecordsItsProvenanceOnceAndReprocessingRecordsNewRuns() async throws {
+func everyRunRecordsItsProvenanceOnceAndRepeatedProcessingReusesTheGeneration() async throws {
     let sessionID = UUID()
     let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
     defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
@@ -1272,8 +918,7 @@ func everyRunRecordsItsProvenanceOnceAndReprocessingRecordsNewRuns() async throw
             statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
         )
         #expect(result.disposition == .completed)
-        let runsValue = try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns
-        let runs = try #require(runsValue)
+        let runs = try storedFinal(sessionURL: sessionURL).state.runs
         let started = try eventObjects(sessionURL).filter { $0["event_type"] as? String == "processing.run.started" }
         var engines: [String: String] = [:]
         for (stage, runID) in [
@@ -1295,7 +940,8 @@ func everyRunRecordsItsProvenanceOnceAndReprocessingRecordsNewRuns() async throw
             (object["processing_run_id"] as? String).map { ($0, $0) }
         }))
     }
-    #expect(startedRunsByAttempt[1].count == startedRunsByAttempt[0].count + 2)
+    #expect(startedRunsByAttempt[1] == startedRunsByAttempt[0])
+    #expect(await log.snapshot() == ["vad", "asr:0"])
 }
 
 @Test
@@ -1338,7 +984,7 @@ func unreadableMetadataIsReplacedOnlyByExplicitReprocessing() async throws {
         statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
     #expect(replaced.disposition == .completed)
-    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.finalizationAttempt?.state == .complete)
+    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.state == .complete)
 }
 
 /// Accepts every candidate, never continues, and answers LOW for every clause.
@@ -1385,128 +1031,18 @@ private actor FrozenReuseProvider: DecisionProvider {
     func sentPriorityTexts() -> [String] { priorityTexts }
 }
 
-private actor LiveLowPriorityRemovalGate {
-    private var removed = false
-    private var waiter: CheckedContinuation<Void, Never>?
-
-    func observe(_ segments: [MaterializedTranscriptSegment]) {
-        guard segments.contains(where: { segment in
-            segment.clauseSlices.contains { $0.priority == .lowPriority }
-                && segment.displayText != segment.textProjection.text
-        }) else { return }
-        removed = true
-        waiter?.resume()
-        waiter = nil
-    }
-
-    func wait() async {
-        guard !removed else { return }
-        await withCheckedContinuation { waiter = $0 }
-    }
+private func storedFinal(sessionURL: URL) throws -> StoredTranscriptEvents {
+    let layout = SessionLayout(sessionURL: sessionURL)
+    return try #require(try EventLogTranscriptReader().read(
+        eventsURL: layout.eventsURL, sessionID: try layout.loadManifest().sessionID
+    ))
 }
 
 private func readFinalRows(sessionURL: URL) throws -> [MaterializedTranscriptSegment] {
-    let runs = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns)
-    let lines = try SessionRecovery.recoverJSONL(Data(contentsOf: SessionLayout(sessionURL: sessionURL).eventsURL)).lines
+    let stored = try storedFinal(sessionURL: sessionURL)
     return try TranscriptMaterializer(sampleRate: 16_000).materialize(
-        events: try EventLogTranscriptReader().events(lines: lines, activeRuns: runs), activeRuns: runs
+        events: stored.events, activeRuns: stored.state.runs
     )
-}
-
-@Test(arguments: [false, true])
-func finalizationClassifiesFinalClausesAndReusesOnlyByteIdenticalDurableLiveDecisions(changed: Bool) async throws {
-    let sessionID = UUID()
-    let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
-    defer { try? FileManager.default.removeItem(at: paths.applicationSupportURL.deletingLastPathComponent()) }
-    let log = FinalizationCallLog()
-    // Final ASR keeps the raw filler; its nonblank clause is identical across new source segmentation.
-    let liveText = "えー、同じ発話。"
-    let finalText = changed ? "変更された発話。" : liveText
-    let fillerRange = try TextUTF16Range(start: 0, end: 2)
-    var fillerRangesByText = [liveText: [fillerRange], "えー": [fillerRange]]
-    if changed { fillerRangesByText[finalText] = [] }
-    let provider = FrozenReuseProvider(fillerRangesByText: fillerRangesByText)
-    let counter = DecisionUsageCounter()
-    let decisions = DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
-    let processor = NativeSessionProcessor(
-        paths: paths,
-        engines: SessionProcessingEngines(
-            asr: FakeFinalASR(log: log, values: [liveText, "えー", finalText]),
-            finalTranscriptVAD: FakeFinalVAD(
-                segments: [SegmentReference(
-                    segmentationRunID: "ignored", segmentID: "final_row", speechRanges: [0..<16_000]
-                )],
-                log: log
-            )
-        ),
-        audioHandling: RecordingTestAudioHandling(),
-        contentPriority: .localTagger({ decisions }, usageCounter: counter),
-        sleep: { _ in }
-    )
-    _ = try await processor.startLiveTranscription(
-        sessionID: sessionID, segmentationRunID: "live_seg", sampleRate: checkpoint.sampleRate
-    )
-    let gate = LiveLowPriorityRemovalGate()
-    _ = try await processor.processLiveSegments(
-        sessionID: sessionID,
-        segments: [
-            SegmentReference(segmentationRunID: "live_seg", segmentID: "live_row", speechRanges: [0..<8_000]),
-            // A filler-only successor still receives boundary inference when it becomes terminal.
-            SegmentReference(segmentationRunID: "live_seg", segmentID: "live_tail", speechRanges: [8_000..<16_000]),
-        ],
-        checkpoint: checkpoint, onStatus: nil,
-        onUpdate: { segments, _ in await gate.observe(segments) }
-    )
-    await gate.wait()
-    let result = await processor.finishLiveTranscription(
-        sessionID: sessionID, checkpoint: checkpoint, finalSegments: [], pacingMode: .normal,
-        shouldPause: { nil }, onPhase: { _ in }, onStatus: { _ in }, onUpdate: { _, _ in }
-    )
-    #expect(result.disposition == .completed)
-    // Finalization can cancel the terminal request before it is sent.
-    let assessedBoundaryTexts = await provider.assessedBoundaryTexts()
-    #expect(assessedBoundaryTexts == [liveText, finalText] || assessedBoundaryTexts == [liveText, "えー", finalText])
-    #expect(await provider.sentPriorityTexts() == (changed ? ["同じ発話。", finalText] : ["同じ発話。"]))
-    let runs = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.activeRuns)
-    let materialized = try readFinalRows(sessionURL: sessionURL)
-    #expect(materialized.map(\.text) == [finalText])
-    #expect(materialized.first?.text.utf8.elementsEqual(finalText.utf8) == true)
-    #expect(materialized.map(\.textProjection.text) == [changed ? finalText : "同じ発話。"])
-    let expectedRemovedRanges: [TextUTF16Range] = changed ? [] : [try TextUTF16Range(start: 0, end: 3)]
-    #expect(materialized.map(\.textProjection.removedRanges) == [expectedRemovedRanges])
-    #expect(materialized.map(\.displayText) == [""])
-    #expect(materialized.map(\.segmentID) == ["final_row"])
-    #expect(materialized.map(\.clauseState) == [.classified])
-    let segment = try #require(materialized.first)
-    let slices = segment.clauseSlices
-    func isFillerOnly(_ slice: ClauseRowSlice) throws -> Bool {
-        try segment.textProjection.displayRanges(for: slice.sourceRange).isEmpty
-    }
-    #expect(try slices.filter { !(try isFillerOnly($0)) }.map(\.priority) == [.lowPriority])
-    if !changed {
-        #expect(try slices.contains { try isFillerOnly($0) && $0.priority == nil && !$0.needsRetry })
-    }
-    #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.pendingDecisionTargets == [])
-    let objects = try eventObjects(sessionURL)
-    let assignment = try #require(objects.first {
-        $0["event_type"] as? String == "content_priority.assigned"
-            && $0["processing_run_id"] as? String == runs.contentPriority
-    })
-    let payload = try #require(assignment["payload"] as? [String: Any])
-    let decision = try #require((payload["assignments"] as? [[String: Any]])?.first?["decision"] as? [String: Any])
-    if changed {
-        #expect(decision["kind"] as? String == "classified")
-    } else {
-        #expect(decision["kind"] as? String == "carried_over")
-        #expect((decision["source_priority_run_id"] as? String)?.hasPrefix("priority_live_") == true)
-        let sourceClause = try #require(decision["source_clause"] as? [String: Any])
-        #expect((sourceClause["boundary_run_id"] as? String)?.hasPrefix("boundary_live_") == true)
-        #expect(payload["request"] is NSNull)
-    }
-    let snapshot = await counter.snapshot()
-    #expect(snapshot.pendingBoundarySegmentCount == 0)
-    #expect((2...3).contains(snapshot.boundaryRequests.sendCount))
-    #expect(snapshot.priorityRequests.sendCount == (changed ? 2 : 1))
 }
 
 @Test("Validated empty VAD completes without speech inference")
@@ -1531,7 +1067,7 @@ func validatedEmptyVADCompletesWithoutSpeechInference() async throws {
     let statuses = FinalizationStatusRecorder()
     var previousRuns: ActiveRuns?
     var storedFLAC: Data?
-    for attempt in 1...2 {
+    for _ in 1...2 {
         let result = try await processFinal(
             processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
             statuses: statuses, states: FinalizationStateRecorder(),
@@ -1539,20 +1075,16 @@ func validatedEmptyVADCompletesWithoutSpeechInference() async throws {
         )
         #expect(result.disposition == .completed)
         #expect(result.noSpeech)
-        #expect(result.metrics == .zero)
+        #expect(result.metrics == nil)
         #expect(await statuses.snapshot().last == "発話区間は検出されませんでした")
         let metadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
-        #expect(metadata.finalizationAttempt?.state == .complete)
-        #expect(metadata.pendingClauseBoundarySegments == [])
-        #expect(metadata.pendingContentPriorityClauses == [])
-        let runs = try #require(metadata.activeRuns)
-        #expect(runs != previousRuns)
+        #expect(metadata.state == .complete)
+        let stored = try storedFinal(sessionURL: sessionURL)
+        #expect(stored.pendingDecisions.pendingTargets.isEmpty)
+        let runs = stored.state.runs
+        #expect(previousRuns == nil || runs == previousRuns)
         previousRuns = runs
-        let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: SessionLayout(sessionURL: sessionURL).eventsURL))
-        let events = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: runs)
-        #expect(try TranscriptMaterializer(sampleRate: checkpoint.sampleRate).materialize(
-            events: events, activeRuns: runs
-        ).isEmpty)
+        #expect(try readFinalRows(sessionURL: sessionURL).isEmpty)
         #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery == nil)
         let objects = try eventObjects(sessionURL)
         let stageRuns: [(ProcessingStage, String?, RunProvenance)] = [
@@ -1584,9 +1116,10 @@ func validatedEmptyVADCompletesWithoutSpeechInference() async throws {
             #expect(payload["failed_count"] as? Int == 0)
         }
         #expect(objects.allSatisfy {
-            ["processing.run.started", "processing.run.completed"].contains($0["event_type"] as? String)
+            ["pipeline.started", "processing.run.started", "processing.run.completed",
+             "segmentation.input.sealed", "segmentation.completed"].contains($0["event_type"] as? String)
         })
-        #expect(await log.snapshot() == Array(repeating: "vad", count: attempt))
+        #expect(await log.snapshot() == ["vad"])
         #expect(await asr.prepareCallCount == 0)
         let flac = try Data(contentsOf: SessionLayout(sessionURL: sessionURL).recordingFLACURL)
         #expect(storedFLAC == nil || flac == storedFLAC)
@@ -1603,13 +1136,12 @@ private struct ThrowingFinalVAD: FinalTranscriptVADSegmenter {
 }
 
 @Test
-func failedVADDoesNotPublishNoSpeechOrReplacePreviousRuns() async throws {
+func failedVADDoesNotCompleteSegmentationOrReportNoSpeech() async throws {
     let sessionID = UUID()
     let (paths, sessionURL, checkpoint) = try await finalizationFixture(
         samples: Array(repeating: 0, count: 16_000), sessionID: sessionID
     )
     defer { try? FileManager.default.removeItem(at: paths.applicationSupportURL.deletingLastPathComponent()) }
-    let previous = try await savePreviousRuns(sessionURL: sessionURL)
     let processor = NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
@@ -1629,8 +1161,13 @@ func failedVADDoesNotPublishNoSpeechOrReplacePreviousRuns() async throws {
     #expect(!result.noSpeech)
     #expect(result.metrics == nil)
     let metadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
-    #expect(metadata.finalizationAttempt?.state == .failed)
-    #expect(metadata.activeRuns == previous)
+    #expect(metadata.state == .failed)
+    let state = try #require(try ProcessingLogState(
+        eventsURL: SessionLayout(sessionURL: sessionURL).eventsURL, sessionID: sessionID
+    ))
+    #expect(state.generation.id == metadata.generationID)
+    #expect(!state.segmentationCompleted)
+    #expect(state.runCompletions.isEmpty)
     #expect(await statuses.snapshot().last?.contains("確定処理に失敗") == true)
 }
 

@@ -6,14 +6,16 @@ import Testing
 @testable import MacAmbientJevCore
 @testable import MacAmbientJevRuntime
 
-private struct PausedImportVAD: FinalTranscriptVADSegmenter {
-    let provenance = RunProvenance(engine: "fake-vad", model: nil, version: "test", configuration: [:])
+private actor PausedImportVAD: FinalTranscriptVADSegmenter {
+    nonisolated let provenance = RunProvenance(engine: "fake-vad", model: nil, version: "test", configuration: [:])
+    private(set) var calls = 0
+
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
-        [SegmentReference(
-            segmentationRunID: runID,
-            segmentID: "spoken",
-            speechRanges: [0..<reader.info.committedFrames]
-        )]
+        calls += 1
+        return [
+            SegmentReference(segmentationRunID: runID, segmentID: "speech_001", speechRanges: [0..<16_000]),
+            SegmentReference(segmentationRunID: runID, segmentID: "speech_002", speechRanges: [16_000..<reader.info.committedFrames]),
+        ]
     }
 }
 
@@ -25,10 +27,19 @@ private actor PausedImportASR: ASREngine {
 
     func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
         calls += 1
-        return ASRResult(text: "spoken words", detectedLanguage: "ja")
+        return ASRResult(text: calls == 1 ? "saved prefix" : "resumed tail", detectedLanguage: "ja")
     }
 
     func unload() async {}
+}
+
+private actor PauseAfterFirstImportSegment {
+    private var checks = 0
+
+    func check() -> InferenceHoldReason? {
+        checks += 1
+        return checks == 1 ? nil : .thermal
+    }
 }
 
 @Test
@@ -51,7 +62,7 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     let processingDirectory = sessionURL
         .appending(path: "audio", directoryHint: .isDirectory)
         .appending(path: "processing", directoryHint: .isDirectory)
-    let samples = Array(repeating: Float(0.1), count: 16_000)
+    let samples = Array(repeating: Float(0.1), count: 32_000)
     let writer = try DurableAudioWriter(directory: processingDirectory, chunkDurationSeconds: 1, sessionURL: sessionURL)
     try await writer.append(samples: samples)
     let sourceURL = sessionURL.appending(path: "audio/original.caf")
@@ -65,11 +76,13 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     }
 
     let asr = PausedImportASR()
+    let vad = PausedImportVAD()
+    let pauseAfterFirstSegment = PauseAfterFirstImportSegment()
     let processor = NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
             asr: asr,
-            finalTranscriptVAD: PausedImportVAD()
+            finalTranscriptVAD: vad
         ),
         audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
         contentPriority: .disabled,
@@ -78,7 +91,7 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     let paused = await processor.processSession(
         sessionID: sessionID,
         pacingMode: .normal,
-        shouldPause: { .thermal },
+        shouldPause: { await pauseAfterFirstSegment.check() },
         onPhase: { _ in },
         metadataPolicy: .reject,
         onStatus: { _ in },
@@ -86,12 +99,25 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     )
 
     #expect(paused.disposition == .paused)
-    #expect(paused.metrics?.initialPendingCount == 1)
-    #expect(paused.retainedTranscript == .nothing)
-    #expect(await asr.calls == 0)
-    let pausedMetadata = try ProcessingMetadataStore(sessionURL: sessionURL).load()
-    #expect(pausedMetadata?.activeRuns == nil)
-    #expect(pausedMetadata?.finalizationAttempt?.state == .paused)
+    #expect(paused.metrics?.initialPendingCount == 2)
+    #expect(paused.retainedTranscript == .finalized)
+    #expect(await asr.calls == 1)
+    #expect(await vad.calls == 1)
+    let pausedMetadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
+    #expect(pausedMetadata.state == .paused)
+    let reader = EventLogTranscriptReader()
+    let pausedStore = try #require(try reader.read(eventsURL: SessionLayout(sessionURL: sessionURL).eventsURL, sessionID: sessionID))
+    let pausedGenerationID = pausedStore.state.generation.id
+    let pausedRuns = pausedStore.state.runs
+    #expect(pausedMetadata.generationID == pausedGenerationID)
+    #expect(pausedStore.state.segments == [
+        SegmentReference(segmentationRunID: try #require(pausedRuns.segmentation), segmentID: "speech_001", speechRanges: [0..<16_000]),
+        SegmentReference(segmentationRunID: try #require(pausedRuns.segmentation), segmentID: "speech_002", speechRanges: [16_000..<32_000]),
+    ])
+    let pausedRows = try TranscriptMaterializer(sampleRate: pausedStore.state.generation.sampleRate)
+        .materialize(events: pausedStore.events, activeRuns: pausedStore.state.runs)
+    #expect(pausedRows.map(\.text) == ["saved prefix"])
+    let pausedPrefixSource = try #require(pausedRows.first?.source)
 
     let candidate = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery
     #expect(candidate?.action == .finalize)
@@ -112,29 +138,33 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
     )
 
     #expect(resumed.disposition == .completed)
-    #expect(await asr.calls == 1)
-    let completed = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
-    #expect(completed.finalizationAttempt?.state == .complete)
-    let runs = try #require(completed.activeRuns)
-    #expect(runs.segmentation != nil)
-    #expect(runs.asr != nil)
-    #expect(runs.clauseBoundary == nil)
-    #expect(runs.contentPriority == nil)
-    let recovered = try SessionRecovery.recoverJSONL(
-        Data(contentsOf: SessionLayout(sessionURL: sessionURL).eventsURL)
+    #expect(await asr.calls == 2)
+    #expect(await vad.calls == 1)
+    let completedMetadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
+    #expect(completedMetadata.state == .complete)
+    #expect(completedMetadata.generationID == pausedGenerationID)
+    let completed = try reader.validateCompletion(
+        eventsURL: SessionLayout(sessionURL: sessionURL).eventsURL, sessionID: sessionID, frameCount: 32_000
     )
-    let events = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: runs)
-    let sources = try events.compactMap { try $0.asrSource() }
-    let rows = try TranscriptMaterializer(sampleRate: CanonicalAudio.sampleRate)
-        .materialize(events: events, activeRuns: runs)
-    #expect(rows.map(\.text) == ["spoken words"])
-    #expect(rows.map(\.clauseState) == [.boundaryPending])
-    #expect(completed.pendingClauseBoundarySegments == sources)
-    #expect(completed.pendingContentPriorityClauses.isEmpty)
+    #expect(completed.state.generation.id == pausedGenerationID)
+    #expect(completed.state.runs.selectsSameRuns(as: pausedRuns))
+    #expect(completed.state.segments == pausedStore.state.segments)
+    #expect(completed.state.runs.segmentation != nil)
+    #expect(completed.state.runs.asr != nil)
+    #expect(completed.state.runs.clauseBoundary == nil)
+    #expect(completed.state.runs.contentPriority == nil)
+    let sources = try completed.events.compactMap { try $0.asrSource() }
+    let rows = try TranscriptMaterializer(sampleRate: completed.state.generation.sampleRate)
+        .materialize(events: completed.events, activeRuns: completed.state.runs)
+    #expect(rows.map(\.text) == ["saved prefix", "resumed tail"])
+    #expect(rows.first?.source == pausedPrefixSource)
+    #expect(rows.map(\.clauseState) == [.boundaryPending, .boundaryPending])
+    #expect(completed.pendingDecisions.boundarySegments == sources)
+    #expect(completed.pendingDecisions.clauses.isEmpty)
     // Local finalization completes without decision runs; its boundary-pending text remains retryable.
     let pending = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot)
         .inspect(sessionID: sessionID).recovery
     #expect(pending?.action == .retryContentPriority(boundarySegments: sources, clauses: []))
     #expect(try SessionAudioStorageStore(layout: SessionLayout(sessionURL: sessionURL)).load()
-        == .importedOriginal(TimelineAudioInfo(committedFrames: 16_000, gapEvents: [])))
+        == .importedOriginal(TimelineAudioInfo(committedFrames: 32_000, gapEvents: [])))
 }

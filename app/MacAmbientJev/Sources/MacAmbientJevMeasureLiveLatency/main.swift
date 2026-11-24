@@ -228,7 +228,7 @@ struct MeasureLiveLatencyCommand {
         try await processor.prepareASR { progress, message in
             FileHandle.standardError.write(Data("ASR model \(Int(progress * 100))%: \(message)\n".utf8))
         }
-        let segmentationRunID = "seg_live_\(UUID().uuidString.lowercased())"
+        let segmentationRunID = "seg_\(UUID().uuidString.lowercased())"
         _ = try await processor.startLiveTranscription(
             sessionID: sessionID,
             segmentationRunID: segmentationRunID,
@@ -315,7 +315,6 @@ struct MeasureLiveLatencyCommand {
         let finalResult = await processor.finishLiveTranscription(
             sessionID: sessionID,
             checkpoint: checkpoint,
-            finalSegments: [],
             pacingMode: .normal,
             shouldPause: { MacThermalMonitor().isCritical ? .thermal : nil },
             onPhase: { _ in },

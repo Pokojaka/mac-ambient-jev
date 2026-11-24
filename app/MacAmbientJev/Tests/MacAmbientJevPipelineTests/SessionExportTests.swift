@@ -4,17 +4,16 @@ import Testing
 @testable import MacAmbientJevPipeline
 
 private let fixtureSampleRate = 16_000.0
+/// Transcript frames per second: low enough that every fixture segment fits the shortest fixture audio.
+private let transcriptSampleRate = 20.0
 
 @Test
-func savedTranscriptLoaderReportsNoTranscriptWithoutActiveASRRun() async throws {
+func savedTranscriptLoaderReportsNoTranscriptWithoutAGeneration() async throws {
     let fixture = try ExportFixture()
     defer { fixture.cleanUp() }
-    let session = try await fixture.writeLiveSession(activeRuns: ActiveRuns(segmentation: "seg-run"))
+    let session = try await fixture.writeLiveSession(withTranscript: false)
 
-    let transcript = try SavedTranscriptLoader.load(
-        sessionURL: fixture.sessionURL(session),
-        audioSource: try #require(session.audioSource)
-    )
+    let transcript = try SavedTranscriptLoader.load(sessionURL: fixture.sessionURL(session))
 
     #expect(transcript == .unavailable)
 }
@@ -29,10 +28,7 @@ func savedTranscriptLoaderKeepsRawFillerTextForPresentationAndExport() async thr
     let layout = SessionLayout(sessionURL: session.sessionURL)
     let asrEventsBefore = try asrEventLines(at: layout.eventsURL)
 
-    let beforeResponse = try SavedTranscriptLoader.load(
-        sessionURL: session.sessionURL,
-        audioSource: try #require(session.audioSource)
-    )
+    let beforeResponse = try SavedTranscriptLoader.load(sessionURL: session.sessionURL)
     guard case .segments(let rawSegments) = beforeResponse else {
         Issue.record("expected saved transcript segments before boundary response")
         return
@@ -43,10 +39,7 @@ func savedTranscriptLoaderKeepsRawFillerTextForPresentationAndExport() async thr
         == "[00:00] \(raw)\n[01:05] 今日の議題です\n")
 
     let assessedSession = try await fixture.saveFillerAssessment(session: session, rawText: raw)
-    let afterResponse = try SavedTranscriptLoader.load(
-        sessionURL: assessedSession.sessionURL,
-        audioSource: try #require(assessedSession.audioSource)
-    )
+    let afterResponse = try SavedTranscriptLoader.load(sessionURL: assessedSession.sessionURL)
     guard case .segments(let segments) = afterResponse else {
         Issue.record("expected saved transcript segments after boundary response")
         return
@@ -70,37 +63,12 @@ func savedTranscriptLoaderRejectsAnIncompleteEventTail() async throws {
     let session = try await fixture.writeLiveSession()
     let eventsURL = SessionLayout(sessionURL: session.sessionURL).eventsURL
     var bytes = try Data(contentsOf: eventsURL)
-    bytes.append(contentsOf: "{\"schema_version\":3".utf8)
+    bytes.append(contentsOf: "{\"schema_version\":4".utf8)
     try bytes.write(to: eventsURL)
     #expect(throws: EventLogTranscriptReaderError.self) {
-        try SavedTranscriptLoader.load(
-            sessionURL: session.sessionURL,
-            audioSource: try #require(session.audioSource)
-        )
+        try SavedTranscriptLoader.load(sessionURL: session.sessionURL)
     }
 }
-
-@Test
-func savedTranscriptLoaderRejectsPendingMetadataThatHidesUnclassifiedRows() async throws {
-    let fixture = try ExportFixture()
-    defer { fixture.cleanUp() }
-    let session = try await fixture.writeLiveSession()
-    let store = ProcessingMetadataStore(sessionURL: session.sessionURL)
-    let metadata = try #require(try store.load())
-    try store.save(ProcessingMetadata(
-        finalizationAttempt: metadata.finalizationAttempt,
-        activeRuns: metadata.activeRuns,
-        pendingClauseBoundarySegments: [],
-        pendingContentPriorityClauses: []
-    ))
-    #expect(throws: EventLogTranscriptReaderError.self) {
-        try SavedTranscriptLoader.load(
-            sessionURL: session.sessionURL,
-            audioSource: try #require(session.audioSource)
-        )
-    }
-}
-
 
 @Test
 func exporterWritesReadableTranscriptAndFlacAudio() async throws {
@@ -206,6 +174,38 @@ func exportOfACorruptRecordingFailsAndKeepsThePriorExport() async throws {
 }
 
 @Test
+func exportOfAnIncompleteGenerationFailsAndKeepsThePriorExport() async throws {
+    let fixture = try ExportFixture()
+    defer { fixture.cleanUp() }
+    let session = try await fixture.writeLiveSession()
+    let layout = SessionLayout(sessionURL: session.sessionURL)
+    let prior = try SessionExporter().export(session: session, to: fixture.exportRoot)
+    let priorBytes = try fileBytes(in: prior)
+
+    // A failed reprocess left one recognized segment and no further segments or completion events.
+    let kept = ["pipeline.started", "processing.run.started", "segment.created", "asr.completed"]
+    var seenSegment = false
+    var seenRecognition = false
+    let lines = try SessionRecovery.recoverJSONL(Data(contentsOf: layout.eventsURL)).lines
+    var partial = Data()
+    for (line, decoded) in zip(lines, try EventLogLine.decode(lines)) {
+        let type = decoded.header.eventType
+        guard kept.contains(type) else { continue }
+        if type == "segment.created" { guard !seenSegment else { continue }; seenSegment = true }
+        if type == "asr.completed" { guard !seenRecognition else { continue }; seenRecognition = true }
+        partial.append(line)
+        partial.append(0x0A)
+    }
+    try partial.write(to: layout.eventsURL)
+
+    #expect(throws: ProcessingLogStateError.incompleteRecognition) {
+        try SessionExporter().export(session: session, to: fixture.exportRoot)
+    }
+    #expect(try fileBytes(in: prior) == priorBytes)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.exportRoot.path) == [prior.lastPathComponent])
+}
+
+@Test
 func exportUsesTheStoredFormEvenWhenTheCatalogRowPredatesCompaction() async throws {
     let fixture = try ExportFixture()
     defer { fixture.cleanUp() }
@@ -288,7 +288,7 @@ func maximumLengthSessionFolderExportsWithFixedStagingName() async throws {
 func exporterRefusesSessionWithoutTranscriptAndWritesNothing() async throws {
     let fixture = try ExportFixture()
     defer { fixture.cleanUp() }
-    let session = try await fixture.writeLiveSession(activeRuns: nil)
+    let session = try await fixture.writeLiveSession(withTranscript: false)
 
     #expect(throws: SessionExportError.noTranscript) {
         try SessionExporter().export(session: session, to: fixture.exportRoot)
@@ -296,28 +296,7 @@ func exporterRefusesSessionWithoutTranscriptAndWritesNothing() async throws {
     #expect(!FileManager.default.fileExists(atPath: fixture.exportRoot.path))
 }
 
-@Test
-func exporterRejectsIncompletePublishedTranscriptPointersAndWritesNothing() async throws {
-    let fixture = try ExportFixture()
-    defer { fixture.cleanUp() }
-    let session = try await fixture.writeLiveSession(activeRuns: ActiveRuns(segmentation: "seg-run"))
-
-    guard case .corrupted(let reason) = session.processingStatus else {
-        Issue.record("expected incomplete published transcript pointers to be corrupted")
-        return
-    }
-    #expect(throws: SessionExportError.transcriptCorrupted(reason)) {
-        try SessionExporter().export(session: session, to: fixture.exportRoot)
-    }
-    #expect(!FileManager.default.fileExists(atPath: fixture.exportRoot.path))
-}
-
 struct ExportFixture {
-    static let completeRuns = ActiveRuns(
-        segmentation: "seg-run",
-        asr: "asr-run"
-    )
-
     let root: URL
     let sessionsRoot: URL
     var exportRoot: URL { root.appending(path: "exports", directoryHint: .isDirectory) }
@@ -338,7 +317,7 @@ struct ExportFixture {
 
     func writeLiveSession(
         samples: [Float] = (0..<32_000).map { sin(Float($0) * 0.05) * 0.5 },
-        activeRuns: ActiveRuns? = completeRuns,
+        withTranscript: Bool = true,
         compacted: Bool = true,
         firstText: String = "こんにちは"
     ) async throws -> SavedSession {
@@ -354,7 +333,7 @@ struct ExportFixture {
             try SessionAudioStorageStore(layout: layout).save(.recordingFLAC(pcm.info))
             try FileManager.default.removeItem(at: layout.processingDirectory)
         }
-        try await writeTranscript(sessionID: id, session: session, activeRuns: activeRuns, firstText: firstText)
+        if withTranscript { try await writeTranscript(sessionID: id, session: session, audioFrames: Int64(samples.count), firstText: firstText) }
         return try readable(id)
     }
 
@@ -370,7 +349,7 @@ struct ExportFixture {
         try originalBytes.write(to: audio.appending(path: "original.\(ext)"))
         try SessionAudioStorageStore(layout: SessionLayout(sessionURL: session))
             .save(.importedOriginal(TimelineAudioInfo(committedFrames: 1_600, gapEvents: [])))
-        try await writeTranscript(sessionID: id, session: session, activeRuns: Self.completeRuns)
+        try await writeTranscript(sessionID: id, session: session, audioFrames: 1_600)
         return try readable(id)
     }
 
@@ -399,52 +378,63 @@ struct ExportFixture {
     private func writeTranscript(
         sessionID: UUID,
         session: URL,
-        activeRuns: ActiveRuns?,
+        audioFrames: Int64,
         firstText: String = "こんにちは"
     ) async throws {
         let writer = try SessionWriter(sessionURL: session)
-        let segments: [(id: String, start: Int64, end: Int64, text: String)] = [
-            ("seg-1", 0, 16_000, firstText),
-            ("seg-2", 65 * 16_000, 67 * 16_000, "今日の議題です"),
-            ("seg-3", 70 * 16_000, 71 * 16_000, "  "),
+        let texts = [firstText, "今日の議題です", "  "]
+        let segments = [
+            SegmentReference(segmentationRunID: "seg-run", segmentID: "seg-1", speechRanges: [0..<20]),
+            SegmentReference(segmentationRunID: "seg-run", segmentID: "seg-2", speechRanges: [(65 * 20)..<(67 * 20)]),
+            SegmentReference(segmentationRunID: "seg-run", segmentID: "seg-3", speechRanges: [(70 * 20)..<(71 * 20)]),
         ]
-        var pending: [SegmentTextReference] = []
-        for segment in segments {
-            _ = try await writer.append(EventDraft(
-                eventType: "segment.created",
-                sessionID: sessionID,
-                segmentationRunID: "seg-run",
-                segmentID: segment.id,
-                sourceStartFrame: segment.start,
-                sourceEndFrame: segment.end,
-                payload: EmptyPayload()
+        let provenance = RunProvenance(engine: "test", model: "test", version: "test", configuration: [:])
+        let generation = PipelineGeneration(
+            id: UUID(), runs: ActiveRuns(segmentation: "seg-run", asr: "asr-run"), sampleRate: transcriptSampleRate,
+            segmentationProvenance: provenance, asrProvenance: provenance
+        )
+        try await writer.append(generation.startEvent(sessionID: sessionID))
+        for (stage, runID) in [(ProcessingStage.segmentation, "seg-run"), (.asr, "asr-run")] {
+            try await writer.append(EventDraft(
+                eventType: "processing.run.started", sessionID: sessionID, processingRunID: runID,
+                payload: ProcessingRunStartedPayload(stage: stage, provenance: provenance)
             ))
-            let recognized = try await writer.append(EventDraft(
-                eventType: "asr.completed",
-                sessionID: sessionID,
-                processingRunID: "asr-run",
-                segmentationRunID: "seg-run",
-                segmentID: segment.id,
-                payload: ASRCompletedEventPayload(
-                    text: segment.text,
-                    detectedLanguage: "ja",
-                    provenance: RunProvenance(engine: "test", model: "test", version: "test", configuration: [:])
-                )
-            ))
-            if ASRRecognitionOutcome(text: segment.text) == .recognized,
-               activeRuns?.asr == "asr-run", activeRuns?.segmentation == "seg-run" {
-                pending.append(try SegmentTextReference(
-                    segmentationRunID: "seg-run", segmentID: segment.id,
-                    asrRunID: "asr-run", asrEventSeq: recognized.eventSeq
-                ))
-            }
         }
-        try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
-            finalizationAttempt: nil,
-            activeRuns: activeRuns,
-            pendingClauseBoundarySegments: pending,
-            pendingContentPriorityClauses: []
+        for segment in segments {
+            try await writer.append(EventDraft.segmentCreated(sessionID: sessionID, segment: segment))
+        }
+        let frameCount = audioFrames
+        try await writer.append(EventDraft(
+            eventType: "segmentation.input.sealed", sessionID: sessionID, segmentationRunID: "seg-run",
+            payload: SegmentationInputSealedPayload(frameCount: frameCount)
         ))
+        try await writer.append(EventDraft(
+            eventType: "segmentation.completed", sessionID: sessionID, segmentationRunID: "seg-run",
+            payload: SegmentationCompletedPayload(consumedFrames: frameCount, segmentCount: segments.count)
+        ))
+        try await writer.append(EventDraft(
+            eventType: "processing.run.completed", sessionID: sessionID, processingRunID: "seg-run",
+            payload: ProcessingRunCompletedPayload(
+                stage: .segmentation, succeeded: true, completedCount: segments.count, failedCount: 0
+            )
+        ))
+        for (segment, text) in zip(segments, texts) {
+            try await writer.append(EventDraft(
+                eventType: "asr.completed", sessionID: sessionID, processingRunID: "asr-run",
+                segmentationRunID: "seg-run", segmentID: segment.segmentID,
+                sourceStartFrame: segment.startFrame, sourceEndFrame: segment.endFrame,
+                payload: ASRCompletedEventPayload(text: text, detectedLanguage: "ja", provenance: provenance)
+            ))
+        }
+        try await writer.append(EventDraft(
+            eventType: "processing.run.completed", sessionID: sessionID, processingRunID: "asr-run",
+            payload: ProcessingRunCompletedPayload(
+                stage: .asr, succeeded: true, completedCount: segments.count, failedCount: 0
+            )
+        ))
+        try ProcessingMetadataStore(sessionURL: session).save(
+            ProcessingMetadata(generationID: generation.id, state: .complete, failureReason: nil)
+        )
     }
 
     func saveFillerAssessment(session: SavedSession, rawText: String) async throws -> SavedSession {
@@ -479,7 +469,7 @@ struct ExportFixture {
             processingRunID: boundaryRunID,
             payload: ProcessingRunStartedPayload(
                 stage: .clauseBoundary,
-                provenance: DecisionRunProvenance.boundary(mode: "live", identity: identity)
+                provenance: DecisionRunProvenance.boundary(identity: identity)
             )
         ))
 
@@ -559,7 +549,7 @@ struct ExportFixture {
             processingRunID: priorityRunID,
             payload: ProcessingRunStartedPayload(
                 stage: .contentPriority,
-                provenance: DecisionRunProvenance.priority(mode: "live", identity: identity)
+                provenance: DecisionRunProvenance.priority(identity: identity)
             )
         ))
         let priorityRequestID = "priority-request"
@@ -597,15 +587,13 @@ struct ExportFixture {
             )
         ))
 
-        let metadataStore = ProcessingMetadataStore(sessionURL: session.sessionURL)
-        let metadata = try #require(try metadataStore.load())
-        let localRuns = try #require(metadata.activeRuns)
-        try metadataStore.save(ProcessingMetadata(
-            finalizationAttempt: metadata.finalizationAttempt,
-            activeRuns: localRuns.withDecisionRuns(clauseBoundary: boundaryRunID, contentPriority: priorityRunID),
-            pendingClauseBoundarySegments: [],
-            pendingContentPriorityClauses: []
-        ))
+        let generationID = try #require(try EventLogTranscriptReader().read(
+            eventsURL: layout.eventsURL, sessionID: session.sessionID
+        )).state.generation.id
+        try await writer.append(DecisionRunReplacement(
+            generationID: generationID, previous: nil,
+            replacement: DecisionRunIDs(boundary: boundaryRunID, priority: priorityRunID)
+        ).selectionEvent(sessionID: session.sessionID))
         return try readable(session.sessionID)
     }
 }

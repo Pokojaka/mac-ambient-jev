@@ -21,7 +21,7 @@ extension AppState {
                 sessionURL: sessionURL,
                 initialCheckpoint: initialCheckpoint,
                 measureMicInputLevels: measureMicInputLevels,
-                segmentationRunID: "seg_live_\(UUID().uuidString.lowercased())"
+                segmentationRunID: "seg_\(UUID().uuidString.lowercased())"
             )
         }
     }

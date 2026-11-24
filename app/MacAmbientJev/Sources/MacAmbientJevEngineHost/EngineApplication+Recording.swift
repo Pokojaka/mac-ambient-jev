@@ -261,7 +261,7 @@ extension EngineApplicationCore: RecordingStartEffects {
             .resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
         let directory = SessionLayout(sessionURL: sessionURL).processingDirectory
         let vadSession = try inference.makeLiveVADSession(
-            directory, sessionURL, checkpoint, "seg_live_\(UUID().uuidString.lowercased())"
+            directory, sessionURL, checkpoint, "seg_\(UUID().uuidString.lowercased())"
         )
         guard recording.isCurrentRecording(sessionID) else { return }
         await liveCoordinator.startVAD(sessionID: sessionID, session: vadSession, checkpoint: checkpoint)

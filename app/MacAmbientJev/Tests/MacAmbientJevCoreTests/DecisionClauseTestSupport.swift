@@ -74,57 +74,81 @@ func temporarySessionRoot() -> URL {
     FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
 }
 
-/// Writes one segment per text (time order = array order) with its ASR result, the way a
-/// finalization does, and returns the transcript events. A nil text leaves the segment without ASR.
-func writeTranscript(_ texts: [String?], root: URL, sessionID: UUID) async throws -> [TranscriptEvent] {
+/// Writes a schema-4 generation with one segment per text. A nil text leaves the
+/// segment without an ASR result and therefore leaves the ASR stage incomplete.
+func writeTranscript(
+    _ texts: [String?],
+    root: URL,
+    sessionID: UUID,
+    sampleRate: Double = 1_000,
+    frameCount: Int64? = nil
+) async throws -> [TranscriptEvent] {
     let writer = try SessionWriter(sessionURL: root)
-    var events: [TranscriptEvent] = []
     let provenance = RunProvenance(engine: "test", model: nil, version: "1", configuration: [:])
-    let localRuns: [(ProcessingStage, String)] = [
-        (.segmentation, "seg"), (.asr, "asr")
-    ]
-    for (stage, runID) in localRuns {
+    let generation = PipelineGeneration(
+        id: UUID(), runs: transcriptRuns, sampleRate: sampleRate,
+        segmentationProvenance: provenance, asrProvenance: provenance
+    )
+    try await writer.append(generation.startEvent(sessionID: sessionID))
+    for (stage, runID) in [(ProcessingStage.segmentation, "seg"), (.asr, "asr")] {
         try await writer.append(EventDraft(
             eventType: "processing.run.started", sessionID: sessionID, processingRunID: runID,
             payload: ProcessingRunStartedPayload(stage: stage, provenance: provenance)
         ))
     }
-    for (index, text) in texts.enumerated() {
-        let segmentID = String(format: "s%02d", index + 1)
-        let start = Int64(index * 1_000)
-        let created = try await writer.append(EventDraft(
-            eventType: "segment.created", sessionID: sessionID, segmentationRunID: "seg", segmentID: segmentID,
-            sourceStartFrame: start, sourceEndFrame: start + 900, payload: EmptyPayload()
+
+    let segments = texts.enumerated().map { index, _ in
+        SegmentReference(
+            segmentationRunID: "seg", segmentID: String(format: "s%02d", index + 1),
+            speechRanges: [Int64(index * 1_000)..<Int64(index * 1_000 + 900)]
+        )
+    }
+    let sealedFrameCount = frameCount ?? (segments.last?.endFrame ?? 0)
+    guard segments.allSatisfy({ $0.endFrame <= sealedFrameCount }) else {
+        throw ProcessingLogStateError.incompleteRecognition
+    }
+
+    var events: [TranscriptEvent] = []
+    for segment in segments {
+        let created = try await writer.append(EventDraft.segmentCreated(sessionID: sessionID, segment: segment))
+        events.append(.segmentCreated(
+            seq: created.eventSeq, segmentationRunID: segment.segmentationRunID, segmentID: segment.segmentID,
+            startFrame: segment.startFrame, endFrame: segment.endFrame
         ))
-        events.append(.segmentCreated(seq: created.eventSeq, segmentationRunID: "seg", segmentID: segmentID,
-                                      startFrame: start, endFrame: start + 900))
+    }
+    try await writer.append(EventDraft(
+        eventType: "segmentation.input.sealed", sessionID: sessionID, segmentationRunID: "seg",
+        payload: SegmentationInputSealedPayload(frameCount: sealedFrameCount)
+    ))
+    try await writer.append(EventDraft(
+        eventType: "segmentation.completed", sessionID: sessionID, segmentationRunID: "seg",
+        payload: SegmentationCompletedPayload(consumedFrames: sealedFrameCount, segmentCount: segments.count)
+    ))
+    try await writer.append(EventDraft(
+        eventType: "processing.run.completed", sessionID: sessionID, processingRunID: "seg",
+        payload: ProcessingRunCompletedPayload(
+            stage: .segmentation, succeeded: true, completedCount: segments.count, failedCount: 0
+        )
+    ))
+
+    for (segment, text) in zip(segments, texts) {
         guard let text else { continue }
         let completed = try await writer.append(EventDraft(
-            eventType: "asr.completed", sessionID: sessionID, processingRunID: "asr", segmentationRunID: "seg",
-            segmentID: segmentID, sourceStartFrame: start, sourceEndFrame: start + 900,
+            eventType: "asr.completed", sessionID: sessionID, processingRunID: "asr",
+            segmentationRunID: "seg", segmentID: segment.segmentID,
+            sourceStartFrame: segment.startFrame, sourceEndFrame: segment.endFrame,
             payload: ASRCompletedEventPayload(text: text, detectedLanguage: "ja", provenance: provenance)
         ))
-        events.append(.asrCompleted(seq: completed.eventSeq, runID: "asr", segmentationRunID: "seg",
-                                    segmentID: segmentID, text: text, detectedLanguage: "ja"))
+        events.append(.asrCompleted(
+            seq: completed.eventSeq, runID: "asr", segmentationRunID: "seg",
+            segmentID: segment.segmentID, text: text, detectedLanguage: "ja"
+        ))
     }
-    for (stage, runID) in localRuns {
-        let completed: Int
-        let failed: Int
-        switch stage {
-        case .segmentation:
-            completed = texts.count
-            failed = 0
-        case .asr:
-            completed = texts.compactMap { $0 }.count
-            failed = texts.count - completed
-        default:
-            completed = 0
-            failed = 0
-        }
+    if texts.allSatisfy({ $0 != nil }) {
         try await writer.append(EventDraft(
-            eventType: "processing.run.completed", sessionID: sessionID, processingRunID: runID,
+            eventType: "processing.run.completed", sessionID: sessionID, processingRunID: "asr",
             payload: ProcessingRunCompletedPayload(
-                stage: stage, succeeded: true, completedCount: completed, failedCount: failed
+                stage: .asr, succeeded: true, completedCount: texts.count, failedCount: 0
             )
         ))
     }
@@ -147,21 +171,18 @@ func source(_ segmentID: String, in events: [TranscriptEvent]) throws -> Segment
     return source
 }
 
-/// Saves local metadata as a completed finalization would publish it.
-func publishLocal(root: URL, events: [TranscriptEvent]) throws -> ProcessingMetadata {
-    let pending = try TranscriptMaterializer(sampleRate: 1_000).materialize(events: events, activeRuns: transcriptRuns)
-        .filter(\.hasRecognizedText).map(\.source)
-    let metadata = ProcessingMetadata(
-        finalizationAttempt: FinalizationAttempt(attemptID: "attempt", state: .complete, failureReason: nil),
-        activeRuns: transcriptRuns,
-        pendingClauseBoundarySegments: pending,
-        pendingContentPriorityClauses: []
-    )
-    try ProcessingMetadataStore(sessionURL: root).save(metadata)
-    return metadata
+/// Saves completion status for the currently selected, fully recognized generation.
+func saveCompletedStatus(root: URL, sessionID: UUID) throws {
+    let stored = try readStored(root: root, sessionID: sessionID)
+    guard stored.state.recognitionCompleted, !stored.state.hasUnresolvedASRFailure else {
+        throw ProcessingLogStateError.incompleteRecognition
+    }
+    try ProcessingMetadataStore(sessionURL: root).save(ProcessingMetadata(
+        generationID: stored.state.generation.id, state: .complete, failureReason: nil
+    ))
 }
 
-/// Runs one decision snapshot through the coordinator and publishes it the way the processor does.
+/// Runs one decision snapshot and appends the event selecting its returned runs.
 func buildAndPublish(
     root: URL,
     sessionID: UUID,
@@ -172,10 +193,8 @@ func buildAndPublish(
     boundaryRunID: String? = nil,
     priorityRunID: String = "priority_\(UUID().uuidString.lowercased())"
 ) async throws -> DecisionEnrichmentBatchResult {
-    let store = ProcessingMetadataStore(sessionURL: root)
-    let metadata = try requireValue(try store.load())
-    let activeRuns = try requireValue(metadata.activeRuns)
-    let events = try EventLogTranscriptReader().events(lines: eventLines(root), activeRuns: activeRuns)
+    let stored = try readStored(root: root, sessionID: sessionID)
+    let activeRuns = stored.state.runs
     let coordinator = DecisionEnrichmentCoordinator(
         sessionID: sessionID,
         boundaryRunID: boundaryRunID ?? "boundary_\(UUID().uuidString.lowercased())",
@@ -183,28 +202,41 @@ func buildAndPublish(
         writer: try SessionWriter(sessionURL: root),
         decisions: DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter),
         usageCounter: counter,
-        materializer: TranscriptMaterializer(sampleRate: 1_000)
+        materializer: TranscriptMaterializer(sampleRate: stored.state.generation.sampleRate)
     )
     let result = try await coordinator.process(
-        existingEvents: events, activeRuns: activeRuns, scope: scope, reusableDecisions: reusable, onEvent: nil
+        existingEvents: stored.events, activeRuns: activeRuns, scope: scope,
+        reusableDecisions: reusable, onEvent: nil
     )
-    try store.publishDecisionSnapshot(
-        basedOn: activeRuns,
-        clauseBoundaryRunID: result.boundaryRunID,
-        contentPriorityRunID: result.priorityRunID,
-        pendingClauseBoundarySegments: result.pendingBoundarySegments,
-        pendingContentPriorityClauses: result.pendingPriorityClauses
+    let previous: DecisionRunIDs?
+    if let boundary = activeRuns.clauseBoundary, let priority = activeRuns.contentPriority {
+        previous = DecisionRunIDs(boundary: boundary, priority: priority)
+    } else {
+        previous = nil
+    }
+    let replacement = DecisionRunReplacement(
+        generationID: stored.state.generation.id, previous: previous,
+        replacement: DecisionRunIDs(boundary: result.boundaryRunID, priority: result.priorityRunID)
     )
-    await coordinator.recordPublished(result, replacing: metadata.pendingDecisionTargets)
+    try await SessionWriter(sessionURL: root).append(replacement.selectionEvent(sessionID: sessionID))
+    await coordinator.recordPublished(result, replacing: stored.pendingDecisions.pendingTargets)
     return result
 }
 
-/// The published transcript read back through the reader and materializer.
-func readPublished(root: URL) throws -> [MaterializedTranscriptSegment] {
-    let activeRuns = try requireValue(try ProcessingMetadataStore(sessionURL: root).load()?.activeRuns)
-    return try TranscriptMaterializer(sampleRate: 1_000).materialize(
-        events: try EventLogTranscriptReader().events(lines: eventLines(root), activeRuns: activeRuns),
-        activeRuns: activeRuns
+func readStored(root: URL, sessionID: UUID) throws -> StoredTranscriptEvents {
+    guard let stored = try EventLogTranscriptReader().read(
+        eventsURL: root.appending(path: "events.jsonl"), sessionID: sessionID
+    ) else {
+        throw ProcessingLogStateError.missingGeneration
+    }
+    return stored
+}
+
+/// The selected transcript read back through the reader and materializer.
+func readPublished(root: URL, sessionID: UUID) throws -> [MaterializedTranscriptSegment] {
+    let stored = try readStored(root: root, sessionID: sessionID)
+    return try TranscriptMaterializer(sampleRate: stored.state.generation.sampleRate).materialize(
+        events: stored.events, activeRuns: stored.state.runs
     )
 }
 

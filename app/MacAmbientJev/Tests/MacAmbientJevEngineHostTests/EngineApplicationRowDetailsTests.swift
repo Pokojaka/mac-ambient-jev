@@ -26,10 +26,7 @@ import MacAmbientJevTestSupport
         let core = h.app.core
         let uuid = try #require(UUID(uuidString: sessionID))
         let savedSession = try core.readableSession(uuid)
-        let audioSource = try #require(savedSession.audioSource)
-        guard case let .segments(savedSegments) = try SavedTranscriptLoader.load(
-            sessionURL: savedSession.sessionURL, audioSource: audioSource
-        ) else { throw TestTimeout(description: "saved transcript was unavailable") }
+        guard case let .segments(savedSegments) = try SavedTranscriptLoader.load(sessionURL: savedSession.sessionURL) else { throw TestTimeout(description: "saved transcript was unavailable") }
         let cached = try #require(core.transcriptReadSnapshot)
         #expect(cached.materializedSegments == savedSegments)
         let segment = try #require(savedSegments.first { $0.segmentID == expectedRow.rowID })
@@ -242,10 +239,7 @@ import MacAmbientJevTestSupport
         )
         let uuid = try #require(UUID(uuidString: sessionID))
         let savedSession = try core.readableSession(uuid)
-        let audioSource = try #require(savedSession.audioSource)
-        guard case let .segments(savedSegments) = try SavedTranscriptLoader.load(
-            sessionURL: savedSession.sessionURL, audioSource: audioSource
-        ) else { throw TestTimeout(description: "saved transcript was unavailable") }
+        guard case let .segments(savedSegments) = try SavedTranscriptLoader.load(sessionURL: savedSession.sessionURL) else { throw TestTimeout(description: "saved transcript was unavailable") }
         let saved = try #require(savedSegments.first)
         let savedRow = try #require(watched.rows.first)
         let liveSegment = try explicitSegment(

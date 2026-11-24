@@ -125,9 +125,9 @@ private struct MultipleSegmentLiveVAD: LiveVADProcessing {
             return LiveVADProgress(emittedSegments: [], totalSegmentCount: 0, committedFrames: 0, micSpeechLevels: [])
         }
         let segments = [
-            SegmentReference(segmentationRunID: segmentationRunID, segmentID: "live_segment_1", speechRanges: [0..<midpoint]),
+            SegmentReference(segmentationRunID: segmentationRunID, segmentID: "segment_1", speechRanges: [0..<midpoint]),
             SegmentReference(
-                segmentationRunID: segmentationRunID, segmentID: "live_segment_2",
+                segmentationRunID: segmentationRunID, segmentID: "segment_2",
                 speechRanges: [midpoint..<checkpoint.committedFrames]
             ),
         ]
@@ -181,7 +181,7 @@ private final class GatedASRInferenceProvider: EngineInferenceProviding, @unchec
         return EngineInference(
             engines: SessionProcessingEngines(
                 asr: GatedASREngine(gate: gate, calls: calls),
-                finalTranscriptVAD: FakeFinalVAD()
+                finalTranscriptVAD: FakeFinalVAD(segmentCount: 2)
             ),
             contentPriority: .disabled,
             timelineBuilder: FakeTimelineBuilder(),

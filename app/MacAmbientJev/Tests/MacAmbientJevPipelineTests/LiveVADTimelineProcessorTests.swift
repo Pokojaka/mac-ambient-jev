@@ -145,7 +145,7 @@ private actor InterruptingSessionEventWriter: SessionEventAppending {
     }
 }
 
-@Test(.timeLimit(.minutes(10)), arguments: [2, 4, 5, 6])
+@Test(.timeLimit(.minutes(10)), arguments: [3, 5, 6, 7])
 func recoveryPreservesStoredSegmentsAndAppendsOnlyTheTail(_ interruptAfter: Int) async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -155,10 +155,18 @@ func recoveryPreservesStoredSegmentsAndAppendsOnlyTheTail(_ interruptAfter: Int)
     #expect(checkpoint.committedFrames == 16_383)
     let reader = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root)
     let sessionID = UUID(), runID = "vad_recovery_test"
+    let provenance = RunProvenance(engine: "fake-vad", model: nil, version: "test", configuration: [:])
+    let asrProvenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
+    let durableWriter = try SessionWriter(sessionURL: root)
+    _ = try await durableWriter.append(PipelineGeneration(
+        id: UUID(), runs: ActiveRuns(segmentation: runID, asr: "asr_vad_recovery_test"),
+        sampleRate: checkpoint.sampleRate, segmentationProvenance: provenance, asrProvenance: asrProvenance
+    ).startEvent(sessionID: sessionID))
     let interruptedOwner = try await VADSession.open(
-        sessionID: sessionID, segmentationRunID: runID, sessionURL: root,
-        writer: InterruptingSessionEventWriter(writer: try SessionWriter(sessionURL: root), interruptAfter: interruptAfter),
-        makeProcessor: { VADTimelineProcessor(engine: RecoveryVADChunkSegmenter(changesSecondRange: false)) })
+        sessionID: sessionID, sessionURL: root,
+        writer: InterruptingSessionEventWriter(writer: durableWriter, interruptAfter: interruptAfter),
+        provenance: provenance,
+        makeProcessor: { _ in VADTimelineProcessor(engine: RecoveryVADChunkSegmenter(changesSecondRange: false)) })
     await #expect(throws: InjectedRecoveryWriterFailure.eventLimit) {
         _ = try await interruptedOwner.processAvailable(reader: reader)
         _ = try await interruptedOwner.finish(reader: reader)
@@ -167,15 +175,16 @@ func recoveryPreservesStoredSegmentsAndAppendsOnlyTheTail(_ interruptAfter: Int)
     let decodeEvents: (Data) throws -> [[String: Any]] = { data in
         try data.split(separator: 0x0A).map { try #require(try JSONSerialization.jsonObject(with: Data($0)) as? [String: Any]) }
     }
-    let savedRecovery = try ASRSessionRecovery(eventsURL: eventsURL, sessionID: sessionID, segmentationRunID: runID, asrRunID: nil)
+    let savedRecovery = try #require(try ProcessingLogState(eventsURL: eventsURL, sessionID: sessionID))
     let savedPrefix = savedRecovery.segments
-    #expect(savedPrefix.count == (interruptAfter == 2 ? 2 : interruptAfter == 4 || interruptAfter == 5 ? 3 : 4))
+    #expect(savedPrefix.count == (interruptAfter == 3 ? 2 : interruptAfter == 5 || interruptAfter == 6 ? 3 : 4))
     let savedEventRecords = try decodeEvents(SessionWriter.readDurableLog(eventsURL: eventsURL))
     let savedSegmentCount = savedEventRecords.filter { $0["event_type"] as? String == "segment.created" }.count
 
     let mismatchedOwner = try await VADSession.open(
-        sessionID: sessionID, segmentationRunID: runID, sessionURL: root, writer: try SessionWriter(sessionURL: root),
-        makeProcessor: { VADTimelineProcessor(engine: RecoveryVADChunkSegmenter(changesSecondRange: true)) })
+        sessionID: sessionID, sessionURL: root, writer: try SessionWriter(sessionURL: root),
+        provenance: provenance,
+        makeProcessor: { _ in VADTimelineProcessor(engine: RecoveryVADChunkSegmenter(changesSecondRange: true)) })
     await #expect(throws: SegmentationConsistencyError.segmentMismatch(ordinal: 1)) {
         _ = try await mismatchedOwner.finish(reader: reader)
     }
@@ -184,8 +193,9 @@ func recoveryPreservesStoredSegmentsAndAppendsOnlyTheTail(_ interruptAfter: Int)
 
     let goodEngine = RecoveryVADChunkSegmenter(changesSecondRange: false)
     let recoveredOwner = try await VADSession.open(
-        sessionID: sessionID, segmentationRunID: runID, sessionURL: root, writer: try SessionWriter(sessionURL: root),
-        makeProcessor: { VADTimelineProcessor(engine: goodEngine) })
+        sessionID: sessionID, sessionURL: root, writer: try SessionWriter(sessionURL: root),
+        provenance: provenance,
+        makeProcessor: { _ in VADTimelineProcessor(engine: goodEngine) })
     var appended = try await recoveredOwner.processAvailable(reader: reader)
     appended += try await recoveredOwner.finish(reader: reader)
     let expectedSegments = [Int64(0), 4_096, 8_192, 12_288].enumerated().map { index, start in
@@ -197,7 +207,7 @@ func recoveryPreservesStoredSegmentsAndAppendsOnlyTheTail(_ interruptAfter: Int)
     #expect(Array(completedSegments.prefix(savedPrefix.count)) == savedPrefix)
     #expect(completedSegments == expectedSegments && Set(completedSegments.map(\.segmentID)).count == 4)
     #expect(await goodEngine.recordedChunkSizes() == [4_096, 4_096, 4_096, 4_095])
-    let completedRecovery = try ASRSessionRecovery(eventsURL: eventsURL, sessionID: sessionID, segmentationRunID: runID, asrRunID: nil)
+    let completedRecovery = try #require(try ProcessingLogState(eventsURL: eventsURL, sessionID: sessionID))
     #expect(completedRecovery.sealedFrames == 16_383 && completedRecovery.consumedFrames == 16_383 && completedRecovery.segmentationCompleted)
     let finalLog = try SessionWriter.readDurableLog(eventsURL: eventsURL)
     let records = try decodeEvents(finalLog), eventTypes = records.compactMap { $0["event_type"] as? String }
@@ -218,8 +228,9 @@ func recoveryPreservesStoredSegmentsAndAppendsOnlyTheTail(_ interruptAfter: Int)
     #expect(sealed["frame_count"] as? Int == 16_383)
     #expect(completion["segment_count"] as? Int == 4 && completion["consumed_frames"] as? Int == 16_383)
     let completedOwner = try await VADSession.open(
-        sessionID: sessionID, segmentationRunID: runID, sessionURL: root, writer: try SessionWriter(sessionURL: root),
-        makeProcessor: { throw InjectedRecoveryWriterFailure.eventLimit })
+        sessionID: sessionID, sessionURL: root, writer: try SessionWriter(sessionURL: root),
+        provenance: provenance,
+        makeProcessor: { _ in throw InjectedRecoveryWriterFailure.eventLimit })
     #expect(await completedOwner.segments == expectedSegments)
     let noSegments = try await completedOwner.processAvailable(reader: reader)
     let firstFinish = try await completedOwner.finish(reader: reader)

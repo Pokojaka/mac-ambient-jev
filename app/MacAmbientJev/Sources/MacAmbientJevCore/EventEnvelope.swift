@@ -6,7 +6,7 @@ public struct EmptyPayload: Codable, Sendable, Equatable {
 
 /// The only `events.jsonl` envelope version readers and writers accept.
 public enum EventLogSchema {
-    public static let version = 3
+    public static let version = 4
 }
 
 public struct EventDraft<Payload: Codable & Sendable>: Sendable {

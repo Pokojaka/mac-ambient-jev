@@ -31,7 +31,6 @@ public actor SessionWriter: DecisionEventWriting {
 
         try SessionFileAccess.createDirectory(sessionURL, relativeTo: sessionURL)
 
-        _ = try ProcessingMetadataStore(sessionURL: sessionURL).load()
         let handle = try Self.lockedHandle(eventsURL, create: true)
         defer { try? handle.close() }
         (knownLogSize, lastEventSequence) = try Self.recover(handle)
@@ -74,10 +73,8 @@ public actor SessionWriter: DecisionEventWriting {
         try handle.seek(toOffset: 0)
         let data = try handle.readToEnd() ?? Data()
         let recovered = try SessionRecovery.recoverJSONL(data)
-        // Appending to a log of another envelope version would mix formats in one file.
-        for line in try EventLogLine.decode(recovered.lines) {
-            try line.validateClausePayload()
-        }
+        // Validate every envelope header and sequence without decoding prior-run payloads.
+        _ = try EventLogLine.decode(recovered.lines)
         var size = UInt64(data.count)
         if recovered.droppedIncompleteTail {
             size = UInt64(data.lastIndex(of: 0x0A).map { $0 - data.startIndex + 1 } ?? 0)

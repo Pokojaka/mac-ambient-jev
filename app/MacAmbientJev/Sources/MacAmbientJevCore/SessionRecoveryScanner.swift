@@ -94,13 +94,13 @@ public struct SessionRecoveryScanner: Sendable {
         self.sessionsRoot = sessionsRoot
     }
 
-    /// Read-only.
-    public func inspect(sessionID: UUID) throws -> SessionInspection {
+    /// Read-only unless a failed session is explicitly included for resumption.
+    public func inspect(sessionID: UUID, includeFailed: Bool = false) throws -> SessionInspection {
         let layout = SessionLayout(sessionURL: try SessionDirectoryLocator(fileManager: .default)
             .resolve(sessionsRoot: sessionsRoot, sessionID: sessionID))
         let manifest = try layout.loadManifest()
         return SessionInspection(
-            recovery: try candidate(layout: layout, manifest: manifest),
+            recovery: try candidate(layout: layout, manifest: manifest, includeFailed: includeFailed),
             maintenance: try SessionStorageMaintenance.required(layout: layout, manifest: manifest)
         )
     }
@@ -124,7 +124,7 @@ public struct SessionRecoveryScanner: Sendable {
                 if let folders = duplicates[manifest.sessionID] {
                     throw SessionDirectoryLookupError.multipleMatches(sessionID: manifest.sessionID, folders: folders)
                 }
-                let recovery = try candidate(layout: layout, manifest: manifest)
+                let recovery = try candidate(layout: layout, manifest: manifest, includeFailed: false)
                 let required = try SessionStorageMaintenance.required(layout: layout, manifest: manifest)
                 if let recovery {
                     candidates.append(recovery)
@@ -148,43 +148,66 @@ public struct SessionRecoveryScanner: Sendable {
         )
     }
 
-    private func candidate(layout: SessionLayout, manifest: SessionManifest) throws -> RecoverableSession? {
+    private func candidate(
+        layout: SessionLayout, manifest: SessionManifest, includeFailed: Bool
+    ) throws -> RecoverableSession? {
         try SessionFolderName.validate(layout.sessionURL.lastPathComponent, manifest: manifest)
         let metadata = try ProcessingMetadataStore(sessionURL: layout.sessionURL).load()
+        let recovered = try SessionRecovery.recoverJSONL(
+            SessionFileAccess.read(layout.eventsURL, relativeTo: layout.sessionURL)
+        )
+        let state = try ProcessingLogState(lines: recovered.lines, sessionID: manifest.sessionID)
+        guard state != nil || metadata == nil else { throw ProcessingLogStateError.missingGeneration }
+        let currentMetadata = state.flatMap { metadata?.generationID == $0.generation.id ? metadata : nil }
 
         let action: RecoverableProcessingAction
-        switch metadata?.finalizationAttempt?.state {
-        case .running, .paused:
+        if state?.hasUnresolvedASRFailure == true || currentMetadata?.state == .failed {
+            guard includeFailed else { return nil }
             action = .finalize
-        case nil:
-            // A recording that crashed before it stopped, or an import never processed.
-            guard metadata?.activeRuns == nil,
-                  try layout.audioSource(for: manifest) != nil else {
+        } else {
+            switch currentMetadata?.state {
+            case .running, .paused:
+                action = .finalize
+            case .complete:
+                guard !recovered.droppedIncompleteTail else {
+                    throw EventLogTranscriptReaderError.unreadableLine(index: recovered.lines.count)
+                }
+                guard let state, let sealedFrames = state.sealedFrames else {
+                    throw ProcessingLogStateError.incompleteRecognition
+                }
+                let transcript = try EventLogTranscriptReader().validateCompletion(
+                    eventsURL: layout.eventsURL, sessionID: manifest.sessionID, frameCount: sealedFrames
+                )
+                let analyzer = DecisionRetryAnalyzer()
+                if try analyzer.hasUnpublishedDecisionRun(lines: recovered.lines, sessionID: manifest.sessionID) {
+                    action = .recoverDecisionRun(
+                        boundarySegments: transcript.pendingDecisions.boundarySegments,
+                        clauses: transcript.pendingDecisions.clauses
+                    )
+                } else if !transcript.pendingDecisions.boundarySegments.isEmpty
+                            || !transcript.pendingDecisions.clauses.isEmpty {
+                    action = .retryContentPriority(
+                        boundarySegments: transcript.pendingDecisions.boundarySegments,
+                        clauses: transcript.pendingDecisions.clauses
+                    )
+                } else {
+                    return nil
+                }
+            case .failed:
                 return nil
-            }
-            return RecoverableSession(
-                manifest: manifest,
-                sessionURL: layout.sessionURL,
-                action: .finalize
-            )
-        case .failed:
-            return nil
-        case .complete:
-            guard let metadata, let activeRuns = metadata.activeRuns else {
-                throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: "", reason: "完了した処理状態に公開 run がありません")
-            }
-            let recovered = try SessionRecovery.recoverJSONL(SessionFileAccess.read(layout.eventsURL, relativeTo: layout.sessionURL))
-            guard !recovered.droppedIncompleteTail else {
-                throw EventLogTranscriptReaderError.unreadableLine(index: recovered.lines.count)
-            }
-            let lines = recovered.lines
-            let targets = try DecisionRetryAnalyzer().retryTargets(lines: lines, metadata: metadata)
-            if try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: lines, activeRuns: activeRuns) {
-                action = .recoverDecisionRun(boundarySegments: targets.boundarySegments, clauses: targets.clauses)
-            } else if !targets.boundarySegments.isEmpty || !targets.clauses.isEmpty {
-                action = .retryContentPriority(boundarySegments: targets.boundarySegments, clauses: targets.clauses)
-            } else {
-                return nil
+            case nil:
+                if state != nil {
+                    // A reset or status write interrupted the current generation's finalization.
+                    action = .finalize
+                } else {
+                    // A recording may have stopped before its first pipeline generation.
+                    guard try layout.audioSource(for: manifest) != nil else { return nil }
+                    return RecoverableSession(
+                        manifest: manifest,
+                        sessionURL: layout.sessionURL,
+                        action: .finalize
+                    )
+                }
             }
         }
 

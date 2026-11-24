@@ -236,15 +236,15 @@ event_lines = []
 if events and events.exists():
     try: event_lines = [json.loads(line) for line in events.read_text().splitlines() if line.strip()]
     except ValueError as error: reason['event_log'] = str(error)
-    if any(type(event.get('schema_version')) is not int or event['schema_version'] != 3 for event in event_lines):
-        fail('events.jsonl requires schema_version 3')
+    if any(type(event.get('schema_version')) is not int or event['schema_version'] != 4 for event in event_lines):
+        fail('events.jsonl requires schema_version 4')
 else:
     reason['event_log'] = 'no session event log was found'
 metadata = directory / 'processing_metadata.json' if directory else None
 if metadata and metadata.exists():
     state = read_json(metadata)
-    if type(state.get('schema_version')) is not int or state['schema_version'] != 3:
-        fail('processing_metadata.json requires schema_version 3')
+    if type(state.get('schema_version')) is not int or state['schema_version'] != 4:
+        fail('processing_metadata.json requires schema_version 4')
 for key in ('capture_dropout_count', 'decision_success_count', 'decision_failure_count', 'decision_retry_pending_count', 'crash_recovery_loss_window_seconds'):
     reason[key] = 'file import or offline session recovery cannot measure this live-session value'
 report = {

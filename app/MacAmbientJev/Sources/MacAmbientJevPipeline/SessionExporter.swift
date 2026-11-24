@@ -94,12 +94,17 @@ public struct SessionExporter: Sendable {
         guard let audioSource = try layout.audioSource(for: layout.loadManifest()) else {
             throw SessionExportError.audioUnavailable
         }
-        guard case .segments(let segments) = try SavedTranscriptLoader.load(
-            sessionURL: layout.sessionURL,
-            audioSource: audioSource
-        ) else {
+        guard let timeline = try audioSource.timeline else { throw SessionExportError.audioUnavailable }
+        let manifest = try layout.loadManifest()
+        guard try EventLogTranscriptReader().read(eventsURL: layout.eventsURL, sessionID: manifest.sessionID) != nil else {
             throw SessionExportError.noTranscript
         }
+        // An export is final, so the current generation must cover the whole saved audio timeline.
+        let stored = try EventLogTranscriptReader().validateCompletion(
+            eventsURL: layout.eventsURL, sessionID: manifest.sessionID, frameCount: timeline.committedFrames
+        )
+        let segments = try TranscriptMaterializer(sampleRate: stored.state.generation.sampleRate)
+            .materialize(events: stored.events, activeRuns: stored.state.runs)
         let transcript = Data(try TranscriptTextRenderer.render(segments).utf8)
         let audioSourceURL: URL
         switch audioSource {

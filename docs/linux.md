@@ -62,7 +62,7 @@ hypothesis には同じ normalizer だけを適用し、注釈 parse や任意�
 
 ## セッション全体のファイル処理 CLI
 
-`MacAmbientJevProcessRecording` は音声を session に import し、[`SessionFileProcessingService`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionFileProcessingService.swift) と [`FinalTranscriptPipeline`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FinalTranscriptPipeline.swift) で VAD→ASR→任意の clause decisions を行う portable CLI です。session の状態確認と finalization / decisions の再開も行えます。
+`MacAmbientJevProcessRecording` は音声を session に import し、共通の [`NativeSessionProcessor`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift) で VAD→ASR を行い、`--with-decisions` 指定時は clause decisions も実行する portable CLI です。`--resume-session` は最新 generation の不足作業を再開し、保存済みの成功結果を保持します。`--inspect-session` は read-only です。decision retry は新しい immutable run を追記し、既存 run を書き換えません。
 
 ```text
 MacAmbientJevProcessRecording --sessions-root ROOT [--keep-session] [--low-heat] [--with-decisions] --threads N AUDIO [OUTPUT]

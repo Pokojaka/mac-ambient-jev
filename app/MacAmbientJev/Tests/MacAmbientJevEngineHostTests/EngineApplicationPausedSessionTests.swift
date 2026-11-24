@@ -181,7 +181,7 @@ private final class PausedSessionFinalizationHarness {
             sessionsRoot: first.paths.sessionsRoot, sessionID: sessionID
         )
         let pausedMetadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
-        #expect(pausedMetadata.finalizationAttempt?.state == .paused)
+        #expect(pausedMetadata.state == .paused)
 
         let second = ApplicationHarness(root: root)
         second.inference.holdPrepare()

@@ -1,6 +1,6 @@
 # セッション保存形式
 
-保存音声は再処理の基礎であり、文字起こし・BTSJ 発話文の境界・優先度は派生結果です。発話文の境界と優先度は app bundle 同梱の Core ML 発話文モデルが判定します。保存 key と event 名の `clause` / `節` はその発話文単位の識別名です。派生結果は追記専用のイベントログに残し、処理 metadata が選ぶ run だけを現在の結果として公開します。処理の流れは [architecture.md](architecture.md) を参照してください。
+保存音声は再処理の基礎であり、文字起こし・BTSJ 発話文の境界・優先度は派生結果です。発話文の境界と優先度は app bundle 同梱の Core ML 発話文モデルが判定します。保存 key と event 名の `clause` / `節` はその発話文単位の識別名です。派生結果は追記専用イベントログに残し、最新の `pipeline.started` と後続の `pipeline.decisions.replaced` が現在世代と選択中の判定 run を決めます。処理 metadata は進行状態だけを持ち、run の選択には使いません。処理の流れは [architecture.md](architecture.md) を参照してください。
 
 以下の表は **JSON 上の実際のキーと値**です。イベントと処理 metadata は snake_case のキーを使いますが、checkpoint と音声用 JSONL は camelCase です。String enum の値はキー変換の対象ではなく、`clauseBoundary`、`contentPriority`、`lowPriority` などは camelCase のままです。
 
@@ -98,7 +98,7 @@ Windows では root を CreateFileW で検査し、固定した親 handle から
 
 ### 録音の FLAC 化
 
-確定処理が文字起こしを公開した後、`RecordingAudioCompactor` は `recordingPCM` の録音を `recording.flac`（16 kHz・mono・16-bit FLAC）へ変換し、PCM を削除します。符号化器 `RecordingFLAC` と復号器 `FLACTimelineReader` は `MacAmbientJevCore` にある Foundation を使う portable な pure Swift 実装で、macOS・Linux・Windows で共通です。出力は native FLAC で、metadata block は STREAMINFO だけです。
+`RecordingAudioCompactor` は現在 generation の処理が drain され、入力が seal 済みで checkpoint の frame 数・sample rate と一致し、segmentation・全 segment の ASR が成功した場合だけ `recordingPCM` を `recording.flac`（16 kHz・mono・16-bit FLAC）へ変換して PCM を削除します。世代・音声の検証が終わるまでは権威ある PCM を compact しません。`.recording.flac.partial` の cleanup は PCM compact とは別です。符号化器 `RecordingFLAC` と復号器 `FLACTimelineReader` は `MacAmbientJevCore` にある Foundation を使う portable な pure Swift 実装で、macOS・Linux・Windows で共通です。出力は native FLAC で、metadata block は STREAMINFO だけです。
 
 各 FLAC frame は公称 4,096 frame で、最後の frame だけは短くできます。STREAMINFO の total samples は `storage.json` の `committedFrames` と正確に一致します。STREAMINFO の block size 最小値・最大値は [RFC 9639](https://www.rfc-editor.org/rfc/rfc9639.html) に従って短い最終 frame を除く公称 block size（4,096）を記録し、frame size 最小値・最大値は実際に符号化した frame の byte 数から記録します。MD5 は signed 16-bit little-endian PCM 全体から計算します。
 
@@ -114,11 +114,11 @@ frame index は byte offset と先頭 sample（および小さな frame 情報�
 4. `recording.flac` へ rename して公開し、`storage.json` を `recordingFLAC(timeline)` に保存します。この保存が権威を切り替える唯一の操作です。
 5. processing ディレクトリを削除して audio ディレクトリを synchronize します。
 
-変換は確定処理が文字起こしを公開した直後（文字起こし無しの完了を含む）に確定処理自身が行い、起動時にも再実行します。変換の失敗は「文字起こしは保存しましたが、録音を FLAC にできませんでした: …」として報告し、公開済みの文字起こしと PCM は残ります。一時ファイルの削除に失敗した場合は、一時停止した実行なら一時停止のまま削除エラーだけを状態文として報告し、完了した実行なら「文字起こしは保存しましたが、音声の一時ファイルを削除できませんでした: …」、失敗した実行なら元のエラーに「。音声の一時ファイルを削除できませんでした: …」を続けて報告します。変換の対象は、公開済みの run 集合（`activeRuns`）があり音声が空でない `recordingPCM` の録音です。finalization の状態は問いません。
+変換は現在世代のローカル両段階が完全成功し metadata が同世代の `complete` を示した後に実行し、起動時も同条件を再検証して必要な保存整理を再開します。変換の失敗は「文字起こしは保存しましたが、録音を FLAC にできませんでした: …」として報告し、公開済みの文字起こしと PCM は残ります。一時ファイルの削除に失敗した場合は、一時停止した実行なら一時停止のまま削除エラーだけを状態文として報告し、完了した実行なら「文字起こしは保存しましたが、音声の一時ファイルを削除できませんでした: …」、失敗した実行なら元のエラーに「。音声の一時ファイルを削除できませんでした: …」を続けて報告します。`recordingPCM` の compact は generation status・sealed/checkpoint frame 数と sample rate・segmentation/ASR completion・全 ASR 成功数の一致が確認できた録音だけです。open generation の権威 PCM は残します。
 
 ### 起動時の保存整理
 
-アプリは起動時に、録音中のセッションを除く全セッションの保存整理を、キューへ何も入れる前に 1 件ずつ最後まで実行します。状態は「保存済み録音の音声を整理しています（n件）」です。`recordingPCM` で変換が必要なものと、`recordingFLAC` で PCM が残るものは変換（収束）、それ以外で一時ファイルが残るものは削除です。音声ソースは使う時点で `storage.json` から決めるため、整理後の再走査はありません。整理中は処理キューを開始せず、その間の要求は整理後に順に処理します。整理中に要求されたセッションは、その起動の復旧対象から外します。整理結果の map は成功したセッションを含まず、未完了の session UUID ごとに `SessionMaintenanceIssue.failed`（実際の保存整理エラー）または `SessionMaintenanceIssue.interruptedByShutdown`（shutdown cancellation が発生した現在の item と残りの item）を返します。実エラーと cancellation が同じ item で起きた場合、その item は `.failed` として残し、後続の未実行 item は `.interruptedByShutdown` になります。どちらの issue も、そのセッションの保存整理が成功するまでは推論復旧の対象にしません。次回起動時に未完了の保存整理を再検出し、成功した後に限り推論復旧へ進みます。実際の整理エラーはフォルダー名を付けて「保存済み録音の音声を整理できなかったセッションがn件あります: …」と報告します。shutdown interruption は「終了処理のため保存済み録音の音声整理が中断されたセッションがn件あります。次回起動時に再実行します: …」と報告します。復旧できないセッションの報告と合わせるときは、復旧できない報告を先にして「。」でつなぎます。
+アプリは起動時に、録音中のセッションを除く全セッションの保存整理を、キューへ何も入れる前に 1 件ずつ最後まで実行します。状態は「保存済み録音の音声を整理しています（n件）」です。`recordingPCM` は最新世代が complete で、sealed/checkpoint frame・rate と segmentation/ASR 成功数が一致する場合だけ compact します。`recordingFLAC` に処理 PCM が残る場合は FLAC を検証して PCM を除去し、その他の transient cleanup は FLAC 化と独立して実行します。音声ソースは使う時点で `storage.json` から決めるため、整理後の再走査はありません。整理中は処理キューを開始せず、その間の要求は整理後に順に処理します。整理中に要求されたセッションは、その起動の復旧対象から外します。整理結果の map は成功したセッションを含まず、未完了の session UUID ごとに `SessionMaintenanceIssue.failed`（実際の保存整理エラー）または `SessionMaintenanceIssue.interruptedByShutdown`（shutdown cancellation が発生した現在の item と残りの item）を返します。実エラーと cancellation が同じ item で起きた場合、その item は `.failed` として残し、後続の未実行 item は `.interruptedByShutdown` になります。どちらの issue も、そのセッションの保存整理が成功するまでは推論復旧の対象にしません。次回起動時に未完了の保存整理を再検出し、成功した後に限り推論復旧へ進みます。実際の整理エラーはフォルダー名を付けて「保存済み録音の音声を整理できなかったセッションがn件あります: …」と報告します。shutdown interruption は「終了処理のため保存済み録音の音声整理が中断されたセッションがn件あります。次回起動時に再実行します: …」と報告します。復旧できないセッションの報告と合わせるときは、復旧できない報告を先にして「。」でつなぎます。
 
 整理が終わった時点で、処理状態とライブ文字起こしのヘッダーから整理中の表示を解除します。整理中の表示がまだ残っている欄だけを整理前の状態へ戻し、その間に録音や文字起こし処理が更新した状態は上書きしません。shutdown interruption だけの報告は処理状態に次回起動時の再実行を示す文を残しますが、App の `processingState` を `.partialFailure` にせず、ライブ文字起こしのヘッダーは整理前の状態へ戻します。実際の保存整理エラーまたは復旧失敗を含み、復旧対象がない報告は `.partialFailure` になります。復旧対象がなく整理だけが完了した場合も、整理中の表示は残りません。
 
@@ -153,7 +153,7 @@ frame index は byte offset と先頭 sample（および小さな frame 情報�
 | `event_seq` | UInt64 | 必須。セッション内のイベント番号。新しい append は最後の番号 + 1、最初は 1 |
 | `event_id` | UUID 文字列 | 必須。イベントごとに生成 |
 | `event_type` | String | 必須。下記のイベント種別 |
-| `schema_version` | Int | 必須。値は `3` だけ。reader は他の値・欠落の行を読まずにエラーにし、`SessionWriter` は既存ログにその行があれば追記しない |
+| `schema_version` | Int | 必須。値は `4` だけ。reader は他の値・欠落の行を読まずにエラーにし、`SessionWriter` は既存ログにその行があれば追記しない |
 | `session_id` | UUID 文字列 | 必須。所属セッション |
 | `processing_run_id` | String | optional。処理段階の run ID |
 | `segmentation_run_id` | String | optional。区間が所属する segmentation run ID |
@@ -173,6 +173,8 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 
 | `event_type` | envelope の付加情報 | `payload` の全フィールド |
 | --- | --- | --- |
+| `pipeline.started` | なし | `id`: UUID、`runs`: 下記の run ID object、`sample_rate`: Double、`segmentation_provenance` / `asr_provenance`: provenance object |
+| `pipeline.decisions.replaced` | なし | `generation_id`: UUID、`previous`: optional `{boundary: String, priority: String}`、`replacement`: `{boundary: String, priority: String}` |
 | `processing.run.started` | run | `stage`: String、`provenance`: 下記の object |
 | `processing.run.completed` | run | `stage`: String、`succeeded`: Bool、`completed_count`: Int、`failed_count`: Int |
 | `segment.created` | seg run、segment、開始・終了範囲 | `speech_ranges`: `[[Int64]]` |
@@ -191,25 +193,27 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 
 `stage` の raw value は `segmentation`、`asr`、`clauseBoundary`、`contentPriority` です。metadata のキー `clause_boundary` / `content_priority` と、stage の値 `clauseBoundary` / `contentPriority` を混同しないでください。
 
+`pipeline.started.payload.runs` は `segmentation` と `asr` の ID を必須とし、`clause_boundary` と `content_priority` は両方とも存在するか、両方とも省略します。最新の `pipeline.started` だけが現在世代を定め、それ以前の世代の event payload は論理的に選択対象外になります（ログから物理削除せず、形式移行もしません）。この generation の run ID と最後の decision replacement が materializer への投影入力であり、metadata に active ID は保存しません。`pipeline.decisions.replaced` は同じ `generation_id` の現在の decision pair と optional `previous` が一致することを検証し、必須の `replacement` pair を一つの event で選択します。再試行 pair 全体の判定結果と完了成功を検証した後にだけ event を追記します。優先度だけの再試行では既存 boundary ID と新しい priority ID を組にし、失敗・進行中の pair は選択しません。同じ generation で一度でも選択された priority run ID（初期 pair と以前の replacement の priority）は再選択できず、読取は不正ログとして拒否します。
+
 `asr.completed.outcome` は本文の全 Unicode scalar が空白・改行・句読点（Foundation の whitespacesAndNewlines と punctuationCharacters の文字集合）なら `empty`、それ以外は `recognized` です。`engine` と `model` は認識した実エンジンの provenance から取ります。Mac の本番 engine は `onnxruntime-haas-tdt`、model は [Sanami/haas-ja-onnx/int8dyn](https://huggingface.co/Sanami/haas-ja-onnx/tree/354baedfd9612b00e74cc1ae87dff7f2c558db6f) です。認識不能を特定の日本語文面との一致で判定しません。
 
 `asr.failed.kind` は `engine_unavailable`（準備できないエンジン）、`audio_unreadable`（区間音声読取失敗）、`transcription_failed`（認識呼び出し失敗）のいずれかです。TIMEOUT の専用種別はありません。
 
 選択された segmentation / ASR run の組で、`asr.completed` は `empty` を含めその区間の終端です。同じ区間の成功結果が重複すれば整合性エラーです。`asr.failed` は診断記録で完了ではなく、prepare・音声読取・認識の最初の失敗で試行を止め、その区間と後続を pending のまま残します。次に開いたときは、未完了区間だけを古い順に処理します。
 
-これらも現行 schema 3 のイベントであり、schema 3 以外の互換 reader はありません。`segmentation.progress.consumed_frames` は無音を含む実際に VAD が消費した frame 数（読取・buffer 済み数や最後の speech 位置ではない）で、入力が未 seal の間は 4096 frame 境界で進みます。今回出力した全 segment の `segment.created` が durable になった後だけ progress を保存します。
+これらも現行 schema 4 のイベントであり、schema 4 以外の reader はありません。`segmentation.progress.consumed_frames` は無音を含む実際に VAD が消費した frame 数（読取・buffer 済み数や最後の speech 位置ではない）で、入力が未 seal の間は 4096 frame 境界で進みます。今回出力した全 segment の `segment.created` が durable になった後だけ progress を保存します。
 
-`segmentation.input.sealed.frame_count` は EOF の正確な最終 frame 数を単一の EOF flush 前に保存します。`segmentation.completed` は EOF までの正確な `consumed_frames` と、全 `segment.created` を保存した後の `segment_count` を記録します。`ASRSessionRecovery` は共通 reader として segmentation events も復元し、`asrRunID: nil` なら segmentation-only recovery を選びます。
+`segmentation.input.sealed.frame_count` は EOF の正確な最終 frame 数を単一の EOF flush 前に保存します。`segmentation.completed` は EOF までの正確な `consumed_frames` と、全 `segment.created` を保存した後の `segment_count` を記録します。`ProcessingLogState` は現在世代の segmentation・ASR event を復元し、入力が seal された後の完了検証では seal frame 数と保存 checkpoint の frame 数を照合します。
 
 未完了 run の `VADSession.open` は reader を sample 0 から replay し、segment prefix を ordinal・ID・全 speech ranges で照合します。一致した prefix は再保存せず、owner は新しい tail の `segment.created` を返す前に保存するため、別の segment-writing path で再登録しません。mismatch・EOF で不足する prefix・frame count 不一致は `SegmentationConsistencyError` を投げ、error 後は reopen が必要です。並行操作は拒否します。
 
-完了済み segmentation は processor factory と VAD を使わず、復元済み segment は `segments` から参照できます。`processAvailable` は 4096 sample 未満の端数を保持し、polling / pause では flush せず EOF `finish` でだけ flush します。VAD / Core ML / assembler の状態は保存せず、progress は restart seek point ではありません。実装: [VADSession.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/VADSession.swift)、[ASRSessionRecovery.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASRSessionRecovery.swift)、[SegmentationEvents.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SegmentationEvents.swift)。
+完了済み segmentation は processor factory と VAD を使わず、復元済み segment は `segments` から参照できます。`processAvailable` は 4096 sample 未満の端数を保持し、polling / pause では flush せず EOF `finish` でだけ flush します。VAD / Core ML / assembler の状態は保存せず、progress は restart seek point ではありません。実装: [VADSession.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/VADSession.swift)、[ProcessingLogState.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingLogState.swift)、[SegmentationEvents.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SegmentationEvents.swift)。
 
-イベントには空本文を含む全区間が残ります。ライブの `segment.created` / `asr.completed` は暫定結果で、確定処理では新しい segmentation / ASR run を作ります。
+現在世代の open な段階でも、保存済み `segment.created` と `asr.completed` から得られる部分行を投影します。新しい `pipeline.started` で現在世代を reset すると、以前の世代の行は選択されず、現在表示は空から始まります。空本文を含む全区間は event log に残ります。
 
-`processing.run.completed` の count は段階ごとの処理対象件数です。segmentation / ASR は区間、clauseBoundary は判定が成立した区間と保留の区間、contentPriority は可視本文のある発話文の成立数と保留数を数えます。通常の decision run は判定保留があっても `succeeded: true` を出し、`failed_count` に保留数を保存します。これはローカル必須処理の失敗を意味しません。再試行 run の実際の失敗は `succeeded: false` です（再試行 run の終了・count 規則は下記）。保存破損や参照の不整合は保留に変換せず、エラーにします。
+`processing.run.completed` の count は段階ごとの処理対象件数です。segmentation / ASR は区間、clauseBoundary は判定が成立した区間と保留の区間、contentPriority は可視本文のある発話文の成立数と保留数を数えます。現在世代のローカル完了には segmentation・ASR 両 run の成功と正確な count を要求し、全 segment の ASR 成功と seal frame 数の一致も検証します。通常の decision run は判定保留があっても `succeeded: true` を出し、`failed_count` に保留数を保存します。これはローカル必須処理の失敗を意味しません。再試行 run の実際の失敗は `succeeded: false` です（再試行 run の終了・count 規則は下記）。保存破損や参照の不整合は保留に変換せず、エラーにします。
 
-検証済み VAD が0区間の確定処理では segmentation と ASR の run を開始し、両方の `processing.run.completed` は `succeeded: true`、`completed_count: 0`、`failed_count: 0` です。対象がないため `segment.created`、`asr.pending`、ASR 結果イベントは作りません。ASR の prepare・推論と発話文判定は行わず、保存音声も変更しません。空の transcript と `complete` を公開し、`active_runs` は segmentation と ASR の run ID を選び、任意の decision pointer は設定せず、両保留配列を空にします。再処理でも新しい run を作り、完了した空結果を未完了扱いで自動復旧しません。
+検証済み VAD が0区間の現在世代では segmentation と ASR の run を開始し、両方の `processing.run.completed` は `succeeded: true`、`completed_count: 0`、`failed_count: 0` です。対象がないため `segment.created`、`asr.pending`、ASR 結果イベントは作りません。ASR の prepare・推論と発話文判定は行わず、保存音声も変更しません。空の transcript を投影し、decision 対象がないため判定 event・pending はありません。選択 run ID は generation event log にあり、metadata には保存しません。再処理では新しい世代を開始し、前世代の結果は論理的に選択対象外になります。
 
 根拠: [ActiveRuns.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ActiveRuns.swift)、[ASREventPayloads.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ASREventPayloads.swift)、[SegmentEvents.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SegmentEvents.swift)、[PipelineCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/PipelineCoordinator.swift)、[TranscriptTypes.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/TranscriptTypes.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FinalTranscriptPipeline.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)、[LiveASRSession.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveASRSession.swift)。
 
@@ -230,7 +234,7 @@ optional の nil は writer の JSON から省略します。音声区間の共�
 | `request` | object または null | `assessed` は成功した判定呼出しの記録を持つ（候補なしの終端区間も F・B除去範囲の判定のため呼び出す）。`carried_over` は判定呼出しを行わず null |
 | `source_decision` | object | `{"kind":"assessed"}` または `{"kind":"carried_over","source_boundary_run_id":…,"source_event_seq":…}` |
 
-`filler_ranges` の各範囲は原文 ASR text の UTF-16 code unit 半開区間で、`start < end`、原文内 bounds、両端 Character 境界を満たします。配列は原文順でソートされ、範囲間に重なりや隣接はありません（連続して除去する Character は一つの範囲にまとめ、各範囲の `end` は次の `start` より小さくなります）。値の形は `[ {"start":0,"end":2} ]`、該当なしは `[]` です。O=0、F=1、D=2、B=3 の4 label を token ごとに argmax し、同率では低い index を選びます。各 Unicode scalar の label が F または B で、Swift Character を構成する全 scalar が F/B の場合は、その Character 全体を除去します。F と B が混在する Character も除去し、いずれかの scalar が O または D なら Character 全体を保持します。境界 assessment は `source_decision.kind` が `assessed` の場合に成功呼出しの `request` を必須とし、`carried_over` の場合は呼出しを行わず `request: null` とします。通常のライブ・確定処理で未判定・初期化失敗・呼出し失敗となった区間は assessment でなく `clause_boundaries.pending` に記録し、架空の確率や F・B除去範囲を入れません。明示的・復旧の判定再試行における新規呼出し失敗は再試行処理を失敗させ、保留を含む置換 snapshot を公開しません。`source_decision` は assessment 自身の判定を示す `assessed` または request を持たない `carried_over` だけです。引き継ぎは元イベントと同じ区間・候補・全確率・次区間先頭・F・B除去範囲であることを検証し、元の判定呼出しを再 request として扱いません。`filler_ranges` は decoder の必須キーで、欠落・型違い・不正範囲は読取エラーです。
+`filler_ranges` の各範囲は原文 ASR text の UTF-16 code unit 半開区間で、`start < end`、原文内 bounds、両端 Character 境界を満たします。配列は原文順でソートされ、範囲間に重なりや隣接はありません（連続して除去する Character は一つの範囲にまとめ、各範囲の `end` は次の `start` より小さくなります）。値の形は `[ {"start":0,"end":2} ]`、該当なしは `[]` です。O=0、F=1、D=2、B=3 の4 label を token ごとに argmax し、同率では低い index を選びます。各 Unicode scalar の label が F または B で、Swift Character を構成する全 scalar が F/B の場合は、その Character 全体を除去します。F と B が混在する Character も除去し、いずれかの scalar が O または D なら Character 全体を保持します。境界 assessment は `source_decision.kind` が `assessed` の場合に成功呼出しの `request` を必須とし、`carried_over` の場合は呼出しを行わず `request: null` とします。通常の pipeline 処理で未判定・初期化失敗・呼出し失敗となった区間は assessment でなく `clause_boundaries.pending` に記録し、架空の確率や F・B除去範囲を入れません。明示的な判定再試行における新規呼出し失敗は処理を失敗させ、置換 event を追記しません。`source_decision` は assessment 自身の判定を示す `assessed` または request を持たない `carried_over` だけです。引き継ぎは元イベントと同じ区間・候補・全確率・次区間先頭・F・B除去範囲であることを検証し、元の判定呼出しを再 request として扱いません。`filler_ranges` は decoder の必須キーで、欠落・型違い・不正範囲は読取エラーです。
 
 | `reason` | 意味 |
 | --- | --- |
@@ -275,9 +279,9 @@ request を処理したモデルは、そのイベントの run の `processing.
 
 `content_priority.assigned.request` は成功した結果だけに付けるため、呼出し失敗の保留も null です。carry-over と未判定 pending は呼出し自体がなく、利用計数にも加えません。carry-over は元 run・イベント・発話文が実在し、優先度と保留状態が一致することを検証します。本文比較は各 boundary run の保存済み F・B除去範囲をそれぞれの ASR 原文に適用した UTF-8 bytes で行い、parts の一致だけでは引き継ぎません。保留のまま引き継いだ発話文は保留のままです。
 
-初回のライブ・確定処理の優先度判定と保留は原文順に最大40発話文ずつ `content_priority.assigned` に保存します。一回の `classifyPriorities` 呼出しで1〜40 sequence を処理し、失敗した batch は全対象を `request: null` の保留にします。未判定 batch にも同じ粒度を使います。明示的・復旧の判定再試行は異なり、新たに要求した境界または優先度判定の実際の失敗で処理を停止し、部分的な再試行結果を全て破棄して置換 snapshot を公開しません。成功時は snapshot 全体の構築・materialization 後、各開始 run にちょうど一つ `succeeded: true` の `processing.run.completed` を書き、その後の metadata write で snapshot を公開します。`processing.run.completed` が成功しても metadata に新 snapshot が公開されていなければ、それは公開済み結果ではなく、既存の公開 snapshot から復旧・一時停止できる未公開 run です。判定失敗時は、失敗終了 cleanup の直前に task cancellation を一度だけ確認します。この確認で cancellation があれば、failed completion を書かず、durable outcome 前の一時停止として扱います。確認後に cleanup を開始したら、以後は cancellation を確認せず（writer 内を含む）、その再試行で開始した各 run に一度ずつ `succeeded: false` の `processing.run.completed` の保存を試みます。優先度判定失敗後に再構築済みの境界 run も対象です。全ての失敗完了保存が成功した durable failed end は一つの typed `.failed` として返し、一件の background `processing_failure` event と一件の `state.failures` entry を出します。durable failed end の `.failed` は後から届く cancellation や設定変更・shutdown でも held / cancelled に変わりません。起動時に自動再実行せず、公開済み pending の再試行は利用者の明示操作に限ります。`completed_count` は durable に完了・引き継がれた対象だけを数え、`failed_count` は durable な pending の対象（引き継がれた pending を含む）と、失敗した現在の判定 request の対象を数えます（優先度 inference batch の失敗では batch の全対象）。未実行の対象は数えません。既存の公開 snapshot・`active_runs`・保留 metadata は変更されません。失敗完了の保存で実 I/O error が起きても各開始 run の保存を試み、キャンセルで抑制せず、元の判定エラーと全ての保存エラーを明示的に合わせて伝播します。いずれかの保存が失敗した場合、failed end の durability は保証しません。失敗完了を書けず未完了のまま残った run は起動時 recovery の対象となり、公開済み snapshot から再構築します（未公開 run の部分結果は使いません）。`processing.run.completed` が `succeeded: false` で durable に保存された run は起動時復旧の対象にせず、公開済み pending の再試行は利用者の明示操作に限ります。保存形式の schema と既存フィールドは変更しません。
+初回の優先度判定と保留は原文順に最大40発話文ずつ `content_priority.assigned` に保存します。一回の `classifyPriorities` 呼出しで1〜40 sequence を処理し、失敗した batch は全対象を `request: null` の保留にします。未判定 batch にも同じ粒度を使います。明示的な判定再試行は、新たに要求した境界または優先度判定の実際の失敗で停止し、再試行で得た部分結果を選択しません。再試行 pair 全体の判定結果と完了成功を検証した後に `pipeline.decisions.replaced` を追記し、boundary と priority を一括選択します。`processing.run.completed` だけでは選択状態を変えません。判定失敗時は、失敗終了 cleanup の直前に task cancellation を一度だけ確認します。この確認で cancellation があれば、failed completion を書かず、durable outcome 前の一時停止として扱います。確認後に cleanup を開始したら、以後は cancellation を確認せず（writer 内を含む）、その再試行で開始した各 run に一度ずつ `succeeded: false` の `processing.run.completed` の保存を試みます。優先度判定失敗後に再構築済みの境界 run も対象です。全ての失敗完了保存が成功した場合は durable failed end とし、その `.failed` は後から届く cancellation や設定変更・shutdown でも held / cancelled に変わりません。起動時に自動再実行せず、公開済み pending の再試行は利用者の明示操作に限ります。`completed_count` は durable に完了・引き継がれた対象だけを数え、`failed_count` は durable な pending の対象（引き継がれた pending を含む）と、失敗した現在の判定 request の対象を数えます（優先度 inference batch の失敗では batch の全対象）。未実行の対象は数えません。失敗時は以前に選択された decision pair と公開済み pending を保持します。失敗完了の保存で実 I/O error が起きても各開始 run の保存を試み、キャンセルで抑制せず、元の判定エラーと全ての保存エラーを明示的に合わせて伝播します。いずれかの保存が失敗した場合、failed end の durability は保証しません。replacement event がない未完了 run は選択対象外で、復旧時は現在選択済み pair と pending から再構築します。`processing.run.completed` が `succeeded: false` で durable に保存された run は起動時復旧の対象にせず、公開済み pending の再試行は利用者の明示操作に限ります。
 
-CancellationError または取り消し済み task を一時停止とするのは、durable outcome の前で、かつ失敗終了 cleanup 開始前に限ります。その場合は pending event や失敗 run completion を作らず、既存の公開 snapshot を保持します。失敗 cleanup を開始する直前に cancellation を一度確認し、開始後は run completion の writer 内を含め再確認しません。成功 snapshot が metadata に公開された後は、遅れて届く cancellation や設定・shutdown による pause があっても completed を維持し、held / cancelled に変更したり `resumeHeld` で再実行したりしません。失敗終了 cleanup で全ての `succeeded: false` completion が durable に保存された場合も `.failed` を維持し、遅れて届く cancellation や設定変更・shutdown で held / cancelled に変更しません。一方、`succeeded: true` の run completion があっても metadata 公開前なら未公開であり、既存 snapshot から復旧・一時停止できる状態です。起動時の標準復旧は、クラッシュ・電源断・取消しで終了 event のない開始済み run、および成功終了 event はあるが metadata 公開前に中断した run を対象にし、いずれも公開済み snapshot だけから再構築します。durable failed end の run は復旧対象にせず、公開済み pending の再試行は利用者の明示操作に限ります。判定呼出しのない carry-over event は batch 上限に含めません。
+CancellationError または取り消し済み task を一時停止とするのは、durable outcome の前で、かつ失敗終了 cleanup 開始前に限ります。その場合は pending event や失敗 run completion を作らず、既に選択された pair を保持します。失敗 cleanup を開始する直前に cancellation を一度確認し、開始後は run completion の writer 内を含め再確認しません。`pipeline.decisions.replaced` が追記された後は、遅れて届く cancellation や設定・shutdown による pause があっても completed を維持し、held / cancelled に変更したり `resumeHeld` で再実行したりしません。失敗終了 cleanup で全ての `succeeded: false` completion が durable に保存された場合も `.failed` を維持し、遅れて届く cancellation や設定変更・shutdown で held / cancelled に変更しません。一方、`succeeded: true` の run completion があっても replacement event 追記前なら未選択であり、選択済み pair と pending から再開します。起動時の判定復旧は replacement event のない未選択 retry pair を対象とし、選択済み pair と pending から再構築します。未選択 run の部分結果は使いません。durable failed end の run は復旧対象にせず、公開済み pending の再試行は利用者の明示操作に限ります。判定呼出しのない carry-over event は batch 上限に含めません。
 
 根拠: [ClauseRecords.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseRecords.swift)、[ClauseBoundaryAssembly.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseBoundaryAssembly.swift)、[共通の直列 batch](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClausePriorityBatches.swift)、[DecisionEnrichmentCoordinator.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionEnrichmentCoordinator.swift)、[JSON 形状のテスト](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/DecisionEnrichmentCoordinatorTests.swift)、[確定・再試行の batch 保存](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/PriorityBatchPersistenceTests.swift)。
 
@@ -300,15 +304,15 @@ CancellationError または取り消し済み task を一時停止とするの�
 | segmentation（Linux / Windows） | `onnxruntime-silero-vad` / 固定 model のファイル名 `silero_vad_16k_op15.onnx` / `silero-vad@5cd7945676eb32225748052e2e6a0580e4686a08+onnxruntime@1.31.0` | Mac の segmentation と同じ8キーに、portable 固有の7キー（`negative_vad_threshold` = `0.35`、`chunk_samples` = `4096`、`frame_samples` = `512`、`frame_aggregation` = `noisy-or`、`model_sha256` = 固定 model の SHA-256、`intra_op_threads`、`graph_optimization_level` = `ORT_ENABLE_ALL`）を加える。詳細は [windows.md](windows.md#silero-vad-の区間検出) |
 | asr（Mac） | `onnxruntime-haas-tdt` / [Sanami/haas-ja-onnx/int8dyn](https://huggingface.co/Sanami/haas-ja-onnx/tree/354baedfd9612b00e74cc1ae87dff7f2c558db6f) / `haas-ja-v1.0@354baedfd9612b00e74cc1ae87dff7f2c558db6f+onnxruntime@1.31.0` | `language=ja`、`decoding=tdt-greedy`、`max_symbols_per_frame=10`、`intra_op_threads=4`、`minimum_input_seconds=0.02`、`maximum_input_seconds=30.0` |
 | asr（Linux / Windows） | `onnxruntime-qwen3-asr` / `${size.repository}@${size.commit}`（選択サイズごとに固定） / `onnxruntime-<runtimeVersion>`（現在 `1.31.0`） | `language=ja`、`minimum_input_seconds=0.02`、`quantization=int4`、`mel_variant=whisper-slaney-128-nfft400-hop160-reflect-global-log10`、`max_new_tokens=448`、`no_repeat_ngram=3 when input_seconds > 15; disabled otherwise`、`intra_op_threads=指定値 N`、`inter_op_threads=1`、`cpu_memory_arena=false`、`graph_optimization_level=ORT_ENABLE_ALL` |
-| clauseBoundary | `coreml-clause-tagger`（Mac）または `onnx-clause-tagger`（Linux / Windows）/ 外部 model ID Pokojaka/modernbert-ja-30m-utterance-tagger / version = model の64桁 state-hash revision | `model_id` と `model_revision` は実際にロードした identity、`unit_policy=btsj-utterance-sentence`、`mode` は `live`、`final`、`retry`、`candidate_characters=、。？！?!`、`boundary_threshold=0.5`、`continuation_threshold=0.5`（いずれも厳密な `>` 判定）、`next_head_character_limit=60`、`window_content_tokens=190`、`window_policy=whole-piece-max-min-context`、`span_policy=argmax-o-f-d-b-remove-f-b`、`span_window_policy=whole-piece-max-min-context`、`encoding_revision=1`、`max_tokens=192`、`compute_units=cpu-only`、`text_policy=neutral-punctuation-piecewise` |
-| contentPriority | `coreml-clause-tagger`（Mac）または `onnx-clause-tagger`（Linux / Windows）/ 外部 model ID Pokojaka/modernbert-ja-30m-utterance-tagger / version = model の64桁 state-hash revision | 実際の `model_id` / `model_revision`、`unit_policy=btsj-utterance-sentence`、`mode` は `live`、`final`、`retry`、`minimum_demotion_confidence=0.9`、`maximum_targets=40`、`encoding_revision=1`、`max_tokens=192`、`compute_units=cpu-only`、`text_policy=filler-backchannel-removed-neutral-punctuation-piecewise` |
-| decision unavailable | `unavailable` / `model=nil` / version `1` | `mode=live`、`unit_policy=btsj-utterance-sentence` |
+| clauseBoundary | `coreml-clause-tagger`（Mac）または `onnx-clause-tagger`（Linux / Windows）/ 外部 model ID Pokojaka/modernbert-ja-30m-utterance-tagger / version = model の64桁 state-hash revision | `model_id` と `model_revision` は実際にロードした identity、`unit_policy=btsj-utterance-sentence`、`candidate_characters=、。？！?!`、`boundary_threshold=0.5`、`continuation_threshold=0.5`（いずれも厳密な `>` 判定）、`next_head_character_limit=60`、`window_content_tokens=190`、`window_policy=whole-piece-max-min-context`、`span_policy=argmax-o-f-d-b-remove-f-b`、`span_window_policy=whole-piece-max-min-context`、`encoding_revision=1`、`max_tokens=192`、`compute_units=cpu-only`、`text_policy=neutral-punctuation-piecewise` |
+| contentPriority | `coreml-clause-tagger`（Mac）または `onnx-clause-tagger`（Linux / Windows）/ 外部 model ID Pokojaka/modernbert-ja-30m-utterance-tagger / version = model の64桁 state-hash revision | 実際の `model_id` / `model_revision`、`unit_policy=btsj-utterance-sentence`、`minimum_demotion_confidence=0.9`、`maximum_targets=40`、`encoding_revision=1`、`max_tokens=192`、`compute_units=cpu-only`、`text_policy=filler-backchannel-removed-neutral-punctuation-piecewise` |
+| decision unavailable | `unavailable` / `model=nil` / version `1` | `unit_policy=btsj-utterance-sentence` |
 
-判定 run の `model`、configuration の `model_id` / `model_revision`、`version` は実際にロードした外部 model ID と state-hash revision です。`unavailable` は、ライブ run の開始時にモデルを読み込めなかった場合です。成功 request record はモデルを記録せず、その run の provenance が request を処理したモデルを示します。
+判定 run の `model`、configuration の `model_id` / `model_revision`、`version` は実際にロードした外部 model ID と state-hash revision です。`unavailable` は tagger を読み込めなかった provenance です。成功 request record はモデルを記録せず、その run の provenance が request を処理したモデルを示します。
 
-保存済み transcript の読込・materialization は保存済み run を使い、現在の `model_id` とは照合しません。利用者の再試行は保留対象だけを再判定し、成功済み判定を source record として引き継ぎます。確定処理は、live 優先度 run と確定処理の state-hash `model_revision` が一致するときに、各 run の保存済み `filler_ranges` を適用した発話文本文の UTF-8 byte 列が完全一致する判定を再利用し、`model_id` は照合しません。全量再処理は境界と優先度を再計算し、この条件を満たす live 優先度だけを再利用します。
+保存済み transcript の読込・materialization は選択済み run と event を使い、現在の `model_id` とは照合しません。同一 generation 内の判定再試行で成功済み判定を引き継ぐ場合は、元・再試行側の保存済み `filler_ranges` を適用した本文の UTF-8 bytes まで照合し、parts の一致だけでは引き継ぎません。
 
-ライブの境界判定 run と優先度 run は判定結果を逐次保存し、呼出元が segmentation を完了し全 ASR 結果を正常に保存した後で明示的に `finishInput` した場合に限り完了イベントを出します。成功した空の ASR 結果がテキスト列を区切っても、明示的な input EOF にはなりません。確定処理への移行で取り消した run は完了イベントなしでも保存済み結果を保持します。ライブ run は metadata の `active_runs` に選ばず、確定処理は独立した境界・優先度 run の pointer を公開します。CLI の `ContentPriorityAccess.disabled` は Core ML tagger による判定を無効にし、必須の segmentation・ASR を実行した上で、任意の decision run を実行しません。ライブ ASR は完了イベントへ engine / model を記録しますが、確定処理と同じ started provenance を各 ASR run に出すわけではありません。
+segmentation・ASR の `processing.run.started` provenance は `pipeline.started` に保存した値と一致しなければなりません。各段階は開いたまま進捗・部分結果を保存し、入力 seal 後に全区間の成功結果と正確な count を検証して完了します。CLI の `ContentPriorityAccess.disabled` は任意の decision run を行わず、generation の初期 `runs` では両 decision ID を省略します。
 
 根拠: [RunProvenance.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/RunProvenance.swift)、[FinalTranscriptPipeline.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FinalTranscriptPipeline.swift)、[FluidFinalTranscriptVADSegmenter.swift](../app/MacAmbientJev/Sources/MacAmbientJevRuntime/FluidFinalTranscriptVADSegmenter.swift)、[SileroFinalTranscriptVADSegmenter.swift](../app/MacAmbientJev/Sources/MacAmbientJevPortableRuntime/SileroFinalTranscriptVADSegmenter.swift)、[HaasASREngine.swift](../app/MacAmbientJev/Sources/MacAmbientJevHaasASR/HaasASREngine.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)。
 
@@ -316,31 +320,21 @@ CancellationError または取り消し済み task を一時停止とするの�
 
 ## processing_metadata.json
 
-`ProcessingMetadataStore` が明示した CodingKey の JSON を atomic write します。`schema_version` はイベントログと同じ `EventLogSchema.version` の値 `3` を必須とします。値の相違・欠落・型違いは payload の読取より先に拒否し、明示的な再処理でも置換しません。モデル・実装 version 群はここにはありません。
+`ProcessingMetadataStore` が明示した CodingKey の JSON を atomic write します。キーは `schema_version`、`generation_id`、`state`、optional `failure_reason` だけで、`schema_version` はイベントログと同じ `4` です。欠落・未対応 version は直ちに拒否し、明示的な再処理でも置換しません。
 
 | キー | 型 | 意味 |
 | --- | --- | --- |
-| `schema_version` | Int | 必須。値は `3` だけ |
-| `finalization_attempt` | 必須。object または null | 最新の確定処理の状態 |
-| `active_runs` | 必須。object または null | 一括公開された現在の run 集合 |
-| `pending_clause_boundary_segments` | 区間参照の配列 | 必須。公開済み snapshot で境界判定が未成立の区間。時間順 |
-| `pending_content_priority_clauses` | 発話文参照の配列 | 必須。公開済み境界判定 run の閉じた非空発話文のうち、優先度が未成立のもの。原文順 |
+| `schema_version` | Int | 必須。値は `4` だけ |
+| `generation_id` | UUID | 必須。状態が属する pipeline generation |
+| `state` | String | 必須。`running` / `paused` / `failed` / `complete` |
+| `failure_reason` | optional String | 失敗・一時停止の理由。nil は省略 |
 
-保留の配列は重複を許さず、イベントログと一致しない場合（未知の区間・発話文、別 run、成立済み対象を含むなど）は読取・再試行前にエラーにします。境界保留配列は境界判定未成立の区間だけを含み、保留区間に続く未解決行を重複して加えません。
+状態ファイルは表示・復旧用の status だけで、generation event log が現在の run と結果を決めます。metadata の `generation_id` が最新の `pipeline.started` の `id` と一致しない場合、その status は stale として無視します。新 generation marker は前世代を論理的に reset し、以前の event を移行・再選択しません。
 
-finalization_attempt の全フィールド:
 
-| キー | 型 | 意味 |
-| --- | --- | --- |
-| `attempt_id` | String | 確定処理の試行 ID |
-| `state` | String | `running` / `paused` / `failed` / `complete` |
-| `failure_reason` | optional String。nil は key を省略 | failed の理由 |
+新しい処理は `pipeline.started` で generation と run ID 群を開始し、metadata に同じ `generation_id` の `running` status を保存します。開いている段階の部分結果は最新世代から投影し、新 generation 開始時は前世代の行を選ばず空から始めます。ローカル必須段階は seal 済みの音声 frame 数に対して segmentation・ASR の全 segment 成功と正確な count を検証して完了します。初期 payload の decision IDs は両方存在するか両方省略し、対象がある場合に判定を実行します。decision pending を含む成功結果も選択できます。CLI の `ContentPriorityAccess.disabled` は両 decision ID を省略し、任意の判定を実行しません。metadata の `paused` / `failed` status は選択済み event を置き換えません。
 
-`active_runs` の key は `segmentation`、`asr`、`clause_boundary`、`content_priority` の4つで、値は全て optional String です。nil の key は JSON に出しません。`clause_boundary` と `content_priority` は両方 nil または両方 run ID が設定され、公開された decision pointer がある場合は `segmentation` と `asr` も設定されます。成功判定用の内部集合は JSON に保存しません。
-
-開始時は公開済み active_runs と保留を保持したまま running にします。ローカル必須2段階が全て成功したときだけ、complete、新しい active_runs（segmentation と ASR の run、decision pointer は未設定）、認識本文のある全区間の境界保留を**一回の write**で保存し、優先度の保留を空にします。公開と保留保存の間にクラッシュ窓はありません。判定対象の本文があり、App でモデルを初期化できれば境界・優先度 run を実行し、run pointer と両保留配列を一回の write で公開します。VAD が0区間など判定対象がない場合は decision run を作らず、pointer は未設定、保留配列は空です。モデルを初期化できなければ判定 run を公開せず、境界保留を残します。CLI の `ContentPriorityAccess.disabled` は判定を実行せず、任意 decision run pointer は設定しません。公開時に active_runs が snapshot の作成元と変わっていれば公開しません。優先度だけの再試行は優先度 run pointer と保留配列だけを更新します。failed / paused は公開済みの結果を置き換えません。
-
-復旧対象は running / paused の試行、またはまだ active_runs のない保存音声です。復旧は新しい確定 run の全量実行です。failed を自動再実行しません。complete で保留配列が空でなければ、保留の再判定は利用者の明示的な再試行だけで行います。起動時の復旧は公開済みの保留を通常は再試行しません。公開済み snapshot より新しい未公開の確定・再試行判定 run がある場合、標準復旧の対象は、終了 event のない開始済み run（クラッシュ・電源断・事前の取消し、または失敗 cleanup の保存 I/O error により未完了の run）と、`succeeded: true` で完了したが metadata 公開前の run です。成功 `processing.run.completed` 自体は snapshot を公開しません。これらは公開済み snapshot だけから再構築し、未公開 run の部分結果を使いません。`succeeded: false` の失敗完了 event が durable な run は復旧対象にせず、既存の公開済み pending を利用者が明示的に再試行します。失敗完了の保存 I/O error は元の判定失敗とともに伝播し、run の durable な終了を主張しません。durable outcome 後の cancellation / settings / shutdown pause は公開済み結果を held に戻しません。復旧対象となる場合も両保留配列をイベントログで検証します。破損した metadata は自動復旧時には理由を報告して保持し、利用者の明示的な再処理だけが置換を許可します。schema_version の相違・欠落・型違いは置換の対象外で、読取・追記・復旧・再処理をエラーにします。
+起動復旧は最新 generation の `pipeline.started`、その run 完了 event と一致する metadata status を基にします。`running` / `paused` は同世代の未完了処理を続け、`complete` は封印 frame 数・全ローカル結果・count を再検証してから pending または未公開 decision retry を扱います。`failed` は自動再実行しません。decision retry の未選択 run は部分結果を投影せず、公開済み pair から再構築します。generation ID が異なる古い status は無視します。metadata が読めない場合は自動復旧で理由を報告し、明示的な再処理でも未対応 schema version は置換しません。
 
 根拠: [ProcessingMetadata.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ProcessingMetadata.swift)、[ActiveRuns.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ActiveRuns.swift)、[SessionRecoveryScanner.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/SessionRecoveryScanner.swift)、[NativeSessionProcessor.swift](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift)。
 
@@ -383,13 +377,13 @@ chunk を atomic write して synchronize した後、その index を append / 
 
 イベント header の `event_seq` は正の整数で、ログ順に厳密に増加します。重複・逆転は reader と既存ログへの append の両方で拒否し、破損した番号を並べ替えて補正しません。
 
-保存済みセッション一覧は active ASR run がある場合、イベントログを変更せずに読み込み、JSONL と active transcript event payload を検証します。ログが欠損・不正、または不完全な末尾を含む場合は派生結果を破損として表示し、公開 transcript を持たない扱いにします。active transcript がない未処理セッションではログを要求しません。
+保存済みセッション一覧は `pipeline.started` がある場合、イベントログを変更せずに読み込み、最新世代の選択 run と transcript event payload を検証します。ログが欠損・不正、または不完全な末尾を含む場合は派生結果を破損として表示し、公開 transcript を持たない扱いにします。generation のない未処理セッションではログを要求しません。
 
-ライブ→確定の固定には `SessionWriter.readDurableLog` を使い、append と同じファイルロックを取って synchronize 完了後のログを読みます。読取は破損末尾を切り詰めずエラーにし、固定後のイベントは再利用対象に追加しません。公開 reader・再試行・catalog は公開 run と参照先の source／carry 元だけを厳密に解釈し、carry 元も再帰的に境界組み立てと優先度整合を検証します。
+読取は `SessionWriter.readDurableLog` で append と同じファイルロックを取り、synchronize 済みのログを読みます。最新 `pipeline.started` が現在 generation を定め、それ以前の generation payload は論理的に選択対象外です。reader・再試行・catalog は現在の選択 run と参照先の source／carry 元を厳密に解釈し、carry 元も再帰的に境界組み立てと優先度整合を検証します。
 
-`EventLogTranscriptReader` は全行の header（`schema_version` を含む）を読み、必要な既知イベントの run ID を要求します。非 active run や未知イベントの payload は解釈せず、active run の必要フィールド欠落・型違いはエラーです。ASR outcome と text の不一致もエラーです。発話文判定イベントは reader、再試行分析（`DecisionRetryAnalyzer`）、ライブ再利用、保存済み一覧が共通 decoder で検証します。保存済み境界判定から発話文を再組み立てし、保存結果と比較します。完了 run は全ての非空区間を覆い、組み立て結果と完全一致しなければなりません。未完了のライブ run は組み立て結果の先頭部分であれば読めます。候補・次区間先頭・範囲・参照・引き継ぎ元の不一致はエラーです。読み取り・検証で判定を再実行しません。
+`EventLogTranscriptReader` は全行の header（`schema_version` を含む）を読み、必要な既知イベントの run ID を要求します。非選択 run や未知イベントの payload は解釈せず、選択 run の必要フィールド欠落・型違いはエラーです。ASR outcome と text の不一致もエラーです。発話文判定イベントは reader、再試行分析（`DecisionRetryAnalyzer`）、同世代の carry-over、保存済み一覧が共通 decoder で検証します。保存済み境界判定から発話文を再組み立てし、保存結果と比較します。完了 run は全ての非空区間を覆い、組み立て結果と完全一致しなければなりません。open な現在世代は組み立て済み部分結果を読めます。候補・次区間先頭・範囲・参照・引き継ぎ元の不一致はエラーです。読み取り・検証で判定を再実行しません。
 
-`EventLogTranscriptReader` は header・ローカル transcript の decoding を担当し、発話文イベントの共有解析・source/carry 検証・組み立て replay は [ClauseEventLog.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseEventLog.swift) にあります。公開済み run の完了・pending 整合は [PublishedTranscriptValidation.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/PublishedTranscriptValidation.swift)、再試行対象の検証と計数は [DecisionRetryAnalyzer.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionRetryAnalyzer.swift) が担当します。reader・再試行・catalog・ライブ再利用は同じ `ClauseEventLog` を使い、独立した発話文 decoder を持ちません。
+`EventLogTranscriptReader` は header・ローカル transcript の decoding を担当し、発話文イベントの共有解析・source/carry 検証・組み立て replay は [ClauseEventLog.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/ClauseEventLog.swift) にあります。公開済み run の完了・pending 整合は [PublishedTranscriptValidation.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/PublishedTranscriptValidation.swift)、再試行対象の検証と計数は [DecisionRetryAnalyzer.swift](../app/MacAmbientJev/Sources/MacAmbientJevCore/DecisionRetryAnalyzer.swift) が担当します。reader・再試行・catalog・同世代 carry-over は同じ `ClauseEventLog` を使い、独立した発話文 decoder を持ちません。
 
 [DecisionSessionRecovery](../app/MacAmbientJev/Sources/MacAmbientJevCore/EventLogTranscriptReader.swift) は、明示された segmentation / ASR / boundary / priority run ID を durable JSONL に照合し、共通 `ClauseEventLog` replay から有効な durable prefix、処理済み入力、未完了 parts、未記録の `clauses.closed` record の決定的な末尾分、および未割当の非空 clause を返します。保存済み outcome（pending を含む）は再 request しません。`LiveContentPrioritySession` actor は `open` 時に返された closure を永続化し、未割当の非空 clause だけを分類します。reader は replay と結果返却のみを担います。新しい event/schema を追加せず、公開 metadata や起動時 recovery の仕様も変えません。
 

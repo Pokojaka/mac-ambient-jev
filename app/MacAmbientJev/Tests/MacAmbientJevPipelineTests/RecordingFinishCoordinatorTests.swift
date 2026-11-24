@@ -182,11 +182,11 @@ private actor FinishTestExecutor: LiveTranscriptionExecuting, SessionProcessingE
         preconditionFailure("Paused queue must retain finalization without model work")
     }
     func finishLiveTranscription(
-        sessionID: UUID, checkpoint: AudioCheckpoint, finalSegments: [SegmentReference], pacingMode: ASRPacingMode,
+        sessionID: UUID, checkpoint: AudioCheckpoint, pacingMode: ASRPacingMode,
         shouldPause: @escaping NativeSessionProcessor.PauseCheck, onPhase: @escaping NativeSessionProcessor.PhaseHandler,
         onStatus: @escaping NativeSessionProcessor.StatusHandler, onUpdate: @escaping NativeSessionProcessor.UpdateHandler
     ) async -> SessionProcessingResult {
-        _ = (sessionID, checkpoint, finalSegments, pacingMode, shouldPause, onPhase, onStatus, onUpdate)
+        _ = (sessionID, checkpoint, pacingMode, shouldPause, onPhase, onStatus, onUpdate)
         preconditionFailure("Paused queue must retain finalization without model work")
     }
     func retryContentPrioritySession(

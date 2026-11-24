@@ -101,6 +101,7 @@ public actor LiveASRSession {
 
     private let sessionID: UUID
     private let sessionURL: URL
+    private let generationID: UUID
     private let processingDirectory: URL
     private let writer: any SessionEventAppending
     private let asr: any ASREngine
@@ -131,74 +132,65 @@ public actor LiveASRSession {
     private var idleWaiters: [CheckedContinuation<Void, Never>] = []
     private var finishWaitObservers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
-    public init(
+    private init(
         sessionID: UUID,
         sessionURL: URL,
-        segmentationRunID: String,
-        asrRunID: String,
         processingDirectory: URL,
         writer: any SessionEventAppending,
         asr: any ASREngine,
-        sampleRate: Double,
-        clauseBoundaryRunID: String?,
-        contentPriorityRunID: String?
+        recovery: ProcessingLogState
     ) {
+        let runs = recovery.generation.runs
         self.sessionID = sessionID
         self.sessionURL = sessionURL
-        self.segmentationRunID = segmentationRunID
-        self.asrRunID = asrRunID
-        self.clauseBoundaryRunID = clauseBoundaryRunID
-        self.contentPriorityRunID = contentPriorityRunID
+        self.generationID = recovery.generation.id
+        self.segmentationRunID = recovery.segmentationRunID
+        self.asrRunID = recovery.asrRunID
+        self.clauseBoundaryRunID = runs.clauseBoundary
+        self.contentPriorityRunID = runs.contentPriority
         self.processingDirectory = processingDirectory
         self.writer = writer
         self.asr = asr
         self.materializer = IncrementalTranscriptMaterializer(
-            sampleRate: sampleRate, segmentationRunID: segmentationRunID,
-            asrRunID: asrRunID, clauseBoundaryRunID: clauseBoundaryRunID
+            sampleRate: recovery.generation.sampleRate,
+            segmentationRunID: recovery.segmentationRunID,
+            asrRunID: recovery.asrRunID,
+            clauseBoundaryRunID: runs.clauseBoundary
         )
     }
 
     public static func open(
         sessionID: UUID,
         sessionURL: URL,
-        segmentationRunID: String,
-        asrRunID: String,
-        processingDirectory: URL,
         writer: any SessionEventAppending,
-        asr: any ASREngine,
-        sampleRate: Double,
-        clauseBoundaryRunID: String?,
-        contentPriorityRunID: String?
+        asr: any ASREngine
     ) async throws -> LiveASRSession {
-        let recovery = try ASRSessionRecovery(
-            eventsURL: sessionURL.appending(path: "events.jsonl"),
-            sessionID: sessionID,
-            segmentationRunID: segmentationRunID,
-            asrRunID: asrRunID
-        )
+        let layout = SessionLayout(sessionURL: sessionURL)
+        guard let recovery = try ProcessingLogState(eventsURL: layout.eventsURL, sessionID: sessionID) else {
+            throw ProcessingLogStateError.missingGeneration
+        }
+        guard recovery.generation.asrProvenance == asr.provenance else {
+            throw ProcessingLogStateError.incompatibleSettings
+        }
         let session = LiveASRSession(
             sessionID: sessionID,
             sessionURL: sessionURL,
-            segmentationRunID: segmentationRunID,
-            asrRunID: asrRunID,
-            processingDirectory: processingDirectory,
+            processingDirectory: layout.processingDirectory,
             writer: writer,
             asr: asr,
-            sampleRate: sampleRate,
-            clauseBoundaryRunID: clauseBoundaryRunID,
-            contentPriorityRunID: contentPriorityRunID
+            recovery: recovery
         )
         try await session.hydrate(recovery)
         return session
     }
 
-    private func hydrate(_ recovery: ASRSessionRecovery) throws {
+    private func hydrate(_ recovery: ProcessingLogState) throws {
         registeredSegments = Dictionary(uniqueKeysWithValues: recovery.segments.map { ($0.segmentID, $0) })
         pendingSince = recovery.pendingSince
         for segment in recovery.segments {
             setStatus(LiveASRSegmentStatus(segmentID: segment.segmentID, startFrame: segment.startFrame, outcome: .pending))
         }
-        runStarted = recovery.runStarted
+        runStarted = recovery.runStarts[.asr] != nil
 
         for event in recovery.events {
             switch event.kind {
@@ -214,6 +206,11 @@ public actor LiveASRSession {
             default:
                 throw TranscriptMaterializationError.missingClauseSource
             }
+        }
+
+        if recovery.runCompletions[.asr] != nil {
+            finalized = true
+            completedFinish = currentCompletion()
         }
     }
 
@@ -282,26 +279,66 @@ public actor LiveASRSession {
         reader: any TimelineAudioReading,
         onSegmentFinished: (@Sendable (LiveASRSegmentStatus, LiveASRSnapshot) async -> Void)? = nil
     ) async throws -> LiveASRProgress {
+        do {
+            _ = try await run(
+                segments: segments,
+                reader: reader,
+                pacingMode: .normal,
+                sleep: { try await Task.sleep(for: $0) },
+                shouldPause: { nil },
+                onSegmentFinished: onSegmentFinished
+            )
+        } catch is ASRRunCancellation {
+            throw CancellationError()
+        }
+        return currentProgress()
+    }
+
+    func drain(
+        reader: any TimelineAudioReading,
+        pacingMode: ASRPacingMode,
+        sleep: @escaping @Sendable (Duration) async throws -> Void,
+        shouldPause: @escaping NativeSessionProcessor.PauseCheck,
+        onSegmentFinished: (@Sendable (LiveASRSegmentStatus, LiveASRSnapshot) async -> Void)?
+    ) async throws -> ASRRunResult? {
+        try await run(
+            segments: [],
+            reader: reader,
+            pacingMode: pacingMode,
+            sleep: sleep,
+            shouldPause: shouldPause,
+            onSegmentFinished: onSegmentFinished
+        )
+    }
+
+    private func run(
+        segments: [SegmentReference],
+        reader: any TimelineAudioReading,
+        pacingMode: ASRPacingMode,
+        sleep: @escaping @Sendable (Duration) async throws -> Void,
+        shouldPause: @escaping NativeSessionProcessor.PauseCheck,
+        onSegmentFinished: (@Sendable (LiveASRSegmentStatus, LiveASRSnapshot) async -> Void)?
+    ) async throws -> ASRRunResult? {
         try Task.checkCancellation()
-        guard !finalized else { return currentProgress() }
+        guard !finalized else { return nil }
         beginWork()
         defer { endWork() }
 
         try await registerPendingSegments(segments)
         try Task.checkCancellation()
-        guard !finalized, !attemptFailed, !processing else { return currentProgress() }
+        guard !finalized, !attemptFailed, !processing else { return nil }
 
         let pendingSegments = segmentStatuses.compactMap { status in
             finishedSegmentIDs.contains(status.segmentID) ? nil : registeredSegments[status.segmentID]
         }
-        guard !pendingSegments.isEmpty else { return currentProgress() }
+        guard !pendingSegments.isEmpty else { return nil }
 
         processing = true
         defer { processing = false }
 
         try await ensureRunStarted()
         try Task.checkCancellation()
-        guard !finalized, !attemptFailed else { return currentProgress() }
+        guard !finalized, !attemptFailed else { return nil }
 
         let coordinator = PipelineCoordinator(
             sessionID: sessionID,
@@ -310,30 +347,25 @@ public actor LiveASRSession {
             writer: writer,
             asr: asr,
             loader: ASRAudioLoader(reader: reader),
-            pacingMode: .normal,
-            sleep: { try await Task.sleep(for: $0) },
-            shouldPause: { nil }
+            pacingMode: pacingMode,
+            sleep: sleep,
+            shouldPause: shouldPause
         )
-        do {
-            _ = try await coordinator.execute(
-                segments: pendingSegments,
-                pendingSince: pendingSince,
-                existingEvents: [],
-                prepareModel: !prepared,
-                stopOnPersistenceFailure: true,
-                shouldContinue: { await self.canExecuteSegment() },
-                onSegmentPersisted: { segment, event in
-                    let status = try await self.applyPersistedSegment(segment, event: event)
-                    let currentSnapshot = await self.snapshot()
-                    await onSegmentFinished?(status, currentSnapshot)
-                }
-            )
-            if !attemptFailed { prepared = true }
-        } catch is ASRRunCancellation {
-            throw CancellationError()
-        }
-
-        return currentProgress()
+        let result = try await coordinator.execute(
+            segments: pendingSegments,
+            pendingSince: pendingSince,
+            existingEvents: [],
+            prepareModel: !prepared,
+            stopOnPersistenceFailure: true,
+            shouldContinue: { await self.canExecuteSegment() },
+            onSegmentPersisted: { segment, event in
+                let status = try await self.applyPersistedSegment(segment, event: event)
+                let currentSnapshot = await self.snapshot()
+                await onSegmentFinished?(status, currentSnapshot)
+            }
+        )
+        if !attemptFailed { prepared = true }
+        return result
     }
 
     public func snapshot() -> LiveASRSnapshot {
@@ -409,17 +441,27 @@ public actor LiveASRSession {
 
             try await ensureRunStarted()
             let pendingCount = currentPendingCount
-            _ = try await writer.append(EventDraft(
-                eventType: "processing.run.completed",
-                sessionID: sessionID,
-                processingRunID: asrRunID,
-                payload: ProcessingRunCompletedPayload(
-                    stage: .asr,
-                    succeeded: failedCount == 0 && pendingCount == 0,
-                    completedCount: completedCount,
-                    failedCount: failedCount
-                )
-            ))
+            let succeeded = failedCount == 0 && pendingCount == 0
+            if succeeded {
+                let layout = SessionLayout(sessionURL: sessionURL)
+                guard let state = try ProcessingLogState(eventsURL: layout.eventsURL, sessionID: sessionID),
+                      state.generation.id == generationID,
+                      state.segmentationCompleted,
+                      state.segments.count == completedCount else {
+                    throw ProcessingLogStateError.incompleteRecognition
+                }
+                _ = try await writer.append(EventDraft(
+                    eventType: "processing.run.completed",
+                    sessionID: sessionID,
+                    processingRunID: asrRunID,
+                    payload: ProcessingRunCompletedPayload(
+                        stage: .asr,
+                        succeeded: true,
+                        completedCount: completedCount,
+                        failedCount: 0
+                    )
+                ))
+            }
 
             let completion = currentCompletion()
             completedFinish = completion
