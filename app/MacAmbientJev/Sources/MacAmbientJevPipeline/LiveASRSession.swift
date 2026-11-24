@@ -85,9 +85,12 @@ public enum LiveASRSessionError: LocalizedError {
     case foreignClauseEvent
     case segmentationNotSealed
     case segmentationSegmentCountMismatch(registered: Int, expected: Int)
+    case segmentBeyondCheckpoint(segmentID: String, endFrame: Int64, committedFrames: Int64)
 
     public var errorDescription: String? {
         switch self {
+        case .segmentBeyondCheckpoint(let segmentID, let endFrame, let committedFrames):
+            "区間 \(segmentID) の終端（\(endFrame) frame）が、渡された音声の確定範囲（\(committedFrames) frame）を超えています"
         case .foreignClauseEvent: "ライブ文字起こしと別の判定を表示しようとしました"
         case .segmentationNotSealed: "VAD の入力が確定していないため、区間検出を完了できません"
         case .segmentationSegmentCountMismatch(let registered, let expected):
@@ -300,12 +303,21 @@ public actor LiveASRSession {
         }
     }
 
+    /// Recognizes the unfinished segments that the batch's checkpoint covers, read through that checkpoint.
+    /// Every supplied segment must lie within the checkpoint; one beyond it is an error, before registration.
+    /// Segments registered separately, beyond this batch's audio, wait for their own batches.
     @discardableResult
     public func process(
         segments: [SegmentReference],
         checkpoint: AudioCheckpoint,
-        onSegmentFinished: (@Sendable (LiveASRSegmentStatus, LiveASRSnapshot) async -> Void)? = nil
+        onSegmentFinished: (@Sendable (LiveASRSegmentStatus, LiveASRSnapshot) async -> Void)? = nil,
+        shouldPause: @escaping NativeSessionProcessor.PauseCheck
     ) async throws -> LiveASRProgress {
+        if let outside = segments.first(where: { $0.endFrame > checkpoint.committedFrames }) {
+            throw LiveASRSessionError.segmentBeyondCheckpoint(
+                segmentID: outside.segmentID, endFrame: outside.endFrame, committedFrames: checkpoint.committedFrames
+            )
+        }
         try Task.checkCancellation()
         guard !finalized else { return currentProgress() }
         let reader = try ProcessingTimelineReader(
@@ -313,22 +325,41 @@ public actor LiveASRSession {
             checkpoint: checkpoint,
             sessionURL: sessionURL
         )
-        return try await process(segments: segments, reader: reader, onSegmentFinished: onSegmentFinished)
+        return try await process(
+            segments: segments, scope: .coveredBy(committedFrames: checkpoint.committedFrames), reader: reader,
+            onSegmentFinished: onSegmentFinished, shouldPause: shouldPause
+        )
     }
 
+    /// Recognizes every registered unfinished segment through `reader`.
     @discardableResult
     public func process(
         segments: [SegmentReference] = [],
         reader: any TimelineAudioReading,
-        onSegmentFinished: (@Sendable (LiveASRSegmentStatus, LiveASRSnapshot) async -> Void)? = nil
+        onSegmentFinished: (@Sendable (LiveASRSegmentStatus, LiveASRSnapshot) async -> Void)? = nil,
+        shouldPause: @escaping NativeSessionProcessor.PauseCheck
+    ) async throws -> LiveASRProgress {
+        try await process(
+            segments: segments, scope: .registered, reader: reader,
+            onSegmentFinished: onSegmentFinished, shouldPause: shouldPause
+        )
+    }
+
+    private func process(
+        segments: [SegmentReference],
+        scope: RunScope,
+        reader: any TimelineAudioReading,
+        onSegmentFinished: (@Sendable (LiveASRSegmentStatus, LiveASRSnapshot) async -> Void)?,
+        shouldPause: @escaping NativeSessionProcessor.PauseCheck
     ) async throws -> LiveASRProgress {
         do {
             _ = try await run(
                 segments: segments,
+                scope: scope,
                 reader: reader,
                 pacingMode: .normal,
                 sleep: { try await Task.sleep(for: $0) },
-                shouldPause: { nil },
+                shouldPause: shouldPause,
                 onSegmentFinished: onSegmentFinished
             )
         } catch is ASRRunCancellation {
@@ -346,6 +377,7 @@ public actor LiveASRSession {
     ) async throws -> ASRRunResult? {
         try await run(
             segments: [],
+            scope: .registered,
             reader: reader,
             pacingMode: pacingMode,
             sleep: sleep,
@@ -354,8 +386,16 @@ public actor LiveASRSession {
         )
     }
 
+    /// Which unfinished segments a run recognizes: a live batch only those its checkpoint's audio covers,
+    /// a drain every registered one.
+    private enum RunScope {
+        case registered
+        case coveredBy(committedFrames: Int64)
+    }
+
     private func run(
         segments: [SegmentReference],
+        scope: RunScope,
         reader: any TimelineAudioReading,
         pacingMode: ASRPacingMode,
         sleep: @escaping @Sendable (Duration) async throws -> Void,
@@ -371,8 +411,11 @@ public actor LiveASRSession {
         try Task.checkCancellation()
         guard !finalized, !attemptFailed, !processing else { return nil }
 
-        let pendingSegments = segmentStatuses.compactMap { status in
-            finishedSegmentIDs.contains(status.segmentID) ? nil : registeredSegments[status.segmentID]
+        let pendingSegments = segmentStatuses.compactMap { status -> SegmentReference? in
+            guard !finishedSegmentIDs.contains(status.segmentID) else { return nil }
+            guard let segment = registeredSegments[status.segmentID] else { return nil }
+            if case .coveredBy(let committedFrames) = scope, segment.endFrame > committedFrames { return nil }
+            return segment
         }
         guard !pendingSegments.isEmpty else { return nil }
 

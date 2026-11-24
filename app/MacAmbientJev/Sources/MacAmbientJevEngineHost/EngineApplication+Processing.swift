@@ -66,7 +66,7 @@ extension EngineApplicationCore: SessionProcessingEffects {
         }
     }
 
-    func waitForLiveASRDrain(sessionID: UUID) async {
+    func waitForLiveASRDrain(sessionID: UUID) async -> LiveASRDrainOutcome {
         await liveCoordinator.waitForDrain(sessionID: sessionID)
     }
 
@@ -112,9 +112,8 @@ extension EngineApplicationCore: SessionProcessingEffects {
         case let .held(request):
             presentation.processingState = .idle
             presentation.processingStatusText = "処理は中断されました。次回の起動時に再開できます"
-            if let held = processingQueue.held.first(where: { $0.request.sessionID == request.sessionID }),
-               held.reason == .resourcePressure || held.reason == .monitorFailed {
-                presentation.processingStatusText = held.reason.finalizationExplanation
+            if let reason = resourceHoldReason(sessionID: request.sessionID) {
+                presentation.processingStatusText = reason.finalizationExplanation
             }
             if request.sessionID == watchedSessionID { watchedSessionIsFinal = false }
         case let .heldForModels(request):
@@ -186,12 +185,19 @@ extension EngineApplicationCore: SessionProcessingEffects {
             ))
         case .paused?, nil:
             guard result?.disposition == .paused,
-                  let held = processingQueue.held.first(where: { $0.request.sessionID == sessionID }),
-                  held.reason == .resourcePressure || held.reason == .monitorFailed else { break }
+                  let reason = resourceHoldReason(sessionID: sessionID) else { break }
             presentation.processingState = .idle
-            presentation.processingStatusText = held.reason.finalizationExplanation
+            presentation.processingStatusText = reason.finalizationExplanation
         }
         completions.finished(request, result: result)
+    }
+
+    /// The resource reason a held request waits for, if it waits for one.
+    private func resourceHoldReason(sessionID: UUID) -> InferenceHoldReason? {
+        guard let held = processingQueue.held.first(where: { $0.request.sessionID == sessionID }),
+              case .inference(let reason) = held.reason,
+              reason == .resourcePressure || reason == .monitorFailed else { return nil }
+        return reason
     }
 
     private func processingStatusDidChange(_ text: String, sessionID: UUID) {

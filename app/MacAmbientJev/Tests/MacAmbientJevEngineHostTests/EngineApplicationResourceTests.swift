@@ -113,7 +113,7 @@ private final class ResourceGatedProvider: EngineInferenceProviding, @unchecked 
         await gate.release(); await f.app.core.processingCoordinator.waitUntilIdle()
         let paused = try #require(try store.load())
         #expect(paused.state == .paused && paused.generationID == generationID && provider.base.calls.count("asr") == 1)
-        #expect(f.app.core.processingQueue.held.first?.reason == pressure.hold)
+        #expect(f.app.core.processingQueue.held.first?.reason == .inference(pressure.hold))
         #expect(f.app.core.currentState().presentation.processingStatusText == pressure.hold.finalizationExplanation)
         #expect(provider.base.calls.count("asr.unload") > 0)
         let original = try SessionLayout(sessionURL: sessionURL).importedOriginalURL()
@@ -147,7 +147,7 @@ private final class ResourceGatedProvider: EngineInferenceProviding, @unchecked 
         await f.app.core.processingCoordinator.waitUntilIdle()
         let held = try #require(f.app.core.processingQueue.held.first)
         guard case .finalize(let heldID, .reject) = held.request else { Issue.record("held \(held.request)"); return }
-        #expect(heldID == id && held.reason == pressure.hold)
+        #expect(heldID == id && held.reason == .inference(pressure.hold))
         #expect(provider.calls.count("asr.unload") - unloadsBefore == 1)
         resources.setSignal(.healthy)
         await f.app.core.processingCoordinator.waitUntilIdle()

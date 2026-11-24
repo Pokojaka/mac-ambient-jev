@@ -71,13 +71,10 @@ func heldRequestsResumeAtTheFrontInOriginalOrder() {
     let firstHeldSessionID = UUID()
     let secondHeldSessionID = UUID()
     queue.enqueue(request(pendingSessionID))
-    queue.hold(request(firstHeldSessionID), reason: .resourcePressure)
-    queue.hold(request(secondHeldSessionID), reason: .resourcePressure)
+    queue.hold(request(firstHeldSessionID), reason: .inference(.resourcePressure))
+    queue.hold(request(secondHeldSessionID), reason: .inference(.resourcePressure))
 
-    let resumed = queue.resumeHeld(
-        holdReason: nil,
-        pausesProcessing: false
-    )
+    let resumed = queue.resumeHeld(activeInferenceHold: nil, releasesPauses: false, pausesProcessing: false)
     #expect(resumed)
     #expect(queue.pending.map(\.sessionID) == [
         firstHeldSessionID,
@@ -91,20 +88,33 @@ func heldRequestsResumeAtTheFrontInOriginalOrder() {
 func criticalThermalPressureOrProcessingPauseKeepsRequestsHeld() {
     var queue = SessionProcessingQueue()
     let heldSessionID = UUID()
-    queue.hold(request(heldSessionID), reason: .thermal)
+    queue.hold(request(heldSessionID), reason: .inference(.thermal))
 
     let blockedByCriticalPressure = queue.resumeHeld(
-        holdReason: .thermal,
-        pausesProcessing: false
-    )
+        activeInferenceHold: .thermal, releasesPauses: true, pausesProcessing: false)
     #expect(!blockedByCriticalPressure)
-    let blockedByPause = queue.resumeHeld(
-        holdReason: nil,
-        pausesProcessing: true
-    )
+    let blockedByPause = queue.resumeHeld(activeInferenceHold: nil, releasesPauses: true, pausesProcessing: true)
     #expect(!blockedByPause)
     #expect(queue.pending.isEmpty)
     #expect(queue.held.map { $0.request.sessionID } == [heldSessionID])
+}
+
+@Test
+func pausedRequestsWaitForTheExplicitResumeWhileEndedInferenceHoldsMove() {
+    var queue = SessionProcessingQueue()
+    let pausedSessionID = UUID(), thermalSessionID = UUID()
+    queue.hold(request(pausedSessionID), reason: .paused)
+    queue.hold(request(thermalSessionID), reason: .inference(.thermal))
+
+    let movedInference = queue.resumeHeld(activeInferenceHold: nil, releasesPauses: false, pausesProcessing: false)
+    #expect(movedInference)
+    #expect(queue.pending.map(\.sessionID) == [thermalSessionID])
+    #expect(queue.held.map { $0.request.sessionID } == [pausedSessionID])
+
+    let movedPause = queue.resumeHeld(activeInferenceHold: .thermal, releasesPauses: true, pausesProcessing: false)
+    #expect(movedPause)
+    #expect(queue.pending.map(\.sessionID) == [pausedSessionID, thermalSessionID])
+    #expect(queue.held.isEmpty)
 }
 
 @Test
@@ -112,11 +122,12 @@ func windowsThermalMonitoringResumesHeldRequestsWithoutPressure() {
     var queue = SessionProcessingQueue()
     let heldSessionID = UUID()
     let monitor = WindowsNoThermalMonitoring()
-    queue.hold(request(heldSessionID), reason: .thermal)
+    queue.hold(request(heldSessionID), reason: .inference(.thermal))
 
     #expect(!monitor.isCritical)
     #expect(monitor.liveASRDecision == .processNow)
-    let resumed = queue.resumeHeld(holdReason: monitor.isCritical ? .thermal : nil, pausesProcessing: false)
+    let resumed = queue.resumeHeld(
+        activeInferenceHold: monitor.isCritical ? .thermal : nil, releasesPauses: false, pausesProcessing: false)
     #expect(resumed)
     #expect(queue.pending.map(\.sessionID) == [heldSessionID])
     #expect(queue.held.isEmpty)

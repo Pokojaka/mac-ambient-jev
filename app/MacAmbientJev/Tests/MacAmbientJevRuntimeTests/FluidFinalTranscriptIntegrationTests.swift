@@ -135,8 +135,8 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
     let result = await processor.processSession(
         sessionID: sessionID,
         pacingMode: .lowHeat,
-        shouldPause: {
-            await log.append("pause")
+        shouldPause: { point in
+            await log.append("pause:\(point)")
             return nil
         },
         onPhase: { _ in },
@@ -147,6 +147,8 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
 
     #expect(result.disposition == .completed)
     #expect(result.metrics?.pacingWaitCount == 1)
-    #expect(await log.snapshot() == ["vad", "pause", "asr:0", "pause", "asr:1"])
+    #expect(await log.snapshot() == [
+        "vad", "pause:segmentBoundary", "pause:dispatch", "asr:0", "pause:segmentBoundary", "pause:dispatch", "asr:1",
+    ])
     #expect(await sleepRecorder.snapshot() == [.seconds(2)])
 }

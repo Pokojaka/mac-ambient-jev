@@ -134,7 +134,6 @@ final class AppState: ObservableObject {
     /// The automatic-adjustment preference read for the recording that is starting.
     var micInputVolumeAutomaticForStart: Bool?
     var displayedSessionID: UUID?
-    private var thermalObservation: (any ThermalStateObservation)?
     lazy var processingCoordinator = SessionProcessingCoordinator(
         effects: self,
         processor: sessionProcessor,
@@ -207,10 +206,6 @@ final class AppState: ObservableObject {
         )
         self.exportDirectoryPath = exportDestination.path
         modelPreparer.onChange = { [weak self] status in self?.modelPreparationDidChange(status) }
-        thermalObservation = thermalMonitor.observeChanges { [weak self] in
-            self?.processingCoordinator.resumeHeldProcessing()
-        }
-
         terminationObserver = TerminationObservation(center: .default) { [weak self] in
             MainActor.assumeIsolated { self?.terminateCapture() }
         }

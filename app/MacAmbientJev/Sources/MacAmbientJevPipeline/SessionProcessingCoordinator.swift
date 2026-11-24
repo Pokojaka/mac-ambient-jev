@@ -52,7 +52,7 @@ public protocol SessionProcessingEffects: AnyObject {
     func awaitIdleRelease() async
     func processingStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler
     func processingUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler
-    func waitForLiveASRDrain(sessionID: UUID) async
+    func waitForLiveASRDrain(sessionID: UUID) async -> LiveASRDrainOutcome
     func liveASRFailure(sessionID: UUID) -> String?
     func cleanupLiveASRState(sessionID: UUID)
     func refreshSavedSessions()
@@ -67,8 +67,11 @@ public final class SessionProcessingCoordinator {
     private let thermalMonitor: any ThermalMonitoring
     private let resourceHolds: InferenceResourceHolds?
     private var resourceObservation: (any InferenceResourceObservation)?
+    private var thermalObservation: (any ThermalStateObservation)?
     private var activeResourceHoldReason: InferenceHoldReason?
     private var resourceRecoveryEnabled = true
+    /// The current request's live worker reported a durable failure while the request was being decided.
+    private var liveFailureDuringAttempt: UUID?
     private var task: Task<Void, Never>?
 
     public init(
@@ -81,11 +84,14 @@ public final class SessionProcessingCoordinator {
         self.processor = processor
         self.thermalMonitor = thermalMonitor
         self.resourceHolds = resourceHolds
+        thermalObservation = thermalMonitor.observeChanges { [weak self] in
+            self?.inferenceConditionsDidChange()
+        }
         if let resourceHolds {
             resourceObservation = resourceHolds.monitor.observeChanges { [weak self] in
-                self?.resourceMonitorDidChange()
+                self?.inferenceConditionsDidChange()
             }
-            resourceMonitorDidChange()
+            inferenceConditionsDidChange()
         }
     }
 
@@ -139,17 +145,22 @@ public final class SessionProcessingCoordinator {
         }
     }
 
-    private func resourceMonitorDidChange() {
+    /// Thermal or resource conditions changed. The current attempt latches a resource hold; inference holds
+    /// that have ended move to the front of `pending` at once, even while a request runs, so older work is not
+    /// left behind the backlog. A running drain picks them up next; paused work stays held.
+    private func inferenceConditionsDidChange() {
         let effects = requiredEffects
         if effects.processingQueue.currentSessionID != nil {
             _ = holdReasonForAttempt()
-        } else if resourceRecoveryEnabled, task == nil {
-            resumeHeldProcessing()
+        }
+        if resourceRecoveryEnabled {
+            resumeEndedInferenceHolds()
         }
     }
 
     private var currentHoldReason: InferenceHoldReason? {
-        resourceHolds?.monitor.signal.holdReason ?? (thermalMonitor.isCritical ? .thermal : nil)
+        resourceHolds?.monitor.signal.holdReason
+            ?? (thermalMonitor.liveASRDecision == .suspendUntilCooled ? .thermal : nil)
     }
 
     private func holdReasonForAttempt() -> InferenceHoldReason? {
@@ -160,16 +171,60 @@ public final class SessionProcessingCoordinator {
         return activeResourceHoldReason ?? reason
     }
 
-    private func hold(_ request: PendingProcessing) {
+    /// Holds a request that did not finish: for `inferenceReason`, or as `.paused` when it is nil.
+    /// Cancellation and the app's pause are read here, right before the hold is published, and win:
+    /// such a request waits for the explicit resume whatever inference condition also applied.
+    /// The request must already have left `current`, so a queue count sees it once.
+    private func hold(_ request: PendingProcessing, for inferenceReason: InferenceHoldReason?) {
         let effects = requiredEffects
-        effects.processingQueue.hold(request, reason: holdReasonForAttempt() ?? .thermal)
+        let reason: ProcessingHoldReason = if Task.isCancelled || effects.pausesProcessing {
+            .paused
+        } else {
+            inferenceReason.map(ProcessingHoldReason.inference) ?? .paused
+        }
+        effects.processingQueue.hold(request, reason: reason)
         effects.processingDidChange(.held(request))
+        // A live failure reported while the request was decided would otherwise find it in no list.
+        if liveFailureDuringAttempt == request.sessionID {
+            liveFailureDuringAttempt = nil
+            effects.processingQueue.wakeHeldFinalization(sessionID: request.sessionID)
+        }
+        // An inference hold can end while the request moves from current to held, before any observer
+        // could see it held; then nothing would change again, so resume at once.
+        if case .inference = reason, !Task.isCancelled, currentHoldReason == nil {
+            resumeEndedInferenceHolds()
+        }
     }
 
+    /// A live worker reported a durable ASR failure: a thermally held finalization is decided again,
+    /// because processing persists the failure without inference. While the request is being decided,
+    /// the report is latched and applied when it is held.
+    public func liveWorkerDidFail(sessionID: UUID) {
+        let effects = requiredEffects
+        if effects.processingQueue.currentSessionID == sessionID {
+            liveFailureDuringAttempt = sessionID
+            return
+        }
+        guard !effects.pausesProcessing,
+              effects.processingQueue.wakeHeldFinalization(sessionID: sessionID) else { return }
+        startDrainIfIdle()
+    }
+
+    /// The explicit resume: releases paused work and every inference hold whose condition has ended.
     public func resumeHeldProcessing() {
+        resumeHeld(releasesPauses: true)
+    }
+
+    /// Moves only the inference holds whose condition has ended; paused work waits for the explicit resume.
+    private func resumeEndedInferenceHolds() {
+        resumeHeld(releasesPauses: false)
+    }
+
+    private func resumeHeld(releasesPauses: Bool) {
         let effects = requiredEffects
         guard effects.processingQueue.resumeHeld(
-            holdReason: currentHoldReason, pausesProcessing: effects.pausesProcessing
+            activeInferenceHold: currentHoldReason, releasesPauses: releasesPauses,
+            pausesProcessing: effects.pausesProcessing
         ) else {
             return
         }
@@ -296,6 +351,22 @@ public final class SessionProcessingCoordinator {
         }
     }
 
+    private func hasUnresolvedASRFailure(sessionID: UUID) async -> Bool {
+        do {
+            return try await processor.hasUnresolvedASRFailure(sessionID: sessionID)
+        } catch {
+            // Unknown is not a failure: the holds decide, and processing re-reads the log
+            // and repairs a torn tail or reports the read error.
+            return false
+        }
+    }
+
+    /// The stored side of the shared per-segment gate: serious paces, critical pauses.
+    private func pauseReasonBeforeSegment(at point: InferenceGatePoint) async throws -> InferenceHoldReason? {
+        let thermal = try await thermalMonitor.inferenceGate(at: point, sleep: { try await Task.sleep(for: $0) })
+        return holdReasonForAttempt() ?? thermal
+    }
+
     private func discardLiveWorker(sessionID: UUID) async {
         await processor.cancelLiveTranscription(sessionID: sessionID)
         requiredEffects.cleanupLiveASRState(sessionID: sessionID)
@@ -322,20 +393,32 @@ public final class SessionProcessingCoordinator {
               !Task.isCancelled,
               let request = effects.processingQueue.dequeue() {
             activeResourceHoldReason = nil
-            // Thermal holds at dequeue and keeps the live worker: a drain that waits for cooling would block the queue.
-            if request.finalizesTranscript, currentHoldReason == .thermal {
-                hold(request)
-                continue
-            }
-
+            liveFailureDuringAttempt = nil
             let requestSessionID = request.sessionID
-            effects.processingQueue.begin(request)
+            var begun = false
+            // Thermal holds at dequeue and keeps the live worker: a drain that waits for cooling would block the queue.
+            // A durable ASR failure is the exception: processing persists it as failed without inference. The request
+            // is current while the probe awaits, so a queue count sees it once.
+            if request.finalizesTranscript, currentHoldReason == .thermal {
+                effects.processingQueue.begin(request)
+                begun = true
+                var knownFailure = false
+                if case .finalize(let sessionID, .reject) = request {
+                    knownFailure = await hasUnresolvedASRFailure(sessionID: sessionID)
+                }
+                if !knownFailure, currentHoldReason == .thermal {
+                    effects.processingQueue.completeCurrent()
+                    hold(request, for: .thermal)
+                    continue
+                }
+            }
+            if !begun { effects.processingQueue.begin(request) }
             effects.processingDidChange(.began(request))
 
             let statusHandler = effects.processingStatusHandler(sessionID: requestSessionID)
             let updateHandler = effects.processingUpdateHandler(sessionID: requestSessionID)
-            let shouldPause: NativeSessionProcessor.PauseCheck = { [self] in
-                await MainActor.run { holdReasonForAttempt() }
+            let shouldPause: NativeSessionProcessor.PauseCheck = { [self] point in
+                try await pauseReasonBeforeSegment(at: point)
             }
 
             var finalization: SessionProcessingResult?
@@ -343,7 +426,7 @@ public final class SessionProcessingCoordinator {
             switch request {
             case .finalize(let sessionID, let metadataPolicy):
                 // Stop is a drain: a recording's live worker is finished in place, any other input is reopened.
-                await effects.waitForLiveASRDrain(sessionID: sessionID)
+                let drainOutcome = await effects.waitForLiveASRDrain(sessionID: sessionID)
                 if let failure = effects.liveASRFailure(sessionID: sessionID) {
                     effects.processingDidChange(.liveFailed(failure))
                 }
@@ -351,12 +434,7 @@ public final class SessionProcessingCoordinator {
                 // processing persists it and reports failed, so no hold hides it.
                 var knownFailure = false
                 if case .reject = metadataPolicy {
-                    do {
-                        knownFailure = try await processor.hasUnresolvedASRFailure(sessionID: sessionID)
-                    } catch {
-                        // Unknown is not a failure: the holds below decide, and processing re-reads the log
-                        // and repairs a torn tail or reports the read error.
-                    }
+                    knownFailure = await hasUnresolvedASRFailure(sessionID: sessionID)
                 }
                 // The hold inputs are read after the probe, so pressure that arrived during it counts.
                 // A held request moves from current to its hold list in one step before the worker cleanup
@@ -364,7 +442,9 @@ public final class SessionProcessingCoordinator {
                 // counted twice.
                 let resourceReason = holdReasonForAttempt().flatMap { $0 == .thermal ? nil : $0 }
                 let stopped = Task.isCancelled || effects.pausesProcessing
-                if !knownFailure, resourceReason == nil, !stopped, !effects.modelsReady {
+                // Heat that rose after dequeue parks the request with its live worker, which waits for cooling.
+                let keepsWorker = drainOutcome == .suspendedForCooling && resourceReason == nil && !stopped
+                if !knownFailure, resourceReason == nil, !stopped, !keepsWorker, !effects.modelsReady {
                     // Waiting for the models is not an outcome: the request finishes when it really runs.
                     effects.processingQueue.completeCurrent()
                     holdForModels(request)
@@ -372,16 +452,18 @@ public final class SessionProcessingCoordinator {
                     effects.refreshSavedSessions()
                     continue
                 }
-                if !knownFailure, stopped || resourceReason != nil {
+                if !knownFailure, stopped || resourceReason != nil || keepsWorker {
                     effects.processingQueue.completeCurrent()
                     isCurrent = false
-                    hold(request)
+                    // A pause wins: it waits for the explicit resume even while an inference hold applies too.
+                    let reason = stopped ? nil : keepsWorker ? InferenceHoldReason.thermal : resourceReason
+                    hold(request, for: reason)
                     finalization = SessionProcessingResult(
-                        disposition: .paused, metrics: nil, message: resourceReason?.finalizationExplanation,
+                        disposition: .paused, metrics: nil, message: reason?.finalizationExplanation,
                         noSpeech: false, retainedTranscript: nil
                     )
-                    if let resourceReason { await statusHandler(.paused(resourceReason)) }
-                    await discardLiveWorker(sessionID: sessionID)
+                    if let reason { await statusHandler(.paused(reason)) }
+                    if !keepsWorker { await discardLiveWorker(sessionID: sessionID) }
                 } else {
                     let result = await processor.processSession(
                         sessionID: sessionID,
@@ -394,7 +476,9 @@ public final class SessionProcessingCoordinator {
                     )
                     effects.cleanupLiveASRState(sessionID: sessionID)
                     if result.disposition == .paused {
-                        hold(request)
+                        effects.processingQueue.completeCurrent()
+                        isCurrent = false
+                        hold(request, for: result.pauseReason)
                     } else {
                         effects.processingQueue.releaseReprocessing(sessionID)
                     }
@@ -403,7 +487,9 @@ public final class SessionProcessingCoordinator {
                 effects.refreshSavedSessions()
             case .retryContentPriority(let sessionID, let boundarySegments, let clauses):
                 if Task.isCancelled || effects.pausesProcessing {
-                    hold(request)
+                    effects.processingQueue.completeCurrent()
+                    isCurrent = false
+                    hold(request, for: nil)
                     finalization = SessionProcessingResult(
                         disposition: .paused,
                         metrics: nil,
@@ -427,7 +513,9 @@ public final class SessionProcessingCoordinator {
                         // A successful retry has no finalization, so it cannot trigger auto-export.
                         finalization = nil
                     case .paused:
-                        hold(request)
+                        effects.processingQueue.completeCurrent()
+                        isCurrent = false
+                        hold(request, for: result.pauseReason)
                         finalization = result
                     }
                     effects.refreshSavedSessions()
@@ -457,8 +545,8 @@ public final class SessionProcessingCoordinator {
         if !Task.isCancelled,
            !effects.pausesProcessing,
            currentHoldReason == nil,
-           effects.processingQueue.held.contains(where: { $0.reason != .thermal }) {
-            resumeHeldProcessing()
+           !effects.processingQueue.held.isEmpty {
+            resumeEndedInferenceHolds()
         }
     }
 }

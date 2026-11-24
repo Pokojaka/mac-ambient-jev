@@ -139,7 +139,7 @@ func storageDiskUsageHarness() async throws {
     )
     let recordingResult = await processor.processSession(
         sessionID: recordingID, pacingMode: .normal,
-        shouldPause: { nil }, onPhase: { _ in }, metadataPolicy: .reject,
+        shouldPause: { _ in nil }, onPhase: { _ in }, metadataPolicy: .reject,
         onStatus: { _ in }, onUpdate: { _, _ in }
     )
     guard recordingResult.disposition == .completed else {
@@ -160,7 +160,7 @@ func storageDiskUsageHarness() async throws {
     let importDuring = try storageHarnessBytes(importURL)
     let importResult = await processor.processSession(
         sessionID: importID, pacingMode: .normal,
-        shouldPause: { nil }, onPhase: { _ in }, metadataPolicy: .reject,
+        shouldPause: { _ in nil }, onPhase: { _ in }, metadataPolicy: .reject,
         onStatus: { _ in }, onUpdate: { _, _ in }
     )
     guard importResult.disposition == .completed else {

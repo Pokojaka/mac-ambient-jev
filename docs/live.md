@@ -24,7 +24,7 @@
 - `process(reader:)` は任意の `TimelineAudioReading` を受け取り、durable events から pending set を再導出して、未成功区間を古い順に処理します。pending count は登録 ID 数から成功 `asr.completed` ID 数を引いた値で、failure も pending に含みます。成功済み区間・登録・run-start を重複保存せず、ASR event の durable write 後に行・status・件数を更新します。保存失敗は元の error を throw します。recognized / empty / failed / pending status は独立した判定 queue に渡り、pending と failure を後続 ASR 成功として扱いません。最初の `asr.failed` はその attempt を停止し、先行成功行を保持して後続を処理しません。未解決 ASR failure は起動時に自動復旧せず、明示 CLI `--resume-session` は同 generation で不足区間だけを再開できます。利用者の再処理は空の新 generation から始めます。成功した空結果は区切りです。空白・改行・句読点だけの ASR 原文は空の結果です。
 - [`VADSession`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/VADSession.swift) の saved-reader API は固定4096 sample chunk を保持し、partial chunk は EOF の一度だけ flush します。4096 frame 境界に揃う実消費 progress（無音を含む）は、今回の全 segment を `segment.created` として保存後だけ記録し、正確な EOF frame 数の seal、tail 保存、完了の順です（[保存形式](storage.md#eventsjsonl)）。
 - `VADSession` saved-reader API は未完了 run を sample 0 から replay し、全 ordinal の ID / speech ranges が一致する prefix だけを受け入れ、不一致を error にします。完了済み run は保存済み segments を使い、processor factory / VAD を呼びません（[recovery と保存形式](storage.md#eventsjsonl)）。production の live VAD は `LiveVADSession` で、停止時に `LiveASRSession` が `segmentation.input.sealed`（EOF flush の前、正確な最終 frame 数）と、tail 区間を登録した後の `segmentation.completed` を保存します（`segment.created` を保存するのは `LiveASRSession` だけです。ASR 失敗・登録失敗があれば completed を書かず、stop が未完了 segmentation として開き直します）。stop/finalize は同じ generation に対する `StoredSegmentation.finish` を使います。後者は segmentation が未完了の場合だけ sealed source を sample 0 から再生成・prefix 照合し、完了済みなら保存済み segments を使います。`LiveASRSession.open` / `drain` は stop/finalize と明示 CLI resume で同じ ASR run の durable 成功行を復元し、不足区間だけを処理します。
-- アプリのライブ ASR 待ち行列はバッチごとの `SegmentReference` だけを保持します。`AudioCheckpoint` はセッションごとに最新の保存済み checkpoint を 1 件だけ保持し、各バッチの認識時に使います。保存範囲は単調に伸びるため、最新 checkpoint は待機中の全区間を含みます。checkpoint の chunk 一覧・フレーム数・gap 一覧をバッチごとに保持せず、区間参照はメモリ内に残します。冷却後も登録順で処理し、停止後のライブ処理終了・取消時にキューと checkpoint を解放します。
+- アプリのライブ ASR 待ち行列はバッチごとの `SegmentReference` だけを保持します。`AudioCheckpoint` はセッションごとに最新の保存済み checkpoint を 1 件だけ保持し、各バッチの認識時に使います。保存範囲は単調に伸びるため、最新 checkpoint は待機中の全区間を含みます。バッチとして渡した区間の終端が渡した checkpoint の確定範囲を超える場合は、区間を登録する前に `LiveASRSessionError.segmentBeyondCheckpoint` で失敗します。checkpoint の外に残るのは、別に登録済みの区間だけです。checkpoint の chunk 一覧・フレーム数・gap 一覧をバッチごとに保持せず、区間参照はメモリ内に残します。冷却後も登録順で処理し、停止後のライブ処理終了・取消時にキューと checkpoint を解放します。
 
 `LiveTranscriptionState.enqueue` の前提条件は、区間が空でなく、失敗が記録されていないことです。VAD が空の終端区間を返す場合、coordinator は enqueue 前に空を除外します。`await registerLiveSegments` の待機中に ASR 認識失敗が記録されることがあり、登録完了後に coordinator は失敗状態を再確認し、失敗済みならキューへ追加しません。認識失敗が記録されると、既存の待機バッチも破棄します。一方、区間登録の永続化失敗は失敗を記録しても既存の未処理キューを空にせず保持します。未処理キューが残る間はアイドル時のモデル解放条件を満たさず、確定処理または取消時の後始末までモデルは解放されません。
 
@@ -97,12 +97,12 @@ ASR drain は判定に関係なく動作します。CLI の `ContentPriorityAcce
 | 熱状態 | ライブ ASR |
 | --- | --- |
 | nominal / fair | 待機を入れず処理 |
-| serious | 次の待機バッチを取り出す前に 750 ms 待機 |
+| serious | 各区間の推論の直前に 750 ms 待機し、判定し直す |
 | critical、または未知の熱状態 | 新しいバッチの認識を一時停止 |
 
-`critical` または状態不明では「発熱のためライブ表示を一時停止中」と表示します。録音保存、VAD、durable な区間登録は継続し、滞留時間が長くても認識を強行しません。熱状態を 1 秒ごとに確認し、認識を再開できる状態になったらキューの最古のバッチから処理します。`serious` まで冷えた場合は 750 ms 待機します。進行中の同期推論を途中で中断する仕組みではありません。
+`critical` または状態不明では「発熱のためライブ表示を一時停止中」と表示します。録音保存、VAD、durable な区間登録は継続し、滞留時間が長くても認識を強行しません。熱状態を 1 秒ごとに確認し、認識を再開できる状態になったらキューの最古のバッチから処理します。バッチの途中で `critical` になった場合も、次の区間の音声を読む前の区間境界で（待機なしに）止まり、冷却後にそのバッチの checkpoint が覆う残りの区間から続けます。冷却中に登録された後続の区間は、それぞれのバッチで処理します。`serious` まで冷えた場合は区間ごとに 750 ms 待機します。冷却待ちの間、停止後の確定処理はこの live worker を待たずに `thermal` 保留となり、worker を残します。進行中の同期推論を途中で中断する仕組みではありません。
 
-このライブ熱判定は録音中に適用します。録音停止後の残存ライブキューはこの判定では待たずに処理します。続く確定処理は実際の `critical` の間だけ一時停止し、状態不明では一時停止しません。一時停止中は同 generation の durable rows を保持し、冷却後は未完了 segmentation / 未成功 ASR だけを再開します。CLI は明示的な再開操作を必要とします。[確定処理](final.md#発熱による一時停止と再開)
+このライブ熱判定は録音停止の前後で同じです。停止は入力を封印するだけで、`critical` の待機を飛ばさず、新しい generation も run ID も作りません。停止後の残存ライブキューも `critical` の間は認識せず、冷却後に最古の区間から同じ generation の続きを処理します。続く確定処理も同じ判定（`serious` は 750 ms 待機、`critical` または状態不明は一時停止）に従います。一時停止中は同 generation の durable rows を保持し、冷却後は未完了 segmentation / 未成功 ASR だけを再開します。CLI は明示的な再開操作を必要とします。[確定処理](final.md#発熱による一時停止と再開)
 
 ## リソース保護によるライブ認識の停止
 

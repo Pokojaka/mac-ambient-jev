@@ -86,7 +86,7 @@ extension AppState {
         }
     }
 
-    func waitForLiveASRDrain(sessionID: UUID) async {
+    func waitForLiveASRDrain(sessionID: UUID) async -> LiveASRDrainOutcome {
         await liveCoordinator.waitForDrain(sessionID: sessionID)
     }
 
@@ -119,7 +119,8 @@ extension AppState: LiveTranscriptionEffects {
         case .registrationFailed(_, let message):
             processingStatusText =
                 "録音は継続しています。発話区間を保存できませんでした: \(message)"
-        case .recognitionFailed(_, let message):
+        case .recognitionFailed(let sessionID, let message):
+            processingCoordinator.liveWorkerDidFail(sessionID: sessionID)
             processingStatusText =
                 "録音は継続しています。ライブ文字起こしを停止しました: \(message)"
         case .thermal(let sessionID, let message):

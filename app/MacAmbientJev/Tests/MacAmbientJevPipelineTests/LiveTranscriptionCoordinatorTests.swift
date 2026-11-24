@@ -235,6 +235,9 @@ private actor FakeLiveTranscriptionExecutor: LiveTranscriptionExecuting {
     private var cancellationSessions: [UUID] = []
     private var cancellationWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
     private var startCount = 0
+    private var beforeGate: (@Sendable () async -> Void)?
+
+    func setBeforeGate(_ hook: @escaping @Sendable () async -> Void) { beforeGate = hook }
 
     init(
         startRunID: String,
@@ -288,12 +291,21 @@ private actor FakeLiveTranscriptionExecutor: LiveTranscriptionExecuting {
         sessionID: UUID,
         segments: [SegmentReference],
         checkpoint: AudioCheckpoint,
+        shouldPause: @escaping NativeSessionProcessor.PauseCheck,
         onStatus: NativeSessionProcessor.StatusHandler?,
         onUpdate: NativeSessionProcessor.UpdateHandler?
     ) async throws -> LiveASRProgress {
         _ = sessionID
         _ = onStatus
         _ = onUpdate
+        // The real processor asks the gate before each segment; a batch is one segment here.
+        await beforeGate?()
+        var gateReason = try await shouldPause(.segmentBoundary)
+        if gateReason == nil { gateReason = try await shouldPause(.dispatch) }
+        if gateReason != nil {
+            orderLog.append("gated")
+            return Self.emptyProgress()
+        }
         guard !processingScript.isEmpty else {
             preconditionFailure("ライブ文字起こしの結果スクリプトが尽きました")
         }
@@ -593,6 +605,90 @@ func criticalLiveDrainWaitsWithoutDequeueThenResumesFIFOUsingLatestCheckpoint() 
 
 @MainActor
 @Test
+func liveASRKeepsWaitingForCoolingAfterStop() async throws {
+    let sessionID = UUID()
+    let orderLog = SharedCoordinatorOrderLog()
+    let checkpoint = makeCheckpoint(200)
+    let effects = FakeLiveTranscriptionEffects(
+        recordingSessionID: sessionID, checkpoint: checkpoint, orderLog: orderLog, stopsRecordingOnVADEnqueue: false
+    )
+    let processor = FakeLiveTranscriptionExecutor(
+        startRunID: "asr_stop_critical_test", registrationScript: [.succeed], processingScript: [.succeed],
+        orderLog: orderLog
+    )
+    let thermal = CoordinatorThermalMonitor(pressure: .critical)
+    let sleepLog = CoordinatorSleepLog()
+    // The first recheck is the stop; the second is held open so the test can look at the worker after stop.
+    let secondRecheck = OneShotAsyncGate()
+    let coordinator = LiveTranscriptionCoordinator(
+        state: LiveTranscriptionState(), effects: effects, processor: processor, thermalMonitor: thermal,
+        resourceMonitor: nil,
+        sleep: { duration in
+            sleepLog.append(duration)
+            if sleepLog.durations.count == 1 {
+                await MainActor.run { effects.recordingSessionID = nil }
+            } else {
+                await secondRecheck.wait()
+            }
+        }
+    )
+    let batch = [makeSegment("seg_stop_critical", at: 0)]
+
+    await coordinator.enqueue(sessionID: sessionID, segments: batch, checkpoint: checkpoint)
+    await secondRecheck.waitUntilEntered()
+    // After stop the worker still waits for heat with no inference, and a finalization is told so
+    // instead of waiting behind it.
+    #expect(await processor.processingRecords().isEmpty)
+    #expect(await coordinator.waitForDrain(sessionID: sessionID) == .suspendedForCooling)
+
+    thermal.setPressure(.fair)
+    await secondRecheck.release()
+    #expect(await coordinator.waitForDrain(sessionID: sessionID) == .drained)
+
+    #expect(sleepLog.durations.count == 2)
+    #expect(await processor.processingRecords() == [RecordedLiveASRBatch(segments: batch, checkpoint: checkpoint)])
+}
+
+@MainActor
+@Test
+func heatDuringABatchStopsItAtTheSegmentAndContinuesAfterCooling() async throws {
+    let sessionID = UUID()
+    let orderLog = SharedCoordinatorOrderLog()
+    let checkpoint = makeCheckpoint(200)
+    let effects = FakeLiveTranscriptionEffects(
+        recordingSessionID: sessionID, checkpoint: checkpoint, orderLog: orderLog, stopsRecordingOnVADEnqueue: false
+    )
+    let processor = FakeLiveTranscriptionExecutor(
+        startRunID: "asr_gate_test", registrationScript: [.succeed], processingScript: [.succeed],
+        orderLog: orderLog
+    )
+    // Fair when the batch is dequeued; critical by the first segment's gate; cooled at the first recheck.
+    let thermal = CoordinatorThermalMonitor(pressure: .fair)
+    let heated = Mutex(false)
+    await processor.setBeforeGate {
+        guard !heated.withLock({ let was = $0; $0 = true; return was }) else { return }
+        await MainActor.run { thermal.setPressure(.critical) }
+    }
+    let sleepLog = CoordinatorSleepLog()
+    let coordinator = LiveTranscriptionCoordinator(
+        state: LiveTranscriptionState(), effects: effects, processor: processor, thermalMonitor: thermal,
+        resourceMonitor: nil,
+        sleep: { duration in
+            sleepLog.append(duration)
+            #expect(await processor.processingRecords().isEmpty)
+            await MainActor.run { thermal.setPressure(.fair) }
+        }
+    )
+    let batch = [makeSegment("seg_gate", at: 0)]
+    await coordinator.enqueue(sessionID: sessionID, segments: batch, checkpoint: checkpoint)
+    while await coordinator.waitForDrain(sessionID: sessionID) == .suspendedForCooling { await Task.yield() }
+
+    #expect(sleepLog.durations == [.milliseconds(LiveTranscriptionCadence.thermalRecheckIntervalMilliseconds)])
+    #expect(await processor.processingRecords().count == 1)
+}
+
+@MainActor
+@Test
 func seriousLiveDrainWaitsOnceFor750Milliseconds() async throws {
     let sessionID = UUID()
     let state = LiveTranscriptionState()
@@ -629,9 +725,10 @@ func seriousLiveDrainWaitsOnceFor750Milliseconds() async throws {
     await coordinator.enqueue(sessionID: sessionID, segments: batch, checkpoint: checkpoint)
     await sleepGate.waitUntilEntered()
 
+    // The pacing wait is the processor's segment gate, so the batch is already in flight.
     #expect(sleepLog.durations == [.milliseconds(750)])
     #expect(await processor.processingRecords().isEmpty)
-    #expect(state.queuedBatchCount(sessionID: sessionID) == 1)
+    #expect(state.queuedBatchCount(sessionID: sessionID) == 0)
 
     await sleepGate.release()
     await coordinator.waitForDrain(sessionID: sessionID)

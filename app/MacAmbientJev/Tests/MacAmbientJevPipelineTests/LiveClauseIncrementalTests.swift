@@ -338,7 +338,7 @@ func incrementalLiveFixture(count: Int) async throws -> (root: URL, session: Liv
         return SegmentReference(segmentationRunID: incrementalSegmentationRun,
             segmentID: "segment_\(index)", speechRanges: [startFrame..<startFrame + 4])
     }
-    _ = try await session.process(segments: segments, checkpoint: checkpoint)
+    _ = try await session.process(segments: segments, checkpoint: checkpoint, shouldPause: { _ in nil })
     return (root, session)
 }
 

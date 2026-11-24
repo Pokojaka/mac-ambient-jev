@@ -77,7 +77,7 @@ import MacAmbientJevPipeline
         var queue = SessionProcessingQueue()
         queue.enqueue(.finalize(sessionID: pendingID, metadataPolicy: .reject))
         queue.begin(.finalize(sessionID: currentID, metadataPolicy: .reject))
-        queue.hold(.retryContentPriority(sessionID: heldID, boundarySegments: [], clauses: []), reason: .thermal)
+        queue.hold(.retryContentPriority(sessionID: heldID, boundarySegments: [], clauses: []), reason: .inference(.thermal))
         fixture.app.core.processingQueue = queue
         return QueueSnapshot(
             pendingIDs: queue.pending.map(\.sessionID), currentID: queue.currentSessionID,

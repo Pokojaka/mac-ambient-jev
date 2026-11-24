@@ -340,7 +340,7 @@ private func serviceCallbacks(_ recorder: ServiceEventRecorder) -> SessionFilePr
         onEvent: { await recorder.record($0) },
         onStatus: { _ in },
         onUpdate: { _, _ in },
-        shouldPause: { nil },
+        shouldPause: { _ in nil },
         onPhase: { _ in }
     )
 }
@@ -689,7 +689,7 @@ struct SessionFileProcessingServiceTests {
                 onEvent: { await recorder.record($0) },
                 onStatus: { await retryCallbacks.recordStatus($0.text) },
                 onUpdate: { _, state in await retryCallbacks.recordUpdateState(state) },
-                shouldPause: { nil },
+                shouldPause: { _ in nil },
                 onPhase: { _ in }
             )
         )
