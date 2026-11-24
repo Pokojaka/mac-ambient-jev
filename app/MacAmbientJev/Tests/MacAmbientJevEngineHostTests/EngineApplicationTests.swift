@@ -2,12 +2,44 @@ import Foundation
 import Testing
 import MacAmbientJevCore
 @testable import MacAmbientJevEngineHost
+import MacAmbientJevEngineE2ESupport
 import MacAmbientJevEngineProtocol
 import MacAmbientJevPipeline
 import MacAmbientJevTestSupport
 
 @MainActor
 @Suite(.timeLimit(.minutes(10))) struct EngineApplicationTests {
+    /// The deterministic provider the Windows engine acceptance tests use: its live VAD and its stored
+    /// VAD must agree, or a stop that keeps the live worker loses the recording's only segment.
+    @Test func aDeterministicRecordingFinalizesWithItsTranscript() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = ApplicationHarness(root: root, provider: DeterministicInferenceProvider())
+        h.start()
+        try await h.hello()
+        try await h.replaceSettings(engineTestSettings(), expectedRevision: nil)
+        await h.awaitModels()
+        guard case let .recordingStart(started) = try await h.call(
+            "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}"
+        ) else {
+            Issue.record("recording.start did not return a session")
+            return
+        }
+        try await h.capture.session?.appendSpeech(seconds: 2)
+        try await h.call("recording.stop", payload: "{\"session_id\":\"\(started.sessionID)\"}")
+        _ = try await h.waitForSession(status: .finalized)
+
+        guard case let .transcriptRead(page) = try await h.call(
+            "transcript.read",
+            payload: "{\"session_id\":\"\(started.sessionID)\",\"revision\":null,\"cursor\":null,\"limit\":10}"
+        ) else {
+            Issue.record("transcript.read did not return a page")
+            return
+        }
+        #expect(page.rows.map(\.text) == ["エンジンの受け入れテストです。"])
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
     private func prepared(_ root: URL) async throws -> ApplicationHarness {
         let harness = ApplicationHarness(root: root)
         harness.start()
