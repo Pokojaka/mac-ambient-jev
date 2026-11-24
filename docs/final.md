@@ -36,7 +36,7 @@ VAD の失敗・不正な区間、発話がある場合の ASR の失敗を空�
 
 ## 増分保存と任意の発話文判定
 
-`pipeline.started` は generation の初期 `active_runs` を durable に選びます。`processing_metadata.json` は `generation_id`・status・failure reason を管理し、scanner / 状態表示にだけ使います。run や transcript は選択しません。保存済みイベントと最新の generation marker から作る行は、segment 登録・ASR 成功ごとに materialize して表示します。公開待ちの別 transcript はありません。
+`pipeline.started` は generation の初期 run ID 群を durable に選びます。`processing_metadata.json` は `generation_id`・status・failure reason を管理し、scanner / 状態表示にだけ使います。run や transcript は選択しません。保存済みイベントと最新の generation marker から作る行は、segment 登録・ASR 成功ごとに materialize して表示します。公開待ちの別 transcript はありません。
 
 segmentation と ASR の完了・sealed frame count・run 完了数を検証してから generation を `complete` にします。任意の境界・優先度判定は同じ初期 run pair の増分 worker が保存した結果を順次表示し、pending target が残っても成功したローカル transcript を無効にしません。イベント保存や metadata 書込の失敗はエラーで、durable な選択済み行を巻き戻しません。
 

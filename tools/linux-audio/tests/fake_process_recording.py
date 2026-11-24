@@ -60,10 +60,18 @@ def build_session(session: Path, audio: Path, session_id: str, mode: str, segmen
     def add(event_type: str, run_id: str | None, payload: dict, segment_id: str | None = None) -> None:
         events.append({
             "event_seq": len(events) + 1, "event_id": str(uuid.uuid4()), "event_type": event_type,
-            "schema_version": 3, "session_id": session_id, "processing_run_id": run_id,
+            "schema_version": 4, "session_id": session_id, "processing_run_id": run_id,
             "segment_id": segment_id, "payload": payload,
         })
 
+    generation_id = str(uuid.uuid4())
+    active = {key: f"{key}_run" for key in runs}
+    if mode == "missing_stage":
+        del active["asr"]
+    add("pipeline.started", None, {
+        "id": generation_id, "runs": active, "sample_rate": 16000.0,
+        "segmentation_provenance": runs["segmentation"][1], "asr_provenance": runs["asr"][1],
+    })
     for key, (stage, prov) in runs.items():
         add("processing.run.started", f"{key}_run", {"stage": stage, "provenance": prov})
         if key == "asr":
@@ -79,13 +87,8 @@ def build_session(session: Path, audio: Path, session_id: str, mode: str, segmen
     (session / "events.jsonl").write_text(
         "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8")
 
-    active = {key: f"{key}_run" for key in runs}
-    if mode == "missing_stage":
-        del active["asr"]
     (session / "processing_metadata.json").write_text(json.dumps({
-        "schema_version": 3, "finalization_attempt": {"attempt_id": "a", "state": "complete"},
-        "active_runs": active, "pending_clause_boundary_segments": [],
-        "pending_content_priority_clauses": [],
+        "schema_version": 4, "generation_id": generation_id, "state": "complete",
     }), encoding="utf-8")
     if mode == "missing_file":
         (session / "audio" / "storage.json").unlink()

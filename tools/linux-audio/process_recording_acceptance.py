@@ -45,10 +45,10 @@ IMPORT_TIMEOUT_SECONDS = 300
 RESUME_TIMEOUT_SECONDS = 300
 INSPECT_TIMEOUT_SECONDS = 60
 EVALUATOR_TIMEOUT_SECONDS = 60
-EVENT_SCHEMA_VERSION = 3
+EVENT_SCHEMA_VERSION = 4
 SAMPLE_RATE = 16_000
 
-# active_runs key -> (stage name in processing.run.* payloads, expected provenance engine)
+# pipeline.started runs key -> (stage name in processing.run.* payloads, expected provenance engine)
 STAGES = {
     "segmentation": ("segmentation", "onnxruntime-silero-vad"),
     "asr": ("asr", "onnxruntime-qwen3-asr"),
@@ -329,15 +329,21 @@ def check_session_files(
 def check_runs(
     events: list[dict[str, Any]], metadata: dict[str, Any], expected_model: str, threads: int
 ) -> dict[str, str]:
-    """Check metadata and run events; returns the active run ids by stage key."""
-    attempt = metadata.get("finalization_attempt")
-    require(isinstance(attempt, dict) and attempt.get("state") == "complete",
-            "finalization attempt is not complete")
-    require(metadata.get("pending_clause_boundary_segments") == []
-            and metadata.get("pending_content_priority_clauses") == [],
-            "decision targets are still pending")
-    active = metadata.get("active_runs")
-    require(isinstance(active, dict), "no active runs are published")
+    """Check metadata and run events; returns the selected run ids by stage key."""
+    require(set(metadata) == {"schema_version", "generation_id", "state"}
+            and metadata["schema_version"] == EVENT_SCHEMA_VERSION,
+            f"processing metadata has an unexpected shape: {metadata!r}")
+    require(metadata["state"] == "complete", "processing state is not complete")
+    starts = [e for e in events if e["event_type"] == "pipeline.started"]
+    require(starts, "events.jsonl has no pipeline.started")
+    start = starts[-1]
+    require(metadata["generation_id"] == start["payload"]["id"],
+            "processing metadata generation_id differs from the latest pipeline.started")
+    active = dict(start["payload"]["runs"])
+    for event in events:
+        if event["event_seq"] > start["event_seq"] and event["event_type"] == "pipeline.decisions.replaced":
+            active["clause_boundary"] = event["payload"]["replacement"]["boundary"]
+            active["content_priority"] = event["payload"]["replacement"]["priority"]
     run_ids: dict[str, str] = {}
     for key, (stage, expected_engine) in STAGES.items():
         run_id = active.get(key)
