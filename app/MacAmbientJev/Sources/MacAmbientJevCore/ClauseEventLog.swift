@@ -4,8 +4,6 @@ import Foundation
 struct ClauseEventLog {
     struct Run {
         let stage: ProcessingStage
-        let mode: String?
-        let modelRevision: String?
         let startedSeq: UInt64
         var completionSeq: UInt64?
         var completion: RunCompletedBody?
@@ -53,7 +51,6 @@ struct ClauseEventLog {
     private var clauseEvents: [String: [(seq: UInt64, unit: ClauseUnit)]] = [:]
     private var priorityEvents: [String: [(seq: UInt64, payload: ContentPriorityAssignedPayload)]] = [:]
     private var assessedBySeq: [UInt64: (runID: String, assessment: ClauseBoundaryAssessment)] = [:]
-    private var localEvidence: [ProcessingStage: Set<String>] = [:]
     private var failedASRSources: [SegmentTextReference] = []
 
     private final class ValidationCache {
@@ -128,9 +125,8 @@ struct ClauseEventLog {
                     throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: runID, reason: "run の開始記録が重複しています")
                 }
                 runs[runID] = Run(
-                    stage: started.stage, mode: started.provenance.configuration["mode"],
-                    modelRevision: started.provenance.configuration["model_revision"],
-                    startedSeq: header.eventSeq, completionSeq: nil, completion: nil
+                    stage: started.stage, startedSeq: header.eventSeq,
+                    completionSeq: nil, completion: nil
                 )
             case "processing.run.completed":
                 let runID = try line.requiredRunID()
@@ -150,7 +146,6 @@ struct ClauseEventLog {
                     throw line.malformed
                 }
                 segmentOrder[segmentationRunID, default: []].append((body.segmentID, body.startFrame, header.eventSeq))
-                localEvidence[.segmentation, default: []].insert(segmentationRunID)
             case "asr.completed":
                 let runID = try line.requiredRunID()
                 let segmentationRunID = try line.requiredSegmentationRunID()
@@ -164,7 +159,6 @@ struct ClauseEventLog {
                 )
                 asrTexts[source] = body.text
                 asrBySegment[Self.runKey(segmentationRunID, runID), default: [:]][body.segmentID] = source
-                localEvidence[.asr, default: []].insert(runID)
             case "asr.failed":
                 let runID = try line.requiredRunID()
                 guard let segmentID = header.segmentID else { throw line.malformed }
@@ -173,20 +167,26 @@ struct ClauseEventLog {
                     segmentationRunID: line.requiredSegmentationRunID(), segmentID: segmentID,
                     asrRunID: runID, asrEventSeq: header.eventSeq
                 ))
-                localEvidence[.asr, default: []].insert(runID)
             case "clause_boundaries.assessed":
                 let runID = try line.requiredRunID()
+                try Self.validateDecisionEvent(runID, stage: .clauseBoundary, eventSeq: header.eventSeq, runs: runs)
                 let assessment = try line.body(PayloadBody<ClauseBoundaryAssessment>.self).payload
                 assessedBySeq[header.eventSeq] = (runID, assessment)
                 boundaryEvents[runID, default: []].append((header.eventSeq, line))
             case "clause_boundaries.pending":
-                boundaryEvents[try line.requiredRunID(), default: []].append((header.eventSeq, line))
+                let runID = try line.requiredRunID()
+                try Self.validateDecisionEvent(runID, stage: .clauseBoundary, eventSeq: header.eventSeq, runs: runs)
+                boundaryEvents[runID, default: []].append((header.eventSeq, line))
             case "clauses.closed":
+                let runID = try line.requiredRunID()
+                try Self.validateDecisionEvent(runID, stage: .clauseBoundary, eventSeq: header.eventSeq, runs: runs)
                 let unit = try line.body(PayloadBody<ClauseUnit>.self).payload
-                clauseEvents[try line.requiredRunID(), default: []].append((header.eventSeq, unit))
+                clauseEvents[runID, default: []].append((header.eventSeq, unit))
             case "content_priority.assigned":
+                let runID = try line.requiredRunID()
+                try Self.validateDecisionEvent(runID, stage: .contentPriority, eventSeq: header.eventSeq, runs: runs)
                 let payload = try line.body(PayloadBody<ContentPriorityAssignedPayload>.self).payload
-                priorityEvents[try line.requiredRunID(), default: []].append((header.eventSeq, payload))
+                priorityEvents[runID, default: []].append((header.eventSeq, payload))
             default:
                 continue
             }
@@ -199,6 +199,16 @@ struct ClauseEventLog {
         }
         for source in asrTexts.keys { try validateSourceCreated(source) }
         for source in failedASRSources { try validateSourceCreated(source) }
+    }
+
+    private static func validateDecisionEvent(
+        _ runID: String, stage: ProcessingStage, eventSeq: UInt64, runs: [String: Run]
+    ) throws {
+        guard let run = runs[runID], run.stage == stage, run.startedSeq < eventSeq, run.completion == nil else {
+            throw EventLogTranscriptReaderError.inconsistentClauseRun(
+                runID: runID, reason: "判定イベントが対応する run の期間外にあります"
+            )
+        }
     }
 
     private func validateSourceCreated(_ source: SegmentTextReference) throws {
@@ -271,14 +281,14 @@ struct ClauseEventLog {
     }
 
     /// Replays stored decisions in their original temporal context. Completed runs contain
-    /// all replayed clauses; only unfinished live runs may contain a durable prefix.
+    /// all replayed clauses; unfinished runs may contain a durable prefix.
     func boundaryRun(_ runID: String) throws -> BoundaryRun {
         func fail(_ reason: String) -> EventLogTranscriptReaderError {
             .inconsistentClauseRun(runID: runID, reason: reason)
         }
         guard let run = runs[runID], run.stage == .clauseBoundary else { throw fail("境界判定 run の開始記録がありません") }
-        guard run.completed || (run.mode == "live" && run.completion == nil) else {
-            throw fail("未完了の確定・再試行 run は判定元に使えません")
+        guard run.completion == nil || run.completed else {
+            throw fail("失敗した境界判定 run は判定元に使えません")
         }
         if let cached = validation.boundaries[runID] { return cached }
         guard validation.checkingBoundaries.insert(runID).inserted else { throw fail("境界判定の引き継ぎが循環しています") }
@@ -315,7 +325,7 @@ struct ClauseEventLog {
                     }
                     _ = try boundaryRun(sourceRunID)
                 }
-                switch successor(of: assessment.source, before: run.mode == "live" ? seq : nil) {
+                switch successor(of: assessment.source, before: seq) {
                 case .recognized(let next, let text):
                     guard let head = assessment.nextHead, head.source == next,
                           head.text.utf8.elementsEqual(String(text.prefix(ClauseBoundaryPolicy.nextHeadCharacterLimit)).utf8) else {
@@ -339,7 +349,7 @@ struct ClauseEventLog {
                   asrBySegment[Self.runKey(source.segmentationRunID, source.asrRunID)]?[source.segmentID] == source else {
                 throw fail("境界判定の原文参照が音声認識区間と一致しません")
             }
-            if hasEmptySeparator(before: source, eventSeq: run.mode == "live" ? seq : nil) {
+            if hasEmptySeparator(before: source, eventSeq: seq) {
                 _ = try assembly.endTextStream()
             }
             if hasMissingPredecessor(of: source) { _ = try assembly.beginAfterASRGap() }
@@ -353,12 +363,13 @@ struct ClauseEventLog {
                 throw fail(error.localizedDescription)
             }
             inputs.append((seq, input))
-            if case .empty = successor(of: source, before: run.mode == "live" ? seq : nil) {
+            if case .empty = successor(of: source, before: seq) {
                 _ = try assembly.endTextStream()
             }
         }
+        let storedUnits = stored.map(\.unit)
         var finished = assembly
-        let finishDelta = run.completed ? try finished.finish().closed : []
+        let finishDelta = run.completed || storedUnits.count > expected.count ? try finished.finish().closed : []
         let afterFinish = expected + finishDelta
         for unit in finishDelta {
             closureSeqs[unit.reference] = inputs.last?.seq ?? run.startedSeq
@@ -368,12 +379,24 @@ struct ClauseEventLog {
                 throw fail("境界判定の完了件数が保存記録と一致しません")
             }
         }
-        let storedUnits = stored.map(\.unit)
+        let savedEOFClosurePrefix = !run.completed && storedUnits.count > expected.count
+            && Array(afterFinish.prefix(storedUnits.count)) == storedUnits
+            && stored.dropFirst(expected.count).allSatisfy { entry in
+                guard let source = entry.unit.parts.first?.source,
+                      let asrRun = runs[source.asrRunID], asrRun.stage == .asr,
+                      asrRun.completed, let completionSeq = asrRun.completionSeq,
+                      completionSeq < entry.seq,
+                      entry.unit.parts.allSatisfy({
+                          $0.source.asrRunID == source.asrRunID && $0.source.asrEventSeq < completionSeq
+                      }) else { return false }
+                return true
+            }
         if run.completed {
             guard storedUnits == afterFinish else { throw fail("保存された節が境界判定の結果と一致しません") }
+        } else if storedUnits.count > expected.count {
+            guard savedEOFClosurePrefix else { throw fail("保存された節が境界判定の結果と一致しません") }
         } else {
-            guard storedUnits.count <= afterFinish.count,
-                  Array(afterFinish.prefix(storedUnits.count)) == storedUnits else {
+            guard Array(expected.prefix(storedUnits.count)) == storedUnits else {
                 throw fail("保存された節が境界判定の結果と一致しません")
             }
         }
@@ -401,16 +424,17 @@ struct ClauseEventLog {
         for unit in storedUnits {
             texts[unit.reference] = try composer.text(of: unit.parts, sourceText: text(of:))
         }
+        let assemblyFinished = run.completed || savedEOFClosurePrefix
         var unresolved: Set<SegmentTextReference> = []
         for entry in inputs {
-            if try (run.completed ? finished : assembly).state(for: entry.input.source) == .boundaryPending {
+            if try (assemblyFinished ? finished : assembly).state(for: entry.input.source) == .boundaryPending {
                 unresolved.insert(entry.input.source)
             }
         }
         let result = BoundaryRun(
             runID: runID, complete: run.completed, inputs: inputs, clauses: stored,
             clauseTexts: texts, pendingSources: pending, unresolvedSources: unresolved,
-            assembly: run.completed ? finished : assembly, composer: composer,
+            assembly: assemblyFinished ? finished : assembly, composer: composer,
             unsavedClauses: Array(afterFinish.dropFirst(storedUnits.count))
         )
         validation.boundaries[runID] = result
@@ -423,8 +447,8 @@ struct ClauseEventLog {
             .inconsistentClauseRun(runID: runID, reason: reason)
         }
         guard let run = runs[runID], run.stage == .contentPriority else { throw fail("優先度 run の開始記録がありません") }
-        guard run.completed || (run.mode == "live" && run.completion == nil) else {
-            throw fail("未完了の確定・再試行 run は判定元に使えません")
+        guard run.completion == nil || run.completed else {
+            throw fail("失敗した優先度 run は判定元に使えません")
         }
         if let cached = validation.priorities[runID] {
             guard cached.assignments.keys.allSatisfy({ $0.boundaryRunID == boundary.runID }) else {
@@ -495,9 +519,7 @@ struct ClauseEventLog {
         for (key, reuse) in decisions {
             let boundary = try boundaryRun(reuse.sourceClause.boundaryRunID)
             let priority = try priorityRun(reuse.sourcePriorityRunID, boundary: boundary)
-            guard runs[reuse.sourcePriorityRunID]?.mode == "live",
-                  runs[reuse.sourceClause.boundaryRunID]?.mode == "live",
-                  let text = boundary.clauseTexts[reuse.sourceClause],
+            guard let text = boundary.clauseTexts[reuse.sourceClause],
                   ExactClauseTextKey(text: text) == key,
                   let assignment = priority.events.first(where: { $0.seq == reuse.sourceEventSeq })?
                     .payload.assignments.first(where: { $0.reference == reuse.sourceClause }),
@@ -505,18 +527,11 @@ struct ClauseEventLog {
                   response == reuse.decision, assignment.priority == reuse.visiblePriority,
                   !assignment.needsRetry else {
                 throw EventLogTranscriptReaderError.inconsistentClauseRun(
-                    runID: reuse.sourcePriorityRunID, reason: "再利用するライブ優先度の保存元が一致しません"
+                    runID: reuse.sourcePriorityRunID, reason: "再利用する優先度の保存元が一致しません"
                 )
             }
         }
     }
 
-    func firstReference(ofPriorityRun runID: String) -> ClauseReference? {
-        priorityEvents[runID]?.first?.payload.assignments.first?.reference
-    }
-
-    func hasLocalEvidence(for stage: ProcessingStage, runID: String) -> Bool {
-        localEvidence[stage]?.contains(runID) == true
-    }
 
 }

@@ -3,7 +3,7 @@ import Testing
 import MacAmbientJevCore
 @testable import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
-import MacAmbientJevPipeline
+@testable import MacAmbientJevPipeline
 import MacAmbientJevTestSupport
 
 private actor PresentationDecisionProvider: DecisionProvider {
@@ -65,6 +65,7 @@ private actor PresentationDecisionProvider: DecisionProvider {
         try await harness.call("recording.stop", payload: "{\"session_id\":\"\(started.sessionID)\"}")
         let finalized = try await harness.waitForSession(status: .finalized)
         #expect(finalized.sessionID == started.sessionID)
+        await harness.app.core.processingCoordinator.waitUntilIdle()
         let sessionID = try #require(UUID(uuidString: started.sessionID))
         let folder = try SessionDirectoryLocator(fileManager: .default).resolve(
             sessionsRoot: harness.paths.sessionsRoot, sessionID: sessionID
@@ -85,6 +86,7 @@ private actor PresentationDecisionProvider: DecisionProvider {
             createdAt: createdAt,
             timeZone: TimeZone(secondsFromGMT: 0)!
         )
+        _ = try SessionWriter(sessionURL: folder)
         if includeImportedOriginal, case .imported = source {
             let audio = SessionLayout(sessionURL: folder).audioDirectory
             try FileManager.default.createDirectory(at: audio, withIntermediateDirectories: true)
@@ -144,26 +146,36 @@ private actor PresentationDecisionProvider: DecisionProvider {
         try await core.inspect(EngineSessionInspectPayload(folderID: folderID), context: context)
     }
 
-    private func saveMetadata(
-        at sessionURL: URL,
-        attempt: FinalizationAttempt?,
-        activeRuns: ActiveRuns?,
-        pendingBoundary: [SegmentTextReference]
-    ) throws {
+    private func saveStatus(
+        at sessionURL: URL, state: ProcessingMetadata.State, reason: String? = nil
+    ) async throws {
+        let layout = SessionLayout(sessionURL: sessionURL)
+        let sessionID = try layout.loadManifest().sessionID
+        let writer = try SessionWriter(sessionURL: sessionURL)
+        let stateFromLog = try ProcessingLogState(eventsURL: layout.eventsURL, sessionID: sessionID)
+        let generation: PipelineGeneration
+        if let stateFromLog {
+            generation = stateFromLog.generation
+        } else {
+            let provenance = RunProvenance(
+                engine: "host-test-presentation", model: nil, version: "1", configuration: [:]
+            )
+            generation = PipelineGeneration(
+                id: UUID(), runs: ActiveRuns(segmentation: "presentation-seg", asr: "presentation-asr"),
+                sampleRate: CanonicalAudio.sampleRate,
+                segmentationProvenance: provenance, asrProvenance: provenance
+            )
+            try await writer.append(generation.startEvent(sessionID: sessionID))
+        }
         try ProcessingMetadataStore(sessionURL: sessionURL).save(ProcessingMetadata(
-            finalizationAttempt: attempt,
-            activeRuns: activeRuns,
-            pendingClauseBoundarySegments: pendingBoundary,
-            pendingContentPriorityClauses: []
+            generationID: generation.id, state: state, failureReason: reason
         ))
     }
 
     private func completeDecisionProcessing(at sessionURL: URL, sessionID: UUID) async throws {
-        let store = ProcessingMetadataStore(sessionURL: sessionURL)
-        let metadata = try #require(try store.load())
-        let activeRuns = try #require(metadata.activeRuns)
-        let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: SessionLayout(sessionURL: sessionURL).eventsURL))
-        let events = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: activeRuns)
+        let layout = SessionLayout(sessionURL: sessionURL)
+        let stored = try #require(try EventLogTranscriptReader().read(eventsURL: layout.eventsURL, sessionID: sessionID))
+        let activeRuns = stored.state.runs
         let usage = DecisionUsageCounter()
         let identity = try DecisionModelIdentity(
             backend: "host-test", model: "deterministic-test", modelRevision: String(repeating: "0", count: 64)
@@ -173,32 +185,37 @@ private actor PresentationDecisionProvider: DecisionProvider {
         )
         let boundaryRunID = "presentation-boundary"
         let priorityRunID = "presentation-priority"
+        let writer = try SessionWriter(sessionURL: sessionURL)
         let coordinator = DecisionEnrichmentCoordinator(
             sessionID: sessionID,
             boundaryRunID: boundaryRunID,
             priorityRunID: priorityRunID,
-            writer: try SessionWriter(sessionURL: sessionURL),
+            writer: writer,
             decisions: decisions,
             usageCounter: usage,
-            materializer: TranscriptMaterializer(sampleRate: CanonicalAudio.sampleRate)
+            materializer: TranscriptMaterializer(sampleRate: stored.state.generation.sampleRate)
         )
         let result = try await coordinator.process(
-            existingEvents: events,
+            existingEvents: stored.events,
             activeRuns: activeRuns,
-            scope: .all,
+            scope: .retry(
+                boundarySegments: Set(stored.pendingDecisions.boundarySegments),
+                clauses: Set(stored.pendingDecisions.clauses)
+            ),
             reusableDecisions: [:],
             onEvent: nil
         )
-        #expect(result.pendingBoundarySegments.isEmpty)
-        #expect(result.pendingPriorityClauses.isEmpty)
-        try store.publishDecisionSnapshot(
-            basedOn: activeRuns,
-            clauseBoundaryRunID: result.boundaryRunID,
-            contentPriorityRunID: result.priorityRunID,
-            pendingClauseBoundarySegments: result.pendingBoundarySegments,
-            pendingContentPriorityClauses: result.pendingPriorityClauses
-        )
-        await coordinator.recordPublished(result, replacing: metadata.pendingDecisionTargets)
+        let previous: DecisionRunIDs?
+        if let boundary = activeRuns.clauseBoundary, let priority = activeRuns.contentPriority {
+            previous = DecisionRunIDs(boundary: boundary, priority: priority)
+        } else {
+            previous = nil
+        }
+        try await writer.append(DecisionRunReplacement(
+            generationID: stored.state.generation.id, previous: previous,
+            replacement: DecisionRunIDs(boundary: result.boundaryRunID, priority: result.priorityRunID)
+        ).selectionEvent(sessionID: sessionID))
+        await coordinator.recordPublished(result, replacing: stored.pendingDecisions.pendingTargets)
     }
 
     @Test func recordingPresentationMatchesInspectAndTracksExportState() async throws {
@@ -310,7 +327,7 @@ private actor PresentationDecisionProvider: DecisionProvider {
 
             let duringCommittedCapture = try await listedSession(harness, sessionID: started.sessionID)
             #expect(duringCommittedCapture.status == .recording)
-            #expect(duringCommittedCapture.statusText == "未処理")
+            #expect(duringCommittedCapture.statusText == "処理中")
             #expect(!duringCommittedCapture.canReprocess)
             #expect(!duringCommittedCapture.canRetryDecisions)
             #expect(!duringCommittedCapture.canExport)
@@ -642,40 +659,43 @@ private actor PresentationDecisionProvider: DecisionProvider {
     @Test func processingWordingAndPendingClassificationFollowRealMetadataAndEvents() async throws {
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
-        let harness = try await prepared(root, decisions: true)
+        let harness = try await prepared(root, decisions: false)
         let sessionURL = try createSession(
             in: harness, source: .imported(originalFilename: "state.wav"),
             createdAt: Date(timeIntervalSince1970: 1_700_200_000), includeImportedOriginal: true
         )
-        let stateCases: [(FinalizationAttempt?, String)] = [
-            (nil, "未処理"),
-            (FinalizationAttempt(attemptID: "running", state: .running, failureReason: nil), "処理中"),
-            (FinalizationAttempt(attemptID: "complete", state: .complete, failureReason: nil), "処理完了"),
-            (FinalizationAttempt(attemptID: "failed", state: .failed, failureReason: "decode stopped"), "再処理が必要: decode stopped"),
-            (FinalizationAttempt(attemptID: "paused", state: .paused, failureReason: nil), "処理は中断されました。次回の起動時に再開できます")
+        let stateCases: [(ProcessingMetadata.State?, String?, String)] = [
+            (nil, nil, "未処理"),
+            (.running, nil, "処理中"),
+            (.failed, "decode stopped", "再処理が必要: decode stopped"),
+            (.paused, nil, "処理は中断されました。次回の起動時に再開できます")
         ]
-        for (attempt, expectedText) in stateCases {
-            try saveMetadata(at: sessionURL, attempt: attempt, activeRuns: nil, pendingBoundary: [])
-                let summary = try await inspect(harness.app.core, context: requestContext(for: harness), folderID: sessionURL.lastPathComponent)
+        for (state, reason, expectedText) in stateCases {
+            if let state { try await saveStatus(at: sessionURL, state: state, reason: reason) }
+            let summary = try await inspect(
+                harness.app.core, context: requestContext(for: harness), folderID: sessionURL.lastPathComponent
+            )
             #expect(summary.statusText == expectedText)
         }
+        let emptyComplete = try createSession(
+            in: harness, source: .imported(originalFilename: "empty-complete.wav"),
+            createdAt: Date(timeIntervalSince1970: 1_700_200_001), includeImportedOriginal: true
+        )
+        let emptyCompleteID = try SessionLayout(sessionURL: emptyComplete).loadManifest().sessionID
+        try await writeTranscriptHistory(at: emptyComplete, sessionID: emptyCompleteID, segmentCount: 0)
+        let completeSummary = try await inspect(
+            harness.app.core, context: requestContext(for: harness), folderID: emptyComplete.lastPathComponent
+        )
+        #expect(completeSummary.statusText == "文字起こしあり")
 
         let missing = try createSession(
             in: harness, source: .recording(.microphone), createdAt: Date(timeIntervalSince1970: 1_700_200_100), includeImportedOriginal: false
         )
-        try saveMetadata(
-            at: missing,
-            attempt: FinalizationAttempt(attemptID: "failed-missing", state: .failed, failureReason: "failure hidden by audio"),
-            activeRuns: nil, pendingBoundary: []
-        )
+        try await saveStatus(at: missing, state: .failed, reason: "failure hidden by audio")
         let unreadable = try createSession(
             in: harness, source: .imported(originalFilename: "unreadable.wav"), createdAt: Date(timeIntervalSince1970: 1_700_200_101), includeImportedOriginal: false
         )
-        try saveMetadata(
-            at: unreadable,
-            attempt: FinalizationAttempt(attemptID: "failed-unreadable", state: .failed, failureReason: "failure hidden by unreadable audio"),
-            activeRuns: nil, pendingBoundary: []
-        )
+        try await saveStatus(at: unreadable, state: .failed, reason: "failure hidden by unreadable audio")
         #expect(try await inspect(harness.app.core, context: requestContext(for: harness), folderID: missing.lastPathComponent).statusText == "保存済み音声がありません")
         let unreadableSummary = try await inspect(harness.app.core, context: requestContext(for: harness), folderID: unreadable.lastPathComponent)
         guard case let .readable(_, _, .unreadable(reason), false) = unreadableSummary.metadata else {
@@ -686,17 +706,8 @@ private actor PresentationDecisionProvider: DecisionProvider {
 
         let recorded = try await recordAndFinalize(in: harness)
         let layout = SessionLayout(sessionURL: recorded.folder)
-        let currentMetadata = try #require(try ProcessingMetadataStore(sessionURL: recorded.folder).load())
-        let activeRuns = try #require(currentMetadata.activeRuns)
-        let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: layout.eventsURL))
-        let events = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: activeRuns)
-        let source = try #require(try events.compactMap { try $0.asrSource() }.first)
-        try ProcessingMetadataStore(sessionURL: recorded.folder).save(ProcessingMetadata(
-            finalizationAttempt: FinalizationAttempt(attemptID: "classification-pending", state: .complete, failureReason: nil),
-            activeRuns: activeRuns,
-            pendingClauseBoundarySegments: [source],
-            pendingContentPriorityClauses: []
-        ))
+        try await harness.replaceSettings(try engineTestSettings(decisions: true), expectedRevision: 1)
+        await harness.awaitModels()
         let pending = try await inspect(harness.app.core, context: requestContext(for: harness), folderID: recorded.folder.lastPathComponent)
         #expect(pending.statusText == "文字起こしあり・判定を再試行")
         #expect(pending.canRetryDecisions)
@@ -737,7 +748,7 @@ private actor PresentationDecisionProvider: DecisionProvider {
         }
         #expect(restoredAudio.canRetryDecisions)
 
-        try await harness.replaceSettings(try engineTestSettings(decisions: false), expectedRevision: 1)
+        try await harness.replaceSettings(try engineTestSettings(decisions: false), expectedRevision: 2)
         let disabled = try await inspect(harness.app.core, context: requestContext(for: harness), folderID: recorded.folder.lastPathComponent)
         #expect(!disabled.canRetryDecisions)
         #expect(disabled.statusText == "文字起こしあり・判定を再試行")
@@ -747,22 +758,12 @@ private actor PresentationDecisionProvider: DecisionProvider {
     @Test func actionGatesReflectLiveCoreStateAndDoNotRequireAnExportDestination() async throws {
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
-        let harness = try await prepared(root, decisions: true)
+        let harness = try await prepared(root, decisions: false)
         let recorded = try await recordAndFinalize(in: harness)
+        try await harness.replaceSettings(try engineTestSettings(decisions: true), expectedRevision: 1)
         let core = harness.app.core
         let context = try requestContext(for: harness)
         let sessionID = try #require(UUID(uuidString: recorded.id))
-        let layout = SessionLayout(sessionURL: recorded.folder)
-        let metadata = try #require(try ProcessingMetadataStore(sessionURL: recorded.folder).load())
-        let activeRuns = try #require(metadata.activeRuns)
-        let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: layout.eventsURL))
-        let events = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: activeRuns)
-        try saveMetadata(
-            at: recorded.folder,
-            attempt: FinalizationAttempt(attemptID: "action-gate-pending", state: .complete, failureReason: nil),
-            activeRuns: activeRuns,
-            pendingBoundary: try events.compactMap { try $0.asrSource() }
-        )
         let readable = try #require(core.savedSessionOperations.readableSession(sessionID))
         let initial = try await inspect(core, context: context, folderID: recorded.folder.lastPathComponent)
         #expect(initial.canExport)
@@ -842,11 +843,7 @@ private actor PresentationDecisionProvider: DecisionProvider {
                 in: harness, source: .imported(originalFilename: "large-\(index).wav"),
                 createdAt: Date(timeIntervalSince1970: 1_700_300_000 + Double(index * 60)), includeImportedOriginal: true
             )
-            try saveMetadata(
-                at: folder,
-                attempt: FinalizationAttempt(attemptID: "failure-\(index)", state: .failed, failureReason: longReason),
-                activeRuns: nil, pendingBoundary: []
-            )
+            try await saveStatus(at: folder, state: .failed, reason: longReason)
             fixtures.append(folder)
         }
         let transcriptFolder = try createSession(
@@ -892,11 +889,7 @@ private actor PresentationDecisionProvider: DecisionProvider {
         #expect(repeatedSecond == forwardPages[1])
 
         let firstLargeFolder = try #require(fixtures.first)
-        try saveMetadata(
-            at: firstLargeFolder,
-            attempt: FinalizationAttempt(attemptID: "changed", state: .failed, failureReason: "current-state"),
-            activeRuns: nil, pendingBoundary: []
-        )
+        try await saveStatus(at: firstLargeFolder, state: .failed, reason: "current-state")
         let currentInspect = try await inspect(core, context: context, folderID: firstLargeFolder.lastPathComponent)
         #expect(currentInspect.statusText == "再処理が必要: current-state")
         let snapshotSecond = try await list(core, context: context, cursor: firstNext, limit: 100)
@@ -958,13 +951,7 @@ private actor PresentationDecisionProvider: DecisionProvider {
             in: oversizedHarness, source: .imported(originalFilename: "too-large.wav"),
             createdAt: Date(timeIntervalSince1970: 1_700_500_000), includeImportedOriginal: true
         )
-        try saveMetadata(
-            at: oversized,
-            attempt: FinalizationAttempt(
-                attemptID: "oversized", state: .failed, failureReason: String(repeating: "あ", count: 400_000)
-            ),
-            activeRuns: nil, pendingBoundary: []
-        )
+        try await saveStatus(at: oversized, state: .failed, reason: String(repeating: "あ", count: 400_000))
         do {
             _ = try await list(
                 oversizedHarness.app.core, context: requestContext(for: oversizedHarness), cursor: nil, limit: 100
@@ -1014,13 +1001,20 @@ private actor PresentationDecisionProvider: DecisionProvider {
 
     private func writeTranscriptHistory(at sessionURL: URL, sessionID: UUID, segmentCount: Int) async throws {
         let layout = SessionLayout(sessionURL: sessionURL)
+        let frameCount = Int64(segmentCount * 1_000)
         try SessionAudioStorageStore(layout: layout).save(.importedOriginal(
-            try TimelineAudioInfo(committedFrames: Int64(segmentCount * 1_000), gapEvents: [])
+            try TimelineAudioInfo(committedFrames: frameCount, gapEvents: [])
         ))
         let writer = try SessionWriter(sessionURL: sessionURL)
         let segmentation = "history-seg"
         let asr = "history-asr"
+        let runs = ActiveRuns(segmentation: segmentation, asr: asr)
         let provenance = RunProvenance(engine: "host-test-history", model: nil, version: "1", configuration: [:])
+        let generation = PipelineGeneration(
+            id: UUID(), runs: runs, sampleRate: CanonicalAudio.sampleRate,
+            segmentationProvenance: provenance, asrProvenance: provenance
+        )
+        try await writer.append(generation.startEvent(sessionID: sessionID))
         try await writer.append(EventDraft(
             eventType: "processing.run.started", sessionID: sessionID, processingRunID: segmentation,
             payload: ProcessingRunStartedPayload(stage: .segmentation, provenance: provenance)
@@ -1030,21 +1024,28 @@ private actor PresentationDecisionProvider: DecisionProvider {
             payload: ProcessingRunStartedPayload(stage: .asr, provenance: provenance)
         ))
         for index in 0..<segmentCount {
-            let segmentID = "history-\(index)"
             let start = Int64(index * 1_000)
-            try await writer.append(EventDraft(
-                eventType: "segment.created", sessionID: sessionID, segmentationRunID: segmentation,
-                segmentID: segmentID, sourceStartFrame: start, sourceEndFrame: start + 900, payload: EmptyPayload()
-            ))
+            let segment = SegmentReference(
+                segmentationRunID: segmentation, segmentID: "history-\(index)", speechRanges: [start..<(start + 900)]
+            )
+            try await writer.append(EventDraft.segmentCreated(sessionID: sessionID, segment: segment))
             try await writer.append(EventDraft(
                 eventType: "asr.completed", sessionID: sessionID, processingRunID: asr,
-                segmentationRunID: segmentation, segmentID: segmentID,
-                sourceStartFrame: start, sourceEndFrame: start + 900,
+                segmentationRunID: segmentation, segmentID: segment.segmentID,
+                sourceStartFrame: segment.startFrame, sourceEndFrame: segment.endFrame,
                 payload: ASRCompletedEventPayload(
                     text: "履歴の文字起こし \(index)。", detectedLanguage: "ja", provenance: provenance
                 )
             ))
         }
+        try await writer.append(EventDraft(
+            eventType: "segmentation.input.sealed", sessionID: sessionID, segmentationRunID: segmentation,
+            payload: SegmentationInputSealedPayload(frameCount: frameCount)
+        ))
+        try await writer.append(EventDraft(
+            eventType: "segmentation.completed", sessionID: sessionID, segmentationRunID: segmentation,
+            payload: SegmentationCompletedPayload(consumedFrames: frameCount, segmentCount: segmentCount)
+        ))
         try await writer.append(EventDraft(
             eventType: "processing.run.completed", sessionID: sessionID, processingRunID: segmentation,
             payload: ProcessingRunCompletedPayload(stage: .segmentation, succeeded: true, completedCount: segmentCount, failedCount: 0)
@@ -1053,15 +1054,8 @@ private actor PresentationDecisionProvider: DecisionProvider {
             eventType: "processing.run.completed", sessionID: sessionID, processingRunID: asr,
             payload: ProcessingRunCompletedPayload(stage: .asr, succeeded: true, completedCount: segmentCount, failedCount: 0)
         ))
-        let activeRuns = ActiveRuns(segmentation: segmentation, asr: asr)
-        let recovered = try SessionRecovery.recoverJSONL(Data(contentsOf: layout.eventsURL))
-        let events = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: activeRuns)
-        let pendingBoundary = try events.compactMap { try $0.asrSource() }
-        try saveMetadata(
-            at: sessionURL,
-            attempt: FinalizationAttempt(attemptID: "history-complete", state: .complete, failureReason: nil),
-            activeRuns: activeRuns,
-            pendingBoundary: pendingBoundary
-        )
+        try ProcessingMetadataStore(sessionURL: sessionURL).save(ProcessingMetadata(
+            generationID: generation.id, state: .complete, failureReason: nil
+        ))
     }
 }

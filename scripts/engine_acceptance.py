@@ -864,14 +864,12 @@ def _validate_provenance(session_dir: Path) -> None:
         metadata = strict_json(metadata_path.read_bytes(), str(metadata_path))
     except OSError as error:
         raise AcceptanceError(f"cannot read processing metadata {metadata_path}: {error}") from error
-    if not isinstance(metadata, dict) or metadata.get("schema_version") != 3:
+    if (not isinstance(metadata, dict)
+            or set(metadata) != {"schema_version", "generation_id", "state"}
+            or metadata["schema_version"] != 4):
         raise AcceptanceError(f"processing metadata has an unexpected schema: {metadata!r}")
-    finalization = metadata.get("finalization_attempt")
-    active_runs = metadata.get("active_runs")
-    if not isinstance(finalization, dict) or finalization.get("state") != "complete":
-        raise AcceptanceError(f"processing metadata does not publish a completed finalization: {finalization!r}")
-    if not isinstance(active_runs, dict):
-        raise AcceptanceError("processing metadata does not publish active_runs")
+    if metadata["state"] != "complete":
+        raise AcceptanceError(f"processing metadata does not publish a completed state: {metadata['state']!r}")
 
     event_provenance: dict[tuple[str, str], str] = {}
     event_completion: set[tuple[str, str]] = set()
@@ -881,11 +879,27 @@ def _validate_provenance(session_dir: Path) -> None:
         raise AcceptanceError(f"cannot read processing event log {events_path}: {error}") from error
     if not event_data or not event_data.endswith(b"\n"):
         raise AcceptanceError("processing event log is empty or has a partial final record")
+    active_runs: dict[str, Any] | None = None
+    generation_id: Any = None
     for index, raw_line in enumerate(event_data.splitlines()):
         entry = strict_json(raw_line, f"{events_path} line {index + 1}")
-        if not isinstance(entry, dict) or entry.get("schema_version") != 3:
+        if not isinstance(entry, dict) or entry.get("schema_version") != 4:
             raise AcceptanceError(f"processing event line {index + 1} has an invalid envelope")
         event_type = entry.get("event_type")
+        if event_type == "pipeline.started":
+            payload = entry.get("payload")
+            if not isinstance(payload, dict) or not isinstance(payload.get("runs"), dict):
+                raise AcceptanceError(f"pipeline.started line {index + 1} lacks runs")
+            generation_id = payload.get("id")
+            active_runs = dict(payload["runs"])
+            continue
+        if event_type == "pipeline.decisions.replaced":
+            payload = entry.get("payload")
+            if active_runs is None or not isinstance(payload, dict) or not isinstance(payload.get("replacement"), dict):
+                raise AcceptanceError(f"pipeline.decisions.replaced line {index + 1} has no generation to replace in")
+            active_runs["clause_boundary"] = payload["replacement"].get("boundary")
+            active_runs["content_priority"] = payload["replacement"].get("priority")
+            continue
         run_id = entry.get("processing_run_id")
         payload = entry.get("payload")
         if event_type == "processing.run.started":
@@ -905,10 +919,12 @@ def _validate_provenance(session_dir: Path) -> None:
                 if isinstance(stage, str):
                     event_completion.add((stage, run_id))
 
+    if active_runs is None or metadata["generation_id"] != generation_id:
+        raise AcceptanceError("processing metadata generation_id differs from the latest pipeline.started")
     for stage, engine in EXPECTED_PROVENANCE.items():
         run_id = active_runs.get(stage)
         if not isinstance(run_id, str) or not run_id:
-            raise AcceptanceError(f"published active_runs has no {stage} run: {active_runs!r}")
+            raise AcceptanceError(f"pipeline.started has no {stage} run: {active_runs!r}")
         if event_provenance.get((stage, run_id)) != engine:
             raise AcceptanceError(
                 f"published {stage} run {run_id!r} has no actual {engine!r} processing.run.started provenance"

@@ -13,7 +13,8 @@ func everyFailedFinalPriorityBatchIsPendingOnItsOwnInBoundedBatches() async thro
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
     let raw = (1...81).map { "本文\($0)。" }.joined()
-    _ = try publishLocal(root: root, events: try await writeTranscript([raw], root: root, sessionID: id))
+    _ = try await writeTranscript([raw], root: root, sessionID: id)
+    try saveCompletedStatus(root: root, sessionID: id)
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: { _ in
         throw DecisionResponseError.missingAnswer
     })
@@ -46,7 +47,7 @@ func everyFailedFinalPriorityBatchIsPendingOnItsOwnInBoundedBatches() async thro
         return $0["needs_retry"] as? Bool == true
             && decision?["reason"] as? String == "request_failed"
     })
-    let saved = try readPublished(root: root)
+    let saved = try readPublished(root: root, sessionID: id)
     #expect(saved == result.materializedSegments)
     #expect(saved[0].clauseState == .priorityPending)
     #expect(saved[0].displayText == raw)
@@ -59,7 +60,8 @@ func failedPriorityRetryStopsAfterFirstBatchAndKeepsPublishedSnapshot() async th
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     let raw = (1...81).map { "本文\($0)。" }.joined()
-    _ = try publishLocal(root: root, events: try await writeTranscript([raw], root: root, sessionID: sessionID))
+    _ = try await writeTranscript([raw], root: root, sessionID: sessionID)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
     let initialProvider = ScriptedDecisionProvider(
         boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]),
         priority: { _ in throw DecisionResponseError.missingAnswer }
@@ -67,7 +69,7 @@ func failedPriorityRetryStopsAfterFirstBatchAndKeepsPublishedSnapshot() async th
     let initial = try await buildAndPublish(root: root, sessionID: sessionID, provider: initialProvider, scope: .all)
     #expect(initial.pendingPriorityClauses.count == 81)
     let publishedMetadata = try #require(try ProcessingMetadataStore(sessionURL: root).load())
-    let publishedTranscript = try readPublished(root: root)
+    let publishedTranscript = try readPublished(root: root, sessionID: sessionID)
 
     let failureMessage = "priority retry failed deterministically"
     let retryRunID = "priority_retry_failed"
@@ -87,7 +89,7 @@ func failedPriorityRetryStopsAfterFirstBatchAndKeepsPublishedSnapshot() async th
     #expect(await retryProvider.boundaryRequests.isEmpty)
     let afterFailureMetadata = try #require(try ProcessingMetadataStore(sessionURL: root).load())
     #expect(afterFailureMetadata == publishedMetadata)
-    #expect(try readPublished(root: root) == publishedTranscript)
+    #expect(try readPublished(root: root, sessionID: sessionID) == publishedTranscript)
     let retryEvents = try eventObjects(root).filter { $0["processing_run_id"] as? String == retryRunID }
     #expect(retryEvents.filter { $0["event_type"] as? String == "processing.run.started" }.count == 1)
     #expect(!retryEvents.contains { $0["event_type"] as? String == ClauseEventType.priorityAssigned })
@@ -106,7 +108,7 @@ func failedBoundaryRetryStopsAtTheFirstRequestedFailureAndKeepsPublishedSnapshot
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     let events = try await writeTranscript(["前。続く", "後。"], root: root, sessionID: sessionID)
-    _ = try publishLocal(root: root, events: events)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
     let initialProvider = ScriptedDecisionProvider(boundary: { request in
         if request.source.segmentID == "s01" {
             throw DecisionResponseError.missingAnswer
@@ -117,7 +119,7 @@ func failedBoundaryRetryStopsAtTheFirstRequestedFailureAndKeepsPublishedSnapshot
     #expect(initial.pendingBoundarySegments == [try source("s01", in: events)])
     #expect(try source("s02", in: events).segmentID == "s02")
     let publishedMetadata = try #require(try ProcessingMetadataStore(sessionURL: root).load())
-    let publishedTranscript = try readPublished(root: root)
+    let publishedTranscript = try readPublished(root: root, sessionID: sessionID)
 
     let failureMessage = "boundary retry failed deterministically"
     let retryRunID = "boundary_retry_failed"
@@ -137,7 +139,7 @@ func failedBoundaryRetryStopsAtTheFirstRequestedFailureAndKeepsPublishedSnapshot
     #expect(await retryProvider.priorityRequests.isEmpty)
     let afterFailureMetadata = try #require(try ProcessingMetadataStore(sessionURL: root).load())
     #expect(afterFailureMetadata == publishedMetadata)
-    #expect(try readPublished(root: root) == publishedTranscript)
+    #expect(try readPublished(root: root, sessionID: sessionID) == publishedTranscript)
     let retryEvents = try eventObjects(root).filter { $0["processing_run_id"] as? String == retryRunID }
     #expect(retryEvents.filter { $0["event_type"] as? String == "processing.run.started" }.count == 1)
     #expect(!retryEvents.contains { $0["event_type"] as? String == ClauseEventType.priorityAssigned })
@@ -156,7 +158,7 @@ func failedBoundaryRebuildThenPriorityFailureEndsBothRunsAndPreservesSnapshot() 
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     let events = try await writeTranscript(["本文。"], root: root, sessionID: sessionID)
-    _ = try publishLocal(root: root, events: events)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
     let initialProvider = ScriptedDecisionProvider(
         boundary: { _ in throw DecisionResponseError.missingAnswer },
         priority: lowForBackchannel
@@ -165,7 +167,7 @@ func failedBoundaryRebuildThenPriorityFailureEndsBothRunsAndPreservesSnapshot() 
     #expect(initial.pendingBoundarySegments.count == 1)
     #expect(initial.pendingPriorityClauses.isEmpty)
     let publishedMetadata = try #require(try ProcessingMetadataStore(sessionURL: root).load())
-    let publishedTranscript = try readPublished(root: root)
+    let publishedTranscript = try readPublished(root: root, sessionID: sessionID)
 
     let failureMessage = "priority retry after boundary rebuild failed deterministically"
     let boundaryRetryRunID = "boundary_retry_before_priority_failure"
@@ -188,7 +190,7 @@ func failedBoundaryRebuildThenPriorityFailureEndsBothRunsAndPreservesSnapshot() 
     #expect(await retryProvider.boundaryRequests.count == 1)
     #expect(await retryProvider.priorityRequests.map(\.count) == [1])
     #expect(try #require(try ProcessingMetadataStore(sessionURL: root).load()) == publishedMetadata)
-    #expect(try readPublished(root: root) == publishedTranscript)
+    #expect(try readPublished(root: root, sessionID: sessionID) == publishedTranscript)
     let retryEvents = try eventObjects(root).filter {
         let runID = $0["processing_run_id"] as? String
         return runID == boundaryRetryRunID || runID == priorityRetryRunID
@@ -280,7 +282,7 @@ func cancelledFailureCleanupClosesBoundaryAndPriorityRuns() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     let events = try await writeTranscript(["本文。"], root: root, sessionID: sessionID)
-    _ = try publishLocal(root: root, events: events)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
     let initialProvider = ScriptedDecisionProvider(
         boundary: { _ in throw DecisionResponseError.missingAnswer },
         priority: lowForBackchannel
@@ -289,9 +291,10 @@ func cancelledFailureCleanupClosesBoundaryAndPriorityRuns() async throws {
     #expect(initial.pendingBoundarySegments.count == 1)
     #expect(initial.pendingPriorityClauses.isEmpty)
     let publishedMetadata = try #require(try ProcessingMetadataStore(sessionURL: root).load())
-    let publishedTranscript = try readPublished(root: root)
-    let activeRuns = try requireValue(publishedMetadata.activeRuns)
-    let existingEvents = try EventLogTranscriptReader().events(lines: eventLines(root), activeRuns: activeRuns)
+    let publishedTranscript = try readPublished(root: root, sessionID: sessionID)
+    let stored = try readStored(root: root, sessionID: sessionID)
+    let activeRuns = stored.state.runs
+    let existingEvents = stored.events
 
     let failureMessage = "priority retry after boundary rebuild failed deterministically"
     let boundaryRetryRunID = "boundary_retry_cancelled_cleanup"
@@ -364,9 +367,9 @@ func cancelledFailureCleanupClosesBoundaryAndPriorityRuns() async throws {
         priorityRetryRunID: ProcessingStage.contentPriority.rawValue,
     ])
     #expect(try #require(try ProcessingMetadataStore(sessionURL: root).load()) == publishedMetadata)
-    let displayedAfterRetry = try readPublished(root: root)
+    let displayedAfterRetry = try readPublished(root: root, sessionID: sessionID)
     #expect(displayedAfterRetry.map(\.displayText) == publishedTranscript.map(\.displayText))
-    #expect(try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: eventLines(root), activeRuns: activeRuns) == false)
+    #expect(try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: eventLines(root), sessionID: sessionID) == false)
 }
 
 private actor PriorityAvailabilityGate {
@@ -427,7 +430,8 @@ func failedBoundaryRequestLeavesOnlyItsSourcePendingAndPrioritiesContinue() asyn
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
     let raw = (1...81).map { "本文\($0)。" }.joined()
-    _ = try publishLocal(root: root, events: try await writeTranscript([raw, "後続。失敗"], root: root, sessionID: id))
+    _ = try await writeTranscript([raw, "後続。失敗"], root: root, sessionID: id)
+    try saveCompletedStatus(root: root, sessionID: id)
     let provider = ScriptedDecisionProvider(boundary: { request in
         if request.source.segmentID == "s02" { throw DecisionResponseError.missingAnswer }
         return try punctuationBoundaries(continuing: [], fillerRangesBySegment: [:])(request)
@@ -446,7 +450,7 @@ func failedBoundaryRequestLeavesOnlyItsSourcePendingAndPrioritiesContinue() asyn
     #expect(result.pendingPriorityClauses.isEmpty)
     #expect(await provider.boundaryRequests.map(\.source.segmentID) == ["s01", "s02"])
     #expect(await provider.priorityRequests.map(\.count) == [40, 40, 1])
-    #expect(try readPublished(root: root).map(\.clauseState) == [.classified, .boundaryPending])
+    #expect(try readPublished(root: root, sessionID: id).map(\.clauseState) == [.classified, .boundaryPending])
 }
 
 @Test

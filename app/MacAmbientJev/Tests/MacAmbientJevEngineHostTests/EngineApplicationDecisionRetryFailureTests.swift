@@ -353,9 +353,9 @@ private final class DecisionRetryFailureApplicationHarness {
             #expect(finalized.sessionID == imported.sessionID)
 
             let sessionURL = harness.paths.sessionsRoot.appending(path: finalized.folderID, directoryHint: .isDirectory)
-            let metadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
-            #expect(metadata.pendingClauseBoundarySegments.isEmpty)
-            #expect(metadata.pendingContentPriorityClauses.count == 1)
+            let pending = try pendingDecisions(sessionURL: sessionURL)
+            #expect(pending.boundarySegments.isEmpty)
+            #expect(pending.clauses.count == 1)
 
             await inference.tagger.configureRetryFailure()
             var commandFailure: EngineFailure?
@@ -409,8 +409,8 @@ private final class DecisionRetryFailureApplicationHarness {
                 .filter { $0.manifest.sessionID == actualSessionID }
                 .map { SessionRecoveryPlan($0.action) }
             #expect(startupSessionPlans == [.retryContentPriority(
-                boundarySegments: metadata.pendingClauseBoundarySegments,
-                clauses: metadata.pendingContentPriorityClauses
+                boundarySegments: pending.boundarySegments,
+                clauses: pending.clauses
             )])
             let sessionLaunchRequests = startupSessionPlans.compactMap {
                 $0.launchRecoveryRequest(sessionID: actualSessionID)
@@ -424,7 +424,7 @@ private final class DecisionRetryFailureApplicationHarness {
                 payload: ProcessingRunStartedPayload(
                     stage: .contentPriority,
                     provenance: DecisionRunProvenance.priority(
-                        mode: "retry", identity: inference.identity.decisionIdentity
+                        identity: inference.identity.decisionIdentity
                     )
                 )
             ))
@@ -436,8 +436,8 @@ private final class DecisionRetryFailureApplicationHarness {
                     return false
                 }
                 return sessionID == actualSessionID
-                    && boundarySegments == metadata.pendingClauseBoundarySegments
-                    && clauses == metadata.pendingContentPriorityClauses
+                    && boundarySegments == pending.boundarySegments
+                    && clauses == pending.clauses
             }())
             _ = try await harness.shutdown()
         } catch {
@@ -478,8 +478,9 @@ private final class DecisionRetryFailureApplicationHarness {
 
             let sessionURL = harness.paths.sessionsRoot.appending(path: finalized.folderID, directoryHint: .isDirectory)
             let metadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
-            #expect(metadata.pendingClauseBoundarySegments.isEmpty)
-            #expect(metadata.pendingContentPriorityClauses.count == 1)
+            let pending = try pendingDecisions(sessionURL: sessionURL)
+            #expect(pending.boundarySegments.isEmpty)
+            #expect(pending.clauses.count == 1)
 
             await inference.tagger.configureRetrySuspension(gate)
             let importedSessionID = try #require(UUID(uuidString: imported.sessionID))
@@ -524,8 +525,8 @@ private final class DecisionRetryFailureApplicationHarness {
             let cancellationInspection = try SessionRecoveryScanner(sessionsRoot: harness.paths.sessionsRoot)
                 .inspect(sessionID: importedSessionID)
             #expect(cancellationInspection.recovery?.action == .recoverDecisionRun(
-                boundarySegments: metadata.pendingClauseBoundarySegments,
-                clauses: metadata.pendingContentPriorityClauses
+                boundarySegments: pending.boundarySegments,
+                clauses: pending.clauses
             ))
             let eventLines = try String(
                 contentsOf: SessionLayout(sessionURL: sessionURL).eventsURL, encoding: .utf8
@@ -652,8 +653,8 @@ private final class DecisionRetryFailureApplicationHarness {
                 .filter { $0.manifest.sessionID == importedSessionID }
                 .map { SessionRecoveryPlan($0.action) }
             #expect(startupPlans == [.retryContentPriority(
-                boundarySegments: prepared.metadata.pendingClauseBoundarySegments,
-                clauses: prepared.metadata.pendingContentPriorityClauses
+                boundarySegments: prepared.pending.boundarySegments,
+                clauses: prepared.pending.clauses
             )])
             #expect(startupPlans.compactMap { $0.launchRecoveryRequest(sessionID: importedSessionID) }.isEmpty)
             _ = try await harness.shutdown()
@@ -764,8 +765,8 @@ private final class DecisionRetryFailureApplicationHarness {
             let inspection = try scanner.inspect(sessionID: importedSessionID)
             let recoveryPlan = SessionRecoveryPlan(inspection.recovery?.action)
             #expect(recoveryPlan == .recoverDecisionRun(
-                boundarySegments: prepared.metadata.pendingClauseBoundarySegments,
-                clauses: prepared.metadata.pendingContentPriorityClauses
+                boundarySegments: prepared.pending.boundarySegments,
+                clauses: prepared.pending.clauses
             ))
             let launchRequest = recoveryPlan.launchRecoveryRequest(sessionID: importedSessionID)
             #expect({
@@ -773,8 +774,8 @@ private final class DecisionRetryFailureApplicationHarness {
                     return false
                 }
                 return sessionID == importedSessionID
-                    && boundarySegments == prepared.metadata.pendingClauseBoundarySegments
-                    && clauses == prepared.metadata.pendingContentPriorityClauses
+                    && boundarySegments == prepared.pending.boundarySegments
+                    && clauses == prepared.pending.clauses
             }())
             _ = try await harness.shutdown()
         } catch {
@@ -796,7 +797,7 @@ private final class DecisionRetryFailureApplicationHarness {
         inference: DecisionRetryFailureInference,
         root: URL,
         writerMode: DecisionRetryFailureWriterMode
-    ) async throws -> (sessionID: String, sessionURL: URL, metadata: ProcessingMetadata) {
+    ) async throws -> (sessionID: String, sessionURL: URL, metadata: ProcessingMetadata, pending: DecisionRetryTargets) {
         _ = try await harness.call("hello")
         _ = try await harness.call(
             "settings.replace", payload: settingsPayload(try engineTestSettings(decisions: true))
@@ -819,8 +820,9 @@ private final class DecisionRetryFailureApplicationHarness {
             path: finalized.folderID, directoryHint: .isDirectory
         )
         let metadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
-        #expect(metadata.pendingClauseBoundarySegments.isEmpty)
-        #expect(metadata.pendingContentPriorityClauses.count == 1)
+        let pending = try pendingDecisions(sessionURL: sessionURL)
+        #expect(pending.boundarySegments.isEmpty)
+        #expect(pending.clauses.count == 1)
 
         let bundle = try inference.makeInference(settings: try engineTestSettings(decisions: true))
         let processor = NativeSessionProcessor(
@@ -835,7 +837,7 @@ private final class DecisionRetryFailureApplicationHarness {
         )
         harness.app.core.gateway.install(processor, pacing: .normal)
         await inference.tagger.configureRetryFailure()
-        return (imported.sessionID, sessionURL, metadata)
+        return (imported.sessionID, sessionURL, metadata, pending)
     }
 
     private static func eventObjects(sessionURL: URL) throws -> [[String: Any]] {
@@ -851,14 +853,14 @@ private final class DecisionRetryFailureApplicationHarness {
     }
 
     private static func retryRunIDs(in events: [[String: Any]]) -> Set<String> {
-        Set(events.compactMap { event in
+        let initialPriorityRun = events.first { $0["event_type"] as? String == "pipeline.started" }
+            .flatMap { ($0["payload"] as? [String: Any])?["runs"] as? [String: String] }?["content_priority"]
+        return Set(events.compactMap { event in
             guard event["event_type"] as? String == "processing.run.started",
                   let payload = event["payload"] as? [String: Any],
                   payload["stage"] as? String == ProcessingStage.contentPriority.rawValue,
-                  let provenance = payload["provenance"] as? [String: Any],
-                  let configuration = provenance["configuration"] as? [String: String],
-                  configuration["mode"] == "retry",
-                  let runID = event["processing_run_id"] as? String else {
+                  let runID = event["processing_run_id"] as? String,
+                  runID != initialPriorityRun else {
                 return nil
             }
             return runID
@@ -922,4 +924,11 @@ private final class DecisionRetryFailureApplicationHarness {
             Issue.record("could not remove test root: \(error)")
         }
     }
+}
+
+func pendingDecisions(sessionURL: URL) throws -> DecisionRetryTargets {
+    let layout = SessionLayout(sessionURL: sessionURL)
+    return try #require(try EventLogTranscriptReader().read(
+        eventsURL: layout.eventsURL, sessionID: try layout.loadManifest().sessionID
+    )).pendingDecisions
 }

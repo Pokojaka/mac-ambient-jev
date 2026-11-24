@@ -40,10 +40,20 @@ public enum SessionStorageMaintenance: String, Sendable, Equatable {
         try storage.validate(for: manifest.source)
         switch storage {
         case .recordingPCM:
-            let published = try ProcessingMetadataStore(sessionURL: layout.sessionURL).load()?
-                .activeRuns != nil
-            if published, try layout.audioSource(for: manifest) != nil {
-                return .compactRecording
+            if let metadata = try ProcessingMetadataStore(sessionURL: layout.sessionURL).load(),
+               metadata.state == .complete {
+                let recovered = try SessionRecovery.recoverJSONL(
+                    SessionFileAccess.read(layout.eventsURL, relativeTo: layout.sessionURL)
+                )
+                if !recovered.droppedIncompleteTail,
+                   let state = try ProcessingLogState(lines: recovered.lines, sessionID: manifest.sessionID),
+                   metadata.generationID == state.generation.id,
+                   state.recognitionCompleted,
+                   case .recordedPCM(let checkpoint)? = try layout.audioSource(for: manifest),
+                   checkpoint.sampleRate == state.generation.sampleRate {
+                    try state.validateRecognitionCompletion(frameCount: checkpoint.committedFrames)
+                    return .compactRecording
+                }
             }
         case .recordingFLAC:
             if try SessionFileAccess.isDirectoryIfPresent(layout.processingDirectory, relativeTo: layout.sessionURL) != nil {

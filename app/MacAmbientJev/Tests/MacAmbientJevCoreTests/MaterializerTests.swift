@@ -435,7 +435,8 @@ func materializerProjectsOneCrossRowClauseWithoutChangingRawRowsOrTiming() async
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
-    _ = try publishLocal(root: root, events: try await writeTranscript(["えー、第一。うん", "えー、続き"], root: root, sessionID: id))
+    _ = try await writeTranscript(["えー、第一。うん", "えー、続き"], root: root, sessionID: id)
+    try saveCompletedStatus(root: root, sessionID: id)
     let result = try await buildAndPublish(
         root: root, sessionID: id,
         provider: ScriptedDecisionProvider(

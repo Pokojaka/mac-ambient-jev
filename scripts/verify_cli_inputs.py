@@ -56,33 +56,38 @@ with tempfile.TemporaryDirectory(prefix="mac-ambient-jev-cli-") as temporary:
         "source_kind": "recording", "capture_source": "systemAudio",
     }
     (session / "session.json").write_text(json.dumps(manifest))
-    events = []
+    generation_id = "9D1E7B0C-5A53-4E36-A0E8-0B1F6E8E3C11"
     active_runs = {"segmentation": "fixture-seg", "asr": "fixture-asr"}
+    fixture_provenance = {"engine": "fixture", "model": None, "version": "test", "configuration": {}}
+    events = []
+
+    def add_event(event_type, payload, **ids):
+        events.append({
+            "event_seq": len(events) + 1,
+            "event_id": f"75AC3491-986E-4F0A-8697-E9181B09{len(events) + 1:04X}",
+            "event_type": event_type, "schema_version": 4, "session_id": session_id,
+            "created_at": "2024-03-01T00:00:00Z", "payload": payload, **ids,
+        })
+
+    add_event("pipeline.started", {
+        "id": generation_id, "runs": active_runs, "sample_rate": 16000.0,
+        "segmentation_provenance": fixture_provenance, "asr_provenance": fixture_provenance,
+    })
+    seg_run, asr_run = active_runs["segmentation"], active_runs["asr"]
+    add_event("processing.run.started", {"stage": "segmentation", "provenance": fixture_provenance},
+              processing_run_id=seg_run)
+    add_event("segmentation.input.sealed", {"frame_count": 0}, segmentation_run_id=seg_run)
+    add_event("segmentation.completed", {"consumed_frames": 0, "segment_count": 0}, segmentation_run_id=seg_run)
+    add_event("processing.run.started", {"stage": "asr", "provenance": fixture_provenance},
+              processing_run_id=asr_run)
     for stage, run_id in active_runs.items():
-        for event_type, payload in [
-            ("processing.run.started", {
-                "stage": stage,
-                "provenance": {"engine": "fixture", "model": None, "version": "test", "configuration": {}},
-            }),
-            ("processing.run.completed", {
-                "stage": stage, "succeeded": True, "completed_count": 0, "failed_count": 0,
-            }),
-        ]:
-            events.append({
-                "event_seq": len(events) + 1,
-                "event_id": f"75AC3491-986E-4F0A-8697-E9181B0910D{len(events)}",
-                "event_type": event_type, "schema_version": 3, "session_id": session_id,
-                "processing_run_id": run_id, "created_at": "2024-03-01T00:00:00Z", "payload": payload,
-            })
+        add_event("processing.run.completed", {
+            "stage": stage, "succeeded": True, "completed_count": 0, "failed_count": 0,
+        }, processing_run_id=run_id)
     event_path = session / "events.jsonl"
     event_bytes = "".join(json.dumps(event) + "\n" for event in events)
     event_path.write_text(event_bytes)
-    metadata = {
-        "schema_version": 3,
-        "finalization_attempt": {"attempt_id": "fixture-attempt", "state": "complete", "failure_reason": None},
-        "active_runs": active_runs,
-        "pending_clause_boundary_segments": [], "pending_content_priority_clauses": [],
-    }
+    metadata = {"schema_version": 4, "generation_id": generation_id, "state": "complete"}
     metadata_path = session / "processing_metadata.json"
     metadata_path.write_text(json.dumps(metadata))
     (session / "audio").mkdir()
@@ -92,7 +97,7 @@ with tempfile.TemporaryDirectory(prefix="mac-ambient-jev-cli-") as temporary:
     assert valid.returncode == 0, valid.stderr
     assert json.loads(valid.stdout) == {"session_id": session_id, "action": "none", "maintenance": None}, valid.stdout
 
-    schema_cases = [("unsupported", 2), ("invalid type", "3"), ("boolean", True), ("missing", None)]
+    schema_cases = [("unsupported", 3), ("invalid type", "4"), ("boolean", True), ("missing", None)]
     for label, version in schema_cases:
         invalid_metadata = dict(metadata)
         if label == "missing":

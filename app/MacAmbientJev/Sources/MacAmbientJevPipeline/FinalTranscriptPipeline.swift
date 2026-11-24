@@ -18,324 +18,134 @@ public protocol FinalTranscriptVADSegmenter: Sendable {
     ) async throws -> [SegmentReference]
 }
 
-struct FinalTranscriptPipelineResult: Sendable {
-    let activeRuns: ActiveRuns
-    let materializedSegments: [MaterializedTranscriptSegment]
-    let completedCount: Int
-    let metrics: ASRBatchMetrics
-}
+enum StoredSegmentationError: Error, LocalizedError {
+    case invalidSegment(String)
+    case segmentPrefixMismatch(String)
 
-enum FinalTranscriptPipelineOutcome: Sendable {
-    case completed(FinalTranscriptPipelineResult)
-    /// ASR stopped before every segment was transcribed; nothing was published.
-    case paused(metrics: ASRBatchMetrics, reason: InferenceHoldReason)
-}
-
-/// Cancellation with the ASR metrics gathered before it (nil when ASR never started).
-struct FinalTranscriptPipelineCancellation: Error {
-    let metrics: ASRBatchMetrics?
-}
-
-/// A pipeline failure with the ASR metrics gathered before it (nil when ASR never started).
-struct FinalTranscriptPipelineFailure: Error, LocalizedError {
-    let message: String
-    let metrics: ASRBatchMetrics?
-
-    var errorDescription: String? { message }
-}
-
-public enum FinalTranscriptPipelineError: LocalizedError {
-    case missingRunEvent(eventType: String, stage: ProcessingStage, runID: String)
-    case invalidVADRange(String)
-    case persistedSegmentsMismatch(String)
-
-    public var errorDescription: String? {
+    var errorDescription: String? {
         switch self {
-        case let .missingRunEvent(eventType, stage, runID):
-            "\(stage.rawValue) run \(runID) の \(eventType) を確認できません"
-        case let .invalidVADRange(segmentID):
-            "VAD 区間 \(segmentID) の範囲が不正です"
-        case let .persistedSegmentsMismatch(runID):
-            "segmentation run \(runID) の保存済み区間が一致しません"
+        case .invalidSegment(let id): "VAD 区間 \(id) の範囲または順序が不正です"
+        case .segmentPrefixMismatch(let runID): "segmentation run \(runID) の保存済み区間が再生成結果と一致しません"
         }
     }
 }
 
-struct FinalTranscriptPipeline: Sendable {
-    let sessionID: UUID
-    let sessionURL: URL
-    let audio: any TimelineAudioReading
-    let asr: any ASREngine
-    let vadSegmenter: any FinalTranscriptVADSegmenter
-    let sleep: @Sendable (Duration) async throws -> Void
-
-    /// - Throws: `FinalTranscriptPipelineCancellation` or `FinalTranscriptPipelineFailure`.
-    func process(
-        onStatus: @escaping NativeSessionProcessor.StatusHandler,
-        pacingMode: ASRPacingMode,
-        shouldPause: @escaping NativeSessionProcessor.PauseCheck,
-        onPhase: @escaping @Sendable (RunPhase) async -> Void
-    ) async throws -> FinalTranscriptPipelineOutcome {
-        var asrMetrics: ASRBatchMetrics?
-        do {
-            try Task.checkCancellation()
-            return try await run(
-                onStatus: onStatus,
-                pacingMode: pacingMode,
-                shouldPause: shouldPause,
-                onPhase: onPhase,
-                asrMetrics: &asrMetrics
-            )
-        } catch let cancellation as ASRRunCancellation {
-            throw FinalTranscriptPipelineCancellation(metrics: cancellation.metrics)
-        } catch is CancellationError {
-            throw FinalTranscriptPipelineCancellation(metrics: asrMetrics)
-        } catch let cancellation as FinalTranscriptPipelineCancellation {
-            throw cancellation
-        } catch {
-            if Task.isCancelled {
-                throw FinalTranscriptPipelineCancellation(metrics: asrMetrics)
-            }
-            throw FinalTranscriptPipelineFailure(
-                message: error.localizedDescription,
-                metrics: asrMetrics
+enum StoredSegmentation {
+    static func finish(
+        state: ProcessingLogState,
+        sessionID: UUID,
+        audio: any TimelineAudioReading,
+        segmenter: any FinalTranscriptVADSegmenter,
+        writer: SessionWriter
+    ) async throws {
+        let generationID = state.generation.id
+        let runID = state.segmentationRunID
+        let frameCount = audio.info.committedFrames
+        guard audio.info.sampleRate == state.generation.sampleRate,
+              segmenter.provenance == state.generation.segmentationProvenance else {
+            throw ProcessingLogStateError.incompatibleSettings
+        }
+        guard frameCount >= state.consumedFrames else {
+            throw SegmentationConsistencyError.inputFrameCountMismatch(
+                expected: state.consumedFrames, actual: frameCount
             )
         }
-    }
+        if let sealedFrames = state.sealedFrames, sealedFrames != frameCount {
+            throw SegmentationConsistencyError.inputFrameCountMismatch(
+                expected: sealedFrames, actual: frameCount
+            )
+        }
 
-    private func run(
-        onStatus: @escaping NativeSessionProcessor.StatusHandler,
-        pacingMode: ASRPacingMode,
-        shouldPause: @escaping NativeSessionProcessor.PauseCheck,
-        onPhase: @escaping @Sendable (RunPhase) async -> Void,
-        asrMetrics: inout ASRBatchMetrics?
-    ) async throws -> FinalTranscriptPipelineOutcome {
-        let info = audio.info
-        let materializer = TranscriptMaterializer(sampleRate: info.sampleRate)
-        let writer = try SessionWriter(sessionURL: sessionURL)
-        let segmentationRunID = "seg_final_\(UUID().uuidString.lowercased())"
-        let asrRunID = "asr_final_\(UUID().uuidString.lowercased())"
-
-        func startRun(_ stage: ProcessingStage, _ runID: String, _ provenance: RunProvenance) async throws {
-            try Task.checkCancellation()
+        if state.runStarts[.segmentation] == nil {
             try await writer.append(EventDraft(
-                eventType: "processing.run.started",
-                sessionID: sessionID,
-                processingRunID: runID,
-                payload: ProcessingRunStartedPayload(stage: stage, provenance: provenance)
+                eventType: "processing.run.started", sessionID: sessionID, processingRunID: runID,
+                payload: ProcessingRunStartedPayload(
+                    stage: .segmentation, provenance: state.generation.segmentationProvenance
+                )
             ))
-            try Task.checkCancellation()
         }
 
-        await onStatus(.activity(.detectingSpeech))
-        try await startRun(.segmentation, segmentationRunID, vadSegmenter.provenance)
-        let vadSegments = try await vadSegmenter.segment(reader: audio, runID: segmentationRunID)
-        try validateVADSegments(vadSegments, runID: segmentationRunID)
+        let segmentCount: Int
+        var runCompletionMissing = state.runCompletions[.segmentation] == nil
+        if state.segmentationCompleted {
+            segmentCount = state.segments.count
+        } else {
+            if state.sealedFrames == nil {
+                try await writer.append(EventDraft(
+                    eventType: "segmentation.input.sealed", sessionID: sessionID,
+                    segmentationRunID: runID,
+                    payload: SegmentationInputSealedPayload(frameCount: frameCount)
+                ))
+            }
 
-        var transcriptEvents: [TranscriptEvent] = []
+            let generated = try await segmenter.segment(reader: audio, runID: runID)
+            try validate(generated, runID: runID, frameCount: frameCount)
+            guard generated.count >= state.segments.count,
+                  Array(generated.prefix(state.segments.count)) == state.segments else {
+                throw StoredSegmentationError.segmentPrefixMismatch(runID)
+            }
 
-        if !vadSegments.isEmpty {
-            await onStatus(.activity(.preparingASR))
+            // The segmenter may suspend while another writer advances the durable prefix.
+            let durable = try await currentState(sessionID: sessionID, generationID: generationID, writer: writer)
+            guard durable.sealedFrames == frameCount,
+                  durable.segments.count >= state.segments.count,
+                  durable.segments.count <= generated.count,
+                  Array(generated.prefix(durable.segments.count)) == durable.segments else {
+                throw StoredSegmentationError.segmentPrefixMismatch(runID)
+            }
+            runCompletionMissing = durable.runCompletions[.segmentation] == nil
+            if durable.segmentationCompleted {
+                guard durable.segments == generated else {
+                    throw StoredSegmentationError.segmentPrefixMismatch(runID)
+                }
+                segmentCount = durable.segments.count
+            } else {
+                for segment in generated.dropFirst(durable.segments.count) {
+                    try await writer.append(.segmentCreated(sessionID: sessionID, segment: segment))
+                }
+                try await writer.append(EventDraft(
+                    eventType: "segmentation.completed", sessionID: sessionID,
+                    segmentationRunID: runID,
+                    payload: SegmentationCompletedPayload(consumedFrames: frameCount, segmentCount: generated.count)
+                ))
+                segmentCount = generated.count
+            }
         }
-        try await startRun(.asr, asrRunID, asr.provenance)
-        var pendingSince: [String: Date] = [:]
-        for segment in vadSegments {
-            try Task.checkCancellation()
-            let created = try await writer.append(.segmentCreated(
-                sessionID: sessionID,
-                segment: segment
+
+        if runCompletionMissing {
+            try await writer.append(EventDraft(
+                eventType: "processing.run.completed", sessionID: sessionID, processingRunID: runID,
+                payload: ProcessingRunCompletedPayload(
+                    stage: .segmentation, succeeded: true, completedCount: segmentCount, failedCount: 0
+                )
             ))
-            try Task.checkCancellation()
-            transcriptEvents.append(.segmentCreated(
-                seq: created.eventSeq,
-                segmentationRunID: segmentationRunID,
-                segmentID: segment.segmentID,
-                startFrame: segment.startFrame,
-                endFrame: segment.endFrame
-            ))
-            try Task.checkCancellation()
-            let pending = try await writer.append(EventDraft(
-                eventType: "asr.pending",
-                sessionID: sessionID,
-                processingRunID: asrRunID,
-                segmentationRunID: segmentationRunID,
-                segmentID: segment.segmentID,
-                sourceStartFrame: segment.startFrame,
-                sourceEndFrame: segment.endFrame,
-                payload: EmptyPayload()
-            ))
-            try Task.checkCancellation()
-            pendingSince[segment.segmentID] = pending.createdAt
         }
-        try Task.checkCancellation()
-        try await writer.append(EventDraft(
-            eventType: "processing.run.completed",
-            sessionID: sessionID,
-            processingRunID: segmentationRunID,
-            payload: ProcessingRunCompletedPayload(
-                stage: .segmentation,
-                succeeded: true,
-                completedCount: vadSegments.count,
-                failedCount: 0
-            )
-        ))
-        try Task.checkCancellation()
-        let asrCoordinator = PipelineCoordinator(
-            sessionID: sessionID,
-            segmentationRunID: segmentationRunID,
-            asrRunID: asrRunID,
-            writer: writer,
-            asr: asr,
-            loader: ASRAudioLoader(reader: audio),
-            pacingMode: pacingMode,
-            sleep: sleep,
-            shouldPause: shouldPause
-        )
-        await onPhase(.asr)
-        let asrResult = try await asrCoordinator.run(
-            segments: vadSegments,
-            pendingSince: pendingSince,
-            existingEvents: transcriptEvents
-        )
-        asrMetrics = asrResult.metrics
-        try Task.checkCancellation()
-        switch asrResult.disposition {
-        case .completed:
-            break
-        case .paused(let reason):
-            return .paused(metrics: asrResult.metrics, reason: reason)
-        case .failed(let failure):
-            throw failure
-        }
-        transcriptEvents = asrResult.events
-
-        await onPhase(.postprocessing)
-        let activeRuns = ActiveRuns(
-            segmentation: segmentationRunID,
-            asr: asrRunID
-        )
-
-        try validatePersistedRuns(
-            segmentationRunID: segmentationRunID,
-            segments: vadSegments,
-            expected: [
-                (.segmentation, segmentationRunID),
-                (.asr, asrRunID)
-            ]
-        )
-
-        let materializedSegments = try materializer.materialize(
-            events: transcriptEvents,
-            activeRuns: activeRuns
-        )
-        try Task.checkCancellation()
-        return .completed(FinalTranscriptPipelineResult(
-            activeRuns: activeRuns,
-            materializedSegments: materializedSegments,
-            completedCount: asrResult.completedCount,
-            metrics: asrResult.metrics
-        ))
     }
 
-    private func validateVADSegments(
-        _ segments: [SegmentReference],
-        runID: String
-    ) throws {
-        var ids = Set<String>()
+    private static func validate(_ segments: [SegmentReference], runID: String, frameCount: Int64) throws {
+        var ids: Set<String> = []
+        var previousEnd: Int64 = 0
         for segment in segments {
             guard segment.segmentationRunID == runID,
-                  segment.segmentID.isEmpty == false,
+                  !segment.segmentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   ids.insert(segment.segmentID).inserted,
-                  segment.endFrame <= audio.info.committedFrames else {
-                throw FinalTranscriptPipelineError.invalidVADRange(segment.segmentID)
+                  SegmentReference.isValid(segment.speechRanges),
+                  segment.endFrame <= frameCount,
+                  segment.startFrame >= previousEnd else {
+                throw StoredSegmentationError.invalidSegment(segment.segmentID)
             }
+            previousEnd = segment.endFrame
         }
     }
 
-    private func validatePersistedRuns(
-        segmentationRunID: String,
-        segments: [SegmentReference],
-        expected: [(ProcessingStage, String)]
-    ) throws {
-        let eventData = try SessionFileAccess.read(SessionLayout(sessionURL: sessionURL).eventsURL, relativeTo: sessionURL)
-        let recovered = try SessionRecovery.recoverJSONL(eventData)
-        let objects = try recovered.lines.compactMap { line in
-            try JSONSerialization.jsonObject(with: line) as? [String: Any]
+    private static func currentState(
+        sessionID: UUID, generationID: UUID, writer: SessionWriter
+    ) async throws -> ProcessingLogState {
+        let eventsURL = await writer.eventsURL
+        guard let state = try ProcessingLogState(eventsURL: eventsURL, sessionID: sessionID),
+              state.generation.id == generationID else {
+            throw ProcessingLogStateError.missingGeneration
         }
-        struct RunEvent {
-            let eventType: String
-            let runID: String
-            let stage: String
-            let succeeded: Bool?
-            let completedCount: Int?
-        }
-        let runEvents = objects.compactMap { object -> RunEvent? in
-            guard let eventType = object["event_type"] as? String,
-                  eventType == "processing.run.started" || eventType == "processing.run.completed",
-                  let runID = object["processing_run_id"] as? String,
-                  let payload = object["payload"] as? [String: Any],
-                  let stage = payload["stage"] as? String else {
-                return nil
-            }
-            return RunEvent(
-                eventType: eventType,
-                runID: runID,
-                stage: stage,
-                succeeded: payload["succeeded"] as? Bool,
-                completedCount: payload["completed_count"] as? Int
-            )
-        }
-        for (stage, runID) in expected {
-            let ofRun = runEvents.filter { $0.runID == runID && $0.stage == stage.rawValue }
-            guard ofRun.filter({ $0.eventType == "processing.run.started" }).count == 1 else {
-                throw FinalTranscriptPipelineError.missingRunEvent(
-                    eventType: "processing.run.started", stage: stage, runID: runID
-                )
-            }
-            guard ofRun.contains(where: { $0.eventType == "processing.run.completed" && $0.succeeded == true }) else {
-                throw FinalTranscriptPipelineError.missingRunEvent(
-                    eventType: "processing.run.completed", stage: stage, runID: runID
-                )
-            }
-        }
-        let persisted = try objects.compactMap { object -> SegmentReference? in
-            guard object["event_type"] as? String == "segment.created",
-                  object["segmentation_run_id"] as? String == segmentationRunID else {
-                return nil
-            }
-            guard let segmentID = object["segment_id"] as? String,
-                  let startFrame = (object["source_start_frame"] as? NSNumber)?.int64Value,
-                  let endFrame = (object["source_end_frame"] as? NSNumber)?.int64Value,
-                  let payloadObject = object["payload"] as? [String: Any] else {
-                throw FinalTranscriptPipelineError.persistedSegmentsMismatch(segmentationRunID)
-            }
-            let payload: SegmentCreatedPayload
-            do {
-                let payloadData = try JSONSerialization.data(withJSONObject: payloadObject)
-                payload = try JSONDecoder().decode(SegmentCreatedPayload.self, from: payloadData)
-            } catch {
-                throw FinalTranscriptPipelineError.persistedSegmentsMismatch(segmentationRunID)
-            }
-            guard SegmentReference.isValid(payload.speechRanges) else {
-                throw FinalTranscriptPipelineError.persistedSegmentsMismatch(segmentationRunID)
-            }
-            let segment = SegmentReference(
-                segmentationRunID: segmentationRunID,
-                segmentID: segmentID,
-                speechRanges: payload.speechRanges
-            )
-            guard segment.startFrame == startFrame, segment.endFrame == endFrame else {
-                throw FinalTranscriptPipelineError.persistedSegmentsMismatch(segmentationRunID)
-            }
-            return segment
-        }
-        let completedCounts = runEvents.filter {
-            $0.eventType == "processing.run.completed"
-                && $0.runID == segmentationRunID
-                && $0.succeeded == true
-        }.map(\.completedCount)
-        guard persisted == segments, completedCounts == [segments.count] else {
-            throw FinalTranscriptPipelineError.persistedSegmentsMismatch(segmentationRunID)
-        }
+        return state
     }
 }

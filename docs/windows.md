@@ -466,7 +466,7 @@ Mac の [VADParityFixtureTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRu
 
 ## セッション全体のファイル処理 CLI
 
-`MacAmbientJevProcessRecording` は Linux / Windows 共通の portable CLI です。音声ファイルを session に import し、共通の [`SessionFileProcessingService`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/SessionFileProcessingService.swift) と [`FinalTranscriptPipeline`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/FinalTranscriptPipeline.swift) で full-session finalization を行います。処理順は VAD → ASR → clause decisions で、`ProcessingStage` は `segmentation`, `asr`, `clauseBoundary`, `contentPriority` です。session inspection と、中断した finalization / decisions の resume も利用できます。`MacAmbientJevTranscribeFile` は別の評価用 file-processing path です。
+`MacAmbientJevProcessRecording` は Linux / Windows 共通の portable CLI です。音声ファイルを session に import し、共通の [`NativeSessionProcessor`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/NativeSessionProcessor.swift) で VAD → ASR を行い、`--with-decisions` 指定時は clause decisions も実行します。`--resume-session` は最新 generation の不足作業を再開し、保存済みの成功結果を保持します。`--inspect-session` は read-only です。decision retry は新しい immutable run を追記し、既存 run を書き換えません。`MacAmbientJevTranscribeFile` は別の評価用 file-processing path です。
 
 ```text
 MacAmbientJevProcessRecording --sessions-root ROOT [--keep-session] [--low-heat] [--with-decisions] --threads N AUDIO [OUTPUT]

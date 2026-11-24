@@ -56,18 +56,12 @@ private struct SecureSessionFixture {
     #expect(throws: CocoaError.self) { _ = try fixture.layout.loadManifest() }
     #expect(throws: CocoaError.self) { _ = try store.load() }
     #expect(throws: CocoaError.self) {
-        try store.beginFinalization(attemptID: "attempt", policy: .replace)
-    }
-    #expect(throws: CocoaError.self) {
-        try store.save(ProcessingMetadata(
-            finalizationAttempt: nil, activeRuns: nil,
-            pendingClauseBoundarySegments: [], pendingContentPriorityClauses: []
-        ))
+        try store.save(ProcessingMetadata(generationID: UUID(), state: .running, failureReason: nil))
     }
     #expect(throws: CocoaError.self) {
         try SessionFileAccess.writeAtomically(Data(), to: fixture.layout.manifestURL, relativeTo: fixture.layout.sessionURL)
     }
-    #expect(try FileManager.default.destinationOfSymbolicLink(atPath: store.url.path) == destination)
+    #expect(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.layout.processingMetadataURL.path) == destination)
     #expect(try Data(contentsOf: fixture.sentinel) == fixture.original)
 }
 
@@ -155,8 +149,9 @@ private struct SecureSessionFixture {
     let recovered = try SessionRecovery.recoverJSONL(SessionWriter.readDurableLog(eventsURL: fixture.layout.eventsURL))
     #expect(recovered.lastEventSequence == 1)
     let metadata = ProcessingMetadataStore(sessionURL: fixture.layout.sessionURL)
-    try metadata.beginFinalization(attemptID: "attempt", policy: .reject)
-    #expect(try metadata.load()?.finalizationAttempt?.attemptID == "attempt")
+    let metadataValue = ProcessingMetadata(generationID: sessionID, state: .running, failureReason: nil)
+    try metadata.save(metadataValue)
+    #expect(try metadata.load() == metadataValue)
     try SessionAudioStorageStore(layout: fixture.layout).save(.recordingPCM)
     #expect(try SessionAudioStorageStore(layout: fixture.layout).load() == .recordingPCM)
     let audio = try DurableAudioWriter(directory: fixture.layout.processingDirectory, chunkDurationSeconds: 1, sessionURL: fixture.layout.sessionURL)

@@ -165,7 +165,7 @@ tagger は Core ML の出力ごとに、各確率が有限の閉区間 0..1 に�
 
 保留の状態表示は「発話文の判定を保留しました」です。モデルの初期化が失敗した場合は、その理由を添えて「発話文の判定を保留しました。判定エンジンを初期化できませんでした: …」と表示し、録音とライブ ASR は継続します。初期化失敗の理由は、後続区間の ASR が保存されて境界・優先度の保留状態が更新されても表示に残します。理由のない保留メッセージだけで上書きしません。保留イベントにも理由を保存し、実際に呼び出さなかった処理を判定リクエストとして計数しません。
 
-確定結果の保留は `processing_metadata.json` の `pending_clause_boundary_segments`（境界判定が未成立の区間）と `pending_content_priority_clauses`（優先度が未成立の発話文）に保存します。判定は同じ入力に同じ結果を返すため、起動時の復旧は保留を再試行しません。保留を再判定するのは利用者が設定の「保留中の判定を再試行」を押したときだけです。対象・公開済み run・引き継ぎ元を事前に検証し、不整合は明示エラーにします。
+確定結果の保留は、選択中の判定 run の `clause_boundaries.pending`（境界判定が未成立の区間）と、未成立の優先度の発話文を示す `content_priority.assigned` のイベントから読み取ります。判定は同じ入力に同じ結果を返すため、起動時の復旧は保留を再試行しません。保留を再判定するのは利用者が設定の「保留中の判定を再試行」を押したときだけです。対象・公開済み run・引き継ぎ元を事前に検証し、不整合は明示エラーにします。
 
 - **優先度だけの再試行**: 公開済みの境界判定 run をそのまま使い、指定した発話文だけを最大40件の batch で判定します。新しい優先度 run で、その他の発話文の判定を元 run・イベント・参照付きで引き継ぎます。指定しなかった保留は保留のまま引き継ぎます。
 - **境界を含む再試行**: 新しい境界判定 run を作り、公開済みの成功判定を元 run・イベント参照付きで引き継ぎ、保留区間だけを再判定します。全区間から発話文を組み直し、新 run の assessment と公開済み run それぞれの保存 F・B 除去範囲で各本文を投影してから、UTF-8 byte 列が完全一致する発話文の優先度を元参照の検証付きで引き継ぎます。parts の同一性は本文一致の代用にせず、各 run の投影後本文だけを照合します。新しく閉じた発話文と指定した保留だけを優先度判定します。ASR・VAD は再実行しません。
@@ -175,7 +175,7 @@ tagger は Core ML の出力ごとに、各確率が有限の閉区間 0..1 に�
 
 CancellationError または取り消し済み task を paused / held として扱い、cancelled warning「処理は中断されました。次回の起動時に再開できます」を通知するのは、durable outcome が成立する前で、失敗終了の cleanup を始める前に限ります。この場合は公開済みの保留を保持し、failed result、background `processing_failure` event、`state.failures` entry、失敗した run 完了イベントを作りません。成功 run の `processing.run.completed` だけでは snapshot の公開ではありません。metadata に新 snapshot が公開される前の中断は、公開済み snapshot を保ったまま保留・復旧の対象です。一方、snapshot の metadata 公開が成立した後は、その結果を completed とし、遅れて届く cancellation や設定変更・shutdown による pause で held / cancelled に戻したり `resumeHeld` で再実行したりしません。失敗終了 cleanup で全ての `succeeded: false` completion が durable に保存された場合も `.failed` を維持し、遅れて届く cancellation や設定変更・shutdown で held / cancelled に戻しません。判定失敗後の cleanup は開始直前に cancellation を一度だけ確認し、開始した後はキャンセルを再確認せず新規 run の失敗完了を保存します。保存時の実 I/O error はキャンセル状態でも失敗として伝播します。provider factory 自身は load closure が throw した CancellationError も factory の寿命中 cache して失敗として返しますが、判定再試行は上記の時点に応じて cancellation を解釈します。factory の cache 規則は変わりません。
 
-新しい境界・優先度 run と保留一覧は、判定再試行の全 snapshot の構築・materialization が成功した後に、一回の metadata 書き込みで公開します。再試行中に得た部分結果はすべて破棄し、失敗時は置換 snapshot を公開せず、既存の snapshot・`active_runs`・保留 metadata を変更しません。run event の保存・完了と metadata 公開の扱い、起動時復旧の対象は[保存形式](storage.md#processing_metadatajson)に従います。判定 run の `processing.run.started` は開始時に読み込んだモデルの来歴を記録します。優先度の carry-over のように判定呼出しがない run も、開始時の model identity を記録します。境界 assessment は `source_decision.kind` が `assessed` の場合に成功した判定呼出しの request を必ず持ち、`carried_over` の場合は呼出しを行わず request を持ちません。`request: null` は境界 assessment の `carried_over` と、判定呼出し失敗の優先度イベントや呼出し前保留などに現れます。
+新しい境界・優先度 run は、判定再試行の全 snapshot の構築・materialization が成功した後に、一つの `pipeline.decisions.replaced` event で選択します。再試行中に得た部分結果はすべて破棄し、失敗時は置換 snapshot を公開せず、選択中の判定 run を変更しません。run event の保存・完了と選択の扱い、起動時復旧の対象は[保存形式](storage.md#processing_metadatajson)に従います。判定 run の `processing.run.started` は開始時に読み込んだモデルの来歴を記録します。優先度の carry-over のように判定呼出しがない run も、開始時の model identity を記録します。境界 assessment は `source_decision.kind` が `assessed` の場合に成功した判定呼出しの request を必ず持ち、`carried_over` の場合は呼出しを行わず request を持ちません。`request: null` は境界 assessment の `carried_over` と、判定呼出し失敗の優先度イベントや呼出し前保留などに現れます。
 
 ## ライブから確定への再利用
 

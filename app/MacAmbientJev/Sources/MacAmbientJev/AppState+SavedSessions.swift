@@ -47,15 +47,12 @@ extension AppState {
         transcriptViewModel.setStatus("保存済みの文字起こしを読み込んでいます")
 
         guard case .readable(let session) = summary,
-              let audioSource = session.audioSource else {
+              session.audioSource != nil else {
             transcriptViewModel.setStatus("保存済み音声を使えないため、文字起こしを表示できません")
             return
         }
         do {
-            switch try SavedTranscriptLoader.load(
-                sessionURL: sessionURL,
-                audioSource: audioSource
-            ) {
+            switch try SavedTranscriptLoader.load(sessionURL: sessionURL) {
             case .unavailable:
                 transcriptViewModel.setStatus("この録音には確定文字起こしがありません")
             case .segments(let segments):

@@ -455,14 +455,6 @@ func aRecordingWithoutFramesIsNeverScheduledForCompaction() async throws {
     defer { cleanUp(layout) }
     let writer = try DurableAudioWriter(directory: layout.processingDirectory, chunkDurationSeconds: 0.5, sessionURL: layout.sessionURL)
     _ = try await writer.finish()
-    try ProcessingMetadataStore(sessionURL: layout.sessionURL).save(ProcessingMetadata(
-        finalizationAttempt: nil,
-        activeRuns: ActiveRuns(
-            segmentation: "seg", asr: "asr", clauseBoundary: "boundary", contentPriority: "priority"
-        ),
-        pendingClauseBoundarySegments: [],
-        pendingContentPriorityClauses: []
-    ))
 
     #expect(try layout.audioSource(for: recordingManifest) == nil)
     #expect(try SessionStorageMaintenance.required(layout: layout, manifest: recordingManifest) == nil)

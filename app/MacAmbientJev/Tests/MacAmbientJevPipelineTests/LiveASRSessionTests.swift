@@ -165,6 +165,58 @@ private final class Locked<Value>: @unchecked Sendable {
     func withValue(_ body: (inout Value) -> Void) { lock.withLock { body(&stored) } }
 }
 
+let fakeSegmentationProvenance = RunProvenance(engine: "fake-vad", model: nil, version: "test", configuration: [:])
+
+func seedLivePipeline(
+    writer: SessionWriter,
+    sessionID: UUID,
+    segmentationRunID: String,
+    asrRunID: String,
+    sampleRate: Double,
+    asrProvenance: RunProvenance,
+    decisionRuns: (boundary: String, priority: String)? = nil
+) async throws {
+    let generation = PipelineGeneration(
+        id: UUID(),
+        runs: ActiveRuns(
+            segmentation: segmentationRunID, asr: asrRunID,
+            clauseBoundary: decisionRuns?.boundary, contentPriority: decisionRuns?.priority
+        ),
+        sampleRate: sampleRate,
+        segmentationProvenance: fakeSegmentationProvenance,
+        asrProvenance: asrProvenance
+    )
+    _ = try await writer.append(generation.startEvent(sessionID: sessionID))
+    _ = try await writer.append(EventDraft(
+        eventType: "processing.run.started", sessionID: sessionID,
+        processingRunID: segmentationRunID,
+        payload: ProcessingRunStartedPayload(stage: .segmentation, provenance: generation.segmentationProvenance)
+    ))
+}
+
+private func sealLiveSegmentation(
+    writer: SessionWriter,
+    sessionID: UUID,
+    segmentationRunID: String,
+    frameCount: Int64,
+    segmentCount: Int
+) async throws {
+    _ = try await writer.append(EventDraft(
+        eventType: "segmentation.input.sealed", sessionID: sessionID,
+        segmentationRunID: segmentationRunID,
+        payload: SegmentationInputSealedPayload(frameCount: frameCount)
+    ))
+    _ = try await writer.append(EventDraft(
+        eventType: "segmentation.completed", sessionID: sessionID,
+        segmentationRunID: segmentationRunID,
+        payload: SegmentationCompletedPayload(consumedFrames: frameCount, segmentCount: segmentCount)
+    ))
+    _ = try await writer.append(EventDraft(
+        eventType: "processing.run.completed", sessionID: sessionID,
+        processingRunID: segmentationRunID,
+        payload: ProcessingRunCompletedPayload(stage: .segmentation, succeeded: true, completedCount: segmentCount, failedCount: 0)
+    ))
+}
 private func makeLiveASRFixture(
     failOnCall: Int? = nil,
     emptyOnCall: Int? = nil,
@@ -183,25 +235,26 @@ private func makeLiveASRFixture(
         withIntermediateDirectories: true
     )
 
-    let writer = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
-    try await writer.append(
+    let audioWriter = try DurableAudioWriter(
+        directory: SessionLayout(sessionURL: root).processingDirectory,
+        chunkDurationSeconds: 1,
+        sessionURL: root
+    )
+    try await audioWriter.append(
         samples: Array(repeating: Float(0.1), count: 16_000)
     )
-    let checkpoint = await writer.committedSnapshot()
+    let checkpoint = await audioWriter.committedSnapshot()
 
     let engine = CountingASREngine(failOnCall: failOnCall, emptyOnCall: emptyOnCall)
     let sessionID = UUID()
-    let session = LiveASRSession(
-        sessionID: sessionID,
-        sessionURL: root,
-        segmentationRunID: "seg_live_test",
-        asrRunID: "asr_live_test",
-        processingDirectory: root,
-        writer: try SessionWriter(sessionURL: root),
-        asr: engine,
-        sampleRate: checkpoint.sampleRate,
-        clauseBoundaryRunID: decisionRuns?.boundary,
-        contentPriorityRunID: decisionRuns?.priority
+    let writer = try SessionWriter(sessionURL: root)
+    try await seedLivePipeline(
+        writer: writer, sessionID: sessionID, segmentationRunID: "seg_pipeline_test",
+        asrRunID: "asr_pipeline_test", sampleRate: checkpoint.sampleRate,
+        asrProvenance: engine.provenance, decisionRuns: decisionRuns
+    )
+    let session = try await LiveASRSession.open(
+        sessionID: sessionID, sessionURL: root, writer: writer, asr: engine
     )
     return (root, checkpoint, sessionID, session, engine)
 }
@@ -212,18 +265,18 @@ func reopeningProcessesOnlySegmentsWithoutSuccessfulResults(_ interruption: Int)
         failOnCall: interruption == 2 ? 2 : nil, emptyOnCall: 1
     )
     defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let segmentationRunID = "seg_live_test", asrRunID = "asr_live_test"
+    let segmentationRunID = "seg_pipeline_test", asrRunID = "asr_pipeline_test"
     let first = SegmentReference(segmentationRunID: segmentationRunID, segmentID: "seg_000001", speechRanges: [0..<1_000, 2_000..<2_500])
     let second = SegmentReference(segmentationRunID: segmentationRunID, segmentID: "seg_000002", speechRanges: [4_000..<6_000])
     let third = SegmentReference(segmentationRunID: segmentationRunID, segmentID: "seg_000003", speechRanges: [8_000..<11_000])
     let segments = [first, second, third]
-    let reader = try ProcessingTimelineReader(directory: fixture.root, checkpoint: fixture.checkpoint, sessionURL: fixture.root)
+    let reader = try ProcessingTimelineReader(directory: SessionLayout(sessionURL: fixture.root).processingDirectory, checkpoint: fixture.checkpoint, sessionURL: fixture.root)
     if interruption == 0 {
-        _ = try await fixture.session.register(segments: [third, first, second])
+        _ = try await fixture.session.register(segments: [first, second, third])
     } else {
         let initial = try await fixture.session.process(segments: [first], reader: reader)
         #expect(initial.completedCount == 1)
-        _ = try await fixture.session.register(segments: [third, second])
+        _ = try await fixture.session.register(segments: [second, third])
         if interruption == 2 {
             let failed = try await fixture.session.process(reader: reader)
             #expect(failed.completedCount == 1 && failed.failedCount == 1 && failed.pendingCount == 2)
@@ -233,10 +286,8 @@ func reopeningProcessesOnlySegmentsWithoutSuccessfulResults(_ interruption: Int)
     }
     let resumedEngine = CountingASREngine(emptyOnCall: interruption == 0 ? 1 : nil)
     let resumed = try await LiveASRSession.open(
-        sessionID: fixture.sessionID, sessionURL: fixture.root, segmentationRunID: segmentationRunID,
-        asrRunID: asrRunID, processingDirectory: fixture.root, writer: try SessionWriter(sessionURL: fixture.root),
-        asr: resumedEngine, sampleRate: fixture.checkpoint.sampleRate,
-        clauseBoundaryRunID: nil, contentPriorityRunID: nil
+        sessionID: fixture.sessionID, sessionURL: fixture.root,
+        writer: try SessionWriter(sessionURL: fixture.root), asr: resumedEngine
     )
     let hydrated = await resumed.snapshot()
     let pendingIDs = interruption == 0
@@ -274,10 +325,8 @@ func reopeningProcessesOnlySegmentsWithoutSuccessfulResults(_ interruption: Int)
     #expect(starts.count == 1 && (starts.first?["payload"] as? [String: Any])?["stage"] as? String == "asr")
     let repeatedEngine = CountingASREngine()
     let repeated = try await LiveASRSession.open(
-        sessionID: fixture.sessionID, sessionURL: fixture.root, segmentationRunID: segmentationRunID,
-        asrRunID: asrRunID, processingDirectory: fixture.root, writer: try SessionWriter(sessionURL: fixture.root),
-        asr: repeatedEngine, sampleRate: fixture.checkpoint.sampleRate,
-        clauseBoundaryRunID: nil, contentPriorityRunID: nil
+        sessionID: fixture.sessionID, sessionURL: fixture.root,
+        writer: try SessionWriter(sessionURL: fixture.root), asr: repeatedEngine
     )
     #expect(try await repeated.process(reader: reader).completedCount == 3)
     #expect(await repeatedEngine.inputCounts().isEmpty)
@@ -288,7 +337,7 @@ func reopeningProcessesOnlySegmentsWithoutSuccessfulResults(_ interruption: Int)
 func reopeningRejectsDuplicateSuccessfulResult() async throws {
     let fixture = try await makeLiveASRFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
-    let segment = SegmentReference(segmentationRunID: "seg_live_test", segmentID: "seg_000001", speechRanges: [0..<4_000])
+    let segment = SegmentReference(segmentationRunID: "seg_pipeline_test", segmentID: "seg_000001", speechRanges: [0..<4_000])
     _ = try await fixture.session.process(segments: [segment], checkpoint: fixture.checkpoint)
     let payload = ASRCompletedEventPayload(
         text: "segment-1",
@@ -296,15 +345,13 @@ func reopeningRejectsDuplicateSuccessfulResult() async throws {
         provenance: fixture.engine.provenance
     )
     _ = try await SessionWriter(sessionURL: fixture.root).append(EventDraft(
-        eventType: "asr.completed", sessionID: fixture.sessionID, processingRunID: "asr_live_test",
-        segmentationRunID: "seg_live_test", segmentID: segment.segmentID,
+        eventType: "asr.completed", sessionID: fixture.sessionID, processingRunID: "asr_pipeline_test",
+        segmentationRunID: "seg_pipeline_test", segmentID: segment.segmentID,
         sourceStartFrame: segment.startFrame, sourceEndFrame: segment.endFrame, payload: payload))
-    await #expect(throws: ASRSessionRecoveryError.duplicateSuccessfulResult(segmentID: segment.segmentID)) {
+    await #expect(throws: ProcessingLogStateError.duplicateSuccessfulResult(segmentID: segment.segmentID)) {
         try await LiveASRSession.open(
-            sessionID: fixture.sessionID, sessionURL: fixture.root, segmentationRunID: "seg_live_test",
-            asrRunID: "asr_live_test", processingDirectory: fixture.root, writer: try SessionWriter(sessionURL: fixture.root),
-            asr: CountingASREngine(), sampleRate: fixture.checkpoint.sampleRate,
-            clauseBoundaryRunID: nil, contentPriorityRunID: nil
+            sessionID: fixture.sessionID, sessionURL: fixture.root,
+            writer: try SessionWriter(sessionURL: fixture.root), asr: CountingASREngine()
         )
     }
 }
@@ -315,12 +362,12 @@ func liveASRPreparesOnceAndDoesNotDuplicateSegments() async throws {
     defer { try? FileManager.default.removeItem(at: fixture.root) }
 
     let firstSegment = SegmentReference(
-        segmentationRunID: "seg_live_test",
+        segmentationRunID: "seg_pipeline_test",
         segmentID: "seg_000001",
         speechRanges: [0..<4_000]
     )
     let secondSegment = SegmentReference(
-        segmentationRunID: "seg_live_test",
+        segmentationRunID: "seg_pipeline_test",
         segmentID: "seg_000002",
         speechRanges: [4_000..<8_000]
     )
@@ -356,14 +403,14 @@ func liveASRPreparesOnceAndDoesNotDuplicateSegments() async throws {
 
 @Test
 func liveASRProgressPreservesRowsAcrossRegistrationAndShowsOnlySavedClauseEvents() async throws {
-    let fixture = try await makeLiveASRFixture(decisionRuns: ("boundary_live", "priority_live"))
+    let fixture = try await makeLiveASRFixture(decisionRuns: ("boundary_pipeline", "priority_pipeline"))
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let first = SegmentReference(
-        segmentationRunID: "seg_live_test", segmentID: "seg_000001",
+        segmentationRunID: "seg_pipeline_test", segmentID: "seg_000001",
         speechRanges: [0..<4_000]
     )
     let second = SegmentReference(
-        segmentationRunID: "seg_live_test", segmentID: "seg_000002",
+        segmentationRunID: "seg_pipeline_test", segmentID: "seg_000002",
         speechRanges: [4_000..<8_000]
     )
     let finished = Locked<[LiveASRSegmentStatus]>([])
@@ -401,13 +448,13 @@ func liveASRProgressPreservesRowsAcrossRegistrationAndShowsOnlySavedClauseEvents
         sourceDecision: .assessed
     )
     let unit = try ClauseUnit(
-        reference: ClauseReference(boundaryRunID: "boundary_live", clauseID: "c\(source.asrEventSeq)_0"),
+        reference: ClauseReference(boundaryRunID: "boundary_pipeline", clauseID: "c\(source.asrEventSeq)_0"),
         parts: [ClauseSourcePart(source: source, range: TextUTF16Range(start: 0, end: 9))],
         termination: .notContinued(source: source)
     )
     let closed = try await fixture.session.applyClauseEvents([
-        .clause(seq: 100, runID: "boundary_live", kind: .clauseBoundaryAssessed(assessment)),
-        .clause(seq: 101, runID: "boundary_live", kind: .clauseClosed(unit)),
+        .clause(seq: 100, runID: "boundary_pipeline", kind: .clauseBoundaryAssessed(assessment)),
+        .clause(seq: 101, runID: "boundary_pipeline", kind: .clauseClosed(unit)),
     ])
     #expect(closed.progress.materializedSegments.map(\.clauseState) == [.priorityPending, .awaitingNextSegment])
     let low = try ContentPriorityDecision(priority: .lowPriority, confidence: 0.95, probabilities: ["PRIMARY": 0.025, "LOW_PRIORITY": 0.975])
@@ -418,27 +465,27 @@ func liveASRProgressPreservesRowsAcrossRegistrationAndShowsOnlySavedClauseEvents
         )
     ], request: DecisionRequestRecord(requestID: "req", inputTokens: 3))
     let classified = try await fixture.session.applyClauseEvents([
-        .clause(seq: 102, runID: "priority_live", kind: .contentPriorityAssigned(assigned))
+        .clause(seq: 102, runID: "priority_pipeline", kind: .contentPriorityAssigned(assigned))
     ])
     #expect(classified.progress.materializedSegments.map(\.clauseState) == [.classified, .awaitingNextSegment])
     #expect(classified.progress.materializedSegments[0].clauseSlices.map(\.priority) == [.lowPriority])
     await #expect(throws: LiveASRSessionError.self) {
         try await fixture.session.applyClauseEvents([
-            .clause(seq: 103, runID: "priority_final", kind: .contentPriorityAssigned(assigned))
+            .clause(seq: 103, runID: "priority_other", kind: .contentPriorityAssigned(assigned))
         ])
     }
     await #expect(throws: LiveASRSessionError.self) {
         try await fixture.session.applyClauseEvents([
-            .clause(seq: 103, runID: "boundary_live", kind: .contentPriorityAssigned(assigned))
+            .clause(seq: 103, runID: "boundary_pipeline", kind: .contentPriorityAssigned(assigned))
         ])
     }
-    let unknown = try ClauseReference(boundaryRunID: "boundary_live", clauseID: "c999_0")
+    let unknown = try ClauseReference(boundaryRunID: "boundary_pipeline", clauseID: "c999_0")
     let invalid = try ClausePriorityBatch.pending(
         references: [unknown], reason: .requestFailed, message: "unknown clause"
     )
     await #expect(throws: TranscriptMaterializationError.self) {
         try await fixture.session.applyClauseEvents([
-            .clause(seq: 103, runID: "priority_live", kind: .contentPriorityAssigned(invalid))
+            .clause(seq: 103, runID: "priority_pipeline", kind: .contentPriorityAssigned(invalid))
         ])
     }
     #expect(await fixture.session.snapshot().events == classified.events)
@@ -449,6 +496,11 @@ func liveASRProgressPreservesRowsAcrossRegistrationAndShowsOnlySavedClauseEvents
     #expect(completed.materializedSegments.map(\.text) == ["segment-1", "segment-2"])
     #expect(completed.materializedSegments.map(\.clauseState) == [.classified, .awaitingNextSegment])
     #expect(completed.pendingCount == 0)
+    try await sealLiveSegmentation(
+        writer: try SessionWriter(sessionURL: fixture.root), sessionID: fixture.sessionID,
+        segmentationRunID: "seg_pipeline_test", frameCount: fixture.checkpoint.committedFrames,
+        segmentCount: 2
+    )
     let finishedRun = try await fixture.session.finish()
     #expect(finishedRun.succeeded)
     #expect(finishedRun.materializedSegments == completed.materializedSegments)
@@ -459,11 +511,11 @@ func liveASRAppendFailurePreservesVisibleRowsAndCounts(completing: Bool) async t
     let fixture = try await makeLiveASRFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let first = SegmentReference(
-        segmentationRunID: "seg_live_test", segmentID: "seg_000001",
+        segmentationRunID: "seg_pipeline_test", segmentID: "seg_000001",
         speechRanges: [0..<4_000]
     )
     let second = SegmentReference(
-        segmentationRunID: "seg_live_test", segmentID: "seg_000002",
+        segmentationRunID: "seg_pipeline_test", segmentID: "seg_000002",
         speechRanges: [4_000..<8_000]
     )
     _ = try await fixture.session.process(segments: [first], checkpoint: fixture.checkpoint)
@@ -497,6 +549,11 @@ func liveASRAppendFailurePreservesVisibleRowsAndCounts(completing: Bool) async t
     #expect(completed.completedCount == 2)
     #expect(completed.failedCount == 0)
     #expect(completed.pendingCount == 0)
+    try await sealLiveSegmentation(
+        writer: try SessionWriter(sessionURL: fixture.root), sessionID: fixture.sessionID,
+        segmentationRunID: "seg_pipeline_test", frameCount: fixture.checkpoint.committedFrames,
+        segmentCount: 2
+    )
     let finished = try await fixture.session.finish()
     #expect(finished.succeeded)
     #expect(finished.materializedSegments == completed.materializedSegments)
@@ -508,7 +565,7 @@ func liveASRFinishIsIdempotentAndMarksSuccessfulRun() async throws {
     defer { try? FileManager.default.removeItem(at: fixture.root) }
 
     let segment = SegmentReference(
-        segmentationRunID: "seg_live_test",
+        segmentationRunID: "seg_pipeline_test",
         segmentID: "seg_000001",
         speechRanges: [0..<4_000]
     )
@@ -517,23 +574,33 @@ func liveASRFinishIsIdempotentAndMarksSuccessfulRun() async throws {
         checkpoint: fixture.checkpoint
     )
 
+    try await sealLiveSegmentation(
+        writer: try SessionWriter(sessionURL: fixture.root), sessionID: fixture.sessionID,
+        segmentationRunID: "seg_pipeline_test", frameCount: fixture.checkpoint.committedFrames,
+        segmentCount: 1
+    )
     let first = try await fixture.session.finish()
     let second = try await fixture.session.finish()
 
     #expect(first.succeeded)
     #expect(first.completedCount == 1)
     #expect(second == first)
+    let reopened = try await LiveASRSession.open(
+        sessionID: fixture.sessionID, sessionURL: fixture.root,
+        writer: try SessionWriter(sessionURL: fixture.root), asr: CountingASREngine()
+    )
+    #expect(try await reopened.finish() == first)
 
     let recovered = try SessionRecovery.recoverJSONL(
         Data(contentsOf: fixture.root.appending(path: "events.jsonl"))
     )
-    let eventTypes = try recovered.lines.map { line in
-        let event = try #require(
-            JSONSerialization.jsonObject(with: line) as? [String: Any]
-        )
-        return try #require(event["event_type"] as? String)
+    let events = try recovered.lines.map { line in
+        try #require(JSONSerialization.jsonObject(with: line) as? [String: Any])
     }
-    #expect(eventTypes.filter { $0 == "processing.run.completed" }.count == 1)
+    #expect(events.filter {
+        $0["event_type"] as? String == "processing.run.completed"
+            && ($0["payload"] as? [String: Any])?["stage"] as? String == "asr"
+    }.count == 1)
 }
 
 @Test(.timeLimit(.minutes(10)))
@@ -542,25 +609,38 @@ func liveASRConcurrentFinishCallersAwaitTheSameCompletion() async throws {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let audio = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
+    let audio = try DurableAudioWriter(
+        directory: SessionLayout(sessionURL: root).processingDirectory,
+        chunkDurationSeconds: 1,
+        sessionURL: root
+    )
     try await audio.append(samples: Array(repeating: Float(0.1), count: 16_000))
     let checkpoint = await audio.committedSnapshot()
     let engine = SuspendedASREngine()
-    let session = LiveASRSession(
-        sessionID: UUID(), sessionURL: root, segmentationRunID: "seg_live_test",
-        asrRunID: "asr_live_test", processingDirectory: root,
-        writer: try SessionWriter(sessionURL: root), asr: engine,
-        sampleRate: checkpoint.sampleRate,
-        clauseBoundaryRunID: nil,
-        contentPriorityRunID: nil
+    let sessionID = UUID()
+    let writer = try SessionWriter(sessionURL: root)
+    try await seedLivePipeline(
+        writer: writer, sessionID: sessionID, segmentationRunID: "seg_pipeline_test",
+        asrRunID: "asr_pipeline_test", sampleRate: checkpoint.sampleRate,
+        asrProvenance: engine.provenance
+    )
+    let session = try await LiveASRSession.open(
+        sessionID: sessionID, sessionURL: root, writer: writer, asr: engine
     )
     let segment = SegmentReference(
-        segmentationRunID: "seg_live_test", segmentID: "seg_000001",
+        segmentationRunID: "seg_pipeline_test", segmentID: "seg_000001",
         speechRanges: [0..<4_000]
+    )
+    _ = try await session.register(segments: [segment])
+    try await sealLiveSegmentation(
+        writer: writer, sessionID: sessionID, segmentationRunID: "seg_pipeline_test",
+        frameCount: checkpoint.committedFrames, segmentCount: 1
     )
 
     let processing = Task {
-        try await session.process(segments: [segment], checkpoint: checkpoint)
+        try await session.process(reader: try ProcessingTimelineReader(
+            directory: SessionLayout(sessionURL: root).processingDirectory, checkpoint: checkpoint, sessionURL: root
+        ))
     }
     await engine.waitUntilTranscribing()
     let firstFinish = Task { try await session.finish() }
@@ -591,7 +671,7 @@ func liveASRConcurrentFinishCallersAwaitTheSameCompletion() async throws {
     }
     #expect(eventTypes.filter {
         $0 == "asr.completed" || $0 == "processing.run.completed"
-    } == ["asr.completed", "processing.run.completed"])
+    } == ["processing.run.completed", "asr.completed", "processing.run.completed"])
 }
 
 @Test
@@ -599,7 +679,7 @@ func liveASRFinishRetriesAfterCompletionAppendFailure() async throws {
     let fixture = try await makeLiveASRFixture()
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let segment = SegmentReference(
-        segmentationRunID: "seg_live_test", segmentID: "seg_000001",
+        segmentationRunID: "seg_pipeline_test", segmentID: "seg_000001",
         speechRanges: [0..<4_000]
     )
     _ = try await fixture.session.process(
@@ -614,7 +694,7 @@ func liveASRFinishRetriesAfterCompletionAppendFailure() async throws {
         try await fixture.session.finish()
     }
     let lateSegment = SegmentReference(
-        segmentationRunID: "seg_live_test", segmentID: "seg_000002",
+        segmentationRunID: "seg_pipeline_test", segmentID: "seg_000002",
         speechRanges: [4_000..<8_000]
     )
     let lateProgress = try await fixture.session.register(segments: [lateSegment])
@@ -622,6 +702,11 @@ func liveASRFinishRetriesAfterCompletionAppendFailure() async throws {
     #expect(lateProgress.pendingCount == 0)
     try FileManager.default.removeItem(at: eventsURL)
     try FileManager.default.moveItem(at: backupURL, to: eventsURL)
+    try await sealLiveSegmentation(
+        writer: try SessionWriter(sessionURL: fixture.root), sessionID: fixture.sessionID,
+        segmentationRunID: "seg_pipeline_test", frameCount: fixture.checkpoint.committedFrames,
+        segmentCount: 1
+    )
 
     let completion = try await fixture.session.finish()
     let repeated = try await fixture.session.finish()
@@ -639,7 +724,7 @@ func liveASRFinishRetriesAfterCompletionAppendFailure() async throws {
     }
     #expect(eventTypes.filter {
         $0 == "asr.completed" || $0 == "processing.run.completed"
-    } == ["asr.completed", "processing.run.completed"])
+    } == ["asr.completed", "processing.run.completed", "processing.run.completed"])
     #expect(eventTypes.filter { $0 == "segment.created" }.count == 1)
 }
 
@@ -650,12 +735,12 @@ func liveASRFailureKeepsRunUnsuccessful() async throws {
 
     let segments = [
         SegmentReference(
-            segmentationRunID: "seg_live_test",
+            segmentationRunID: "seg_pipeline_test",
             segmentID: "seg_000001",
             speechRanges: [0..<4_000]
         ),
         SegmentReference(
-            segmentationRunID: "seg_live_test",
+            segmentationRunID: "seg_pipeline_test",
             segmentID: "seg_000002",
             speechRanges: [4_000..<8_000]
         )
@@ -684,10 +769,10 @@ func liveASRUnwritableFailureStopsProcessingAndLeavesSegmentPending() async thro
     let fixture = try await makeLiveASRFixture(failOnCall: 2)
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let first = SegmentReference(
-        segmentationRunID: "seg_live_test", segmentID: "seg_000001", speechRanges: [0..<4_000]
+        segmentationRunID: "seg_pipeline_test", segmentID: "seg_000001", speechRanges: [0..<4_000]
     )
     let segment = SegmentReference(
-        segmentationRunID: "seg_live_test", segmentID: "seg_000002", speechRanges: [4_000..<8_000]
+        segmentationRunID: "seg_pipeline_test", segmentID: "seg_000002", speechRanges: [4_000..<8_000]
     )
     let saved = try await fixture.session.process(segments: [first], checkpoint: fixture.checkpoint)
     _ = try await fixture.session.register(segments: [segment])
@@ -719,7 +804,7 @@ func liveASRFinishFailsWhileRegisteredSegmentsRemainPending() async throws {
     defer { try? FileManager.default.removeItem(at: fixture.root) }
 
     let segment = SegmentReference(
-        segmentationRunID: "seg_live_test",
+        segmentationRunID: "seg_pipeline_test",
         segmentID: "seg_000001",
         speechRanges: [0..<4_000]
     )
@@ -738,24 +823,30 @@ func liveASRDoesNotAppendResultsAfterRunCompleted() async throws {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let audio = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
+    let audio = try DurableAudioWriter(
+        directory: SessionLayout(sessionURL: root).processingDirectory,
+        chunkDurationSeconds: 1,
+        sessionURL: root
+    )
     try await audio.append(samples: Array(repeating: Float(0.1), count: 16_000))
     let checkpoint = await audio.committedSnapshot()
     let engine = SuspendedASREngine()
-    let session = LiveASRSession(
-        sessionID: UUID(), sessionURL: root, segmentationRunID: "seg_live_test",
-        asrRunID: "asr_live_test", processingDirectory: root,
-        writer: try SessionWriter(sessionURL: root), asr: engine,
-        sampleRate: checkpoint.sampleRate,
-        clauseBoundaryRunID: nil,
-        contentPriorityRunID: nil
+    let sessionID = UUID()
+    let writer = try SessionWriter(sessionURL: root)
+    try await seedLivePipeline(
+        writer: writer, sessionID: sessionID, segmentationRunID: "seg_pipeline_test",
+        asrRunID: "asr_pipeline_test", sampleRate: checkpoint.sampleRate,
+        asrProvenance: engine.provenance
+    )
+    let session = try await LiveASRSession.open(
+        sessionID: sessionID, sessionURL: root, writer: writer, asr: engine
     )
     let segment = SegmentReference(
-        segmentationRunID: "seg_live_test", segmentID: "seg_000001",
+        segmentationRunID: "seg_pipeline_test", segmentID: "seg_000001",
         speechRanges: [0..<4_000]
     )
     let nextSegment = SegmentReference(
-        segmentationRunID: "seg_live_test", segmentID: "seg_000002",
+        segmentationRunID: "seg_pipeline_test", segmentID: "seg_000002",
         speechRanges: [4_000..<8_000]
     )
     _ = try await session.register(segments: [segment, nextSegment])
@@ -791,7 +882,7 @@ func liveASRDoesNotAppendResultsAfterRunCompleted() async throws {
     }
     #expect(eventTypes.filter {
         $0 == "asr.completed" || $0 == "processing.run.completed"
-    } == ["asr.completed", "processing.run.completed"])
+    } == ["asr.completed"])
 }
 
 @Test(.timeLimit(.minutes(10)))
@@ -800,21 +891,27 @@ func cancelledLiveASRProcessingRetainsRegisteredSegmentsForRetry() async throws 
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let audio = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
+    let audio = try DurableAudioWriter(
+        directory: SessionLayout(sessionURL: root).processingDirectory,
+        chunkDurationSeconds: 1,
+        sessionURL: root
+    )
     try await audio.append(samples: Array(repeating: Float(0.1), count: 16_000))
     let checkpoint = await audio.committedSnapshot()
     let engine = SuspendedASREngine()
-    let session = LiveASRSession(
-        sessionID: UUID(), sessionURL: root, segmentationRunID: "seg_live_test",
-        asrRunID: "asr_live_test", processingDirectory: root,
-        writer: try SessionWriter(sessionURL: root), asr: engine,
-        sampleRate: checkpoint.sampleRate,
-        clauseBoundaryRunID: nil,
-        contentPriorityRunID: nil
+    let sessionID = UUID()
+    let writer = try SessionWriter(sessionURL: root)
+    try await seedLivePipeline(
+        writer: writer, sessionID: sessionID, segmentationRunID: "seg_pipeline_test",
+        asrRunID: "asr_pipeline_test", sampleRate: checkpoint.sampleRate,
+        asrProvenance: engine.provenance
+    )
+    let session = try await LiveASRSession.open(
+        sessionID: sessionID, sessionURL: root, writer: writer, asr: engine
     )
     let segments = (0..<3).map { index in
         SegmentReference(
-            segmentationRunID: "seg_live_test", segmentID: "seg_00000\(index + 1)",
+            segmentationRunID: "seg_pipeline_test", segmentID: "seg_00000\(index + 1)",
             speechRanges: [Int64(index) * 4_000..<Int64(index + 1) * 4_000]
         )
     }
@@ -869,17 +966,18 @@ func liveASRConcurrentRegistrationPersistsSegmentOnce() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
 
     let durableWriter = try SessionWriter(sessionURL: root)
-    let writer = GatedRegistrationWriter(writer: durableWriter)
     let engine = CountingASREngine()
-    let session = LiveASRSession(
-        sessionID: UUID(), sessionURL: root, segmentationRunID: "seg_live_test",
-        asrRunID: "asr_live_test", processingDirectory: root,
-        writer: writer, asr: engine, sampleRate: 16_000,
-        clauseBoundaryRunID: nil,
-        contentPriorityRunID: nil
+    let sessionID = UUID()
+    try await seedLivePipeline(
+        writer: durableWriter, sessionID: sessionID, segmentationRunID: "seg_pipeline_test",
+        asrRunID: "asr_pipeline_test", sampleRate: 16_000, asrProvenance: engine.provenance
+    )
+    let writer = GatedRegistrationWriter(writer: durableWriter)
+    let session = try await LiveASRSession.open(
+        sessionID: sessionID, sessionURL: root, writer: writer, asr: engine
     )
     let segment = SegmentReference(
-        segmentationRunID: "seg_live_test", segmentID: "seg_000001",
+        segmentationRunID: "seg_pipeline_test", segmentID: "seg_000001",
         speechRanges: [0..<4_000]
     )
 
@@ -917,18 +1015,19 @@ func liveASRRegistrationCompletesAfterDurableAppendDespiteCallerCancellation() a
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let writer = DurableThenGatedRegistrationWriter(
-        writer: try SessionWriter(sessionURL: root)
+    let durableWriter = try SessionWriter(sessionURL: root)
+    let engine = CountingASREngine()
+    let sessionID = UUID()
+    try await seedLivePipeline(
+        writer: durableWriter, sessionID: sessionID, segmentationRunID: "seg_pipeline_test",
+        asrRunID: "asr_pipeline_test", sampleRate: 16_000, asrProvenance: engine.provenance
     )
-    let session = LiveASRSession(
-        sessionID: UUID(), sessionURL: root, segmentationRunID: "seg_live_test",
-        asrRunID: "asr_live_test", processingDirectory: root,
-        writer: writer, asr: CountingASREngine(), sampleRate: 16_000,
-        clauseBoundaryRunID: nil,
-        contentPriorityRunID: nil
+    let writer = DurableThenGatedRegistrationWriter(writer: durableWriter)
+    let session = try await LiveASRSession.open(
+        sessionID: sessionID, sessionURL: root, writer: writer, asr: engine
     )
     let segment = SegmentReference(
-        segmentationRunID: "seg_live_test", segmentID: "seg_cancelled_register",
+        segmentationRunID: "seg_pipeline_test", segmentID: "seg_cancelled_register",
         speechRanges: [0..<4_000]
     )
     let registration = Task {
@@ -969,7 +1068,7 @@ func measureLiveRegistrationCost() async throws {
     for count in [120, 720, 2_880] {
         let segments = (previous..<count).map { index in
             SegmentReference(
-                segmentationRunID: "seg_live_test", segmentID: "row_\(index)",
+                segmentationRunID: "seg_pipeline_test", segmentID: "row_\(index)",
                 speechRanges: [Int64(index) * 80_000..<Int64(index + 1) * 80_000]
             )
         }
@@ -999,11 +1098,11 @@ func liveAndStoredExecutionSaveTheSameSegmentResults() async throws {
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let segments = [
         SegmentReference(
-            segmentationRunID: "seg_live_test", segmentID: "seg_000001",
+            segmentationRunID: "seg_pipeline_test", segmentID: "seg_000001",
             speechRanges: [0..<2_000, 3_000..<4_000]
         ),
         SegmentReference(
-            segmentationRunID: "seg_live_test", segmentID: "seg_000002",
+            segmentationRunID: "seg_pipeline_test", segmentID: "seg_000002",
             speechRanges: [4_000..<8_000]
         )
     ]
@@ -1014,6 +1113,11 @@ func liveAndStoredExecutionSaveTheSameSegmentResults() async throws {
     let second = try await fixture.session.process(segments: [segments[1]], checkpoint: fixture.checkpoint)
     #expect(second.completedCount == 2)
     #expect(!String(decoding: try Data(contentsOf: liveEventsURL), as: UTF8.self).contains("processing.run.completed"))
+    try await sealLiveSegmentation(
+        writer: try SessionWriter(sessionURL: fixture.root), sessionID: fixture.sessionID,
+        segmentationRunID: "seg_pipeline_test", frameCount: fixture.checkpoint.committedFrames,
+        segmentCount: 2
+    )
     let liveCompletion = try await fixture.session.finish()
     #expect(liveCompletion.completedCount == 2)
     #expect(liveCompletion.materializedSegments.map(\.text) == ["segment-1", "segment-2"])
@@ -1023,26 +1127,31 @@ func liveAndStoredExecutionSaveTheSameSegmentResults() async throws {
     let storedWriter = try SessionWriter(sessionURL: storedRoot)
     let storedSessionID = UUID()
     let storedEngine = CountingASREngine()
+    try await seedLivePipeline(
+        writer: storedWriter, sessionID: storedSessionID,
+        segmentationRunID: "seg_pipeline_test", asrRunID: "asr_pipeline_test",
+        sampleRate: fixture.checkpoint.sampleRate, asrProvenance: storedEngine.provenance
+    )
     _ = try await storedWriter.append(EventDraft(
         eventType: "processing.run.started", sessionID: storedSessionID,
-        processingRunID: "asr_live_test",
+        processingRunID: "asr_pipeline_test",
         payload: ProcessingRunStartedPayload(stage: .asr, provenance: storedEngine.provenance)
     ))
     var pendingSince: [String: Date] = [:]
     for segment in segments {
         _ = try await storedWriter.append(.segmentCreated(sessionID: storedSessionID, segment: segment))
         let pending = try await storedWriter.append(EventDraft(
-            eventType: "asr.pending", sessionID: storedSessionID, processingRunID: "asr_live_test",
-            segmentationRunID: "seg_live_test", segmentID: segment.segmentID,
+            eventType: "asr.pending", sessionID: storedSessionID, processingRunID: "asr_pipeline_test",
+            segmentationRunID: "seg_pipeline_test", segmentID: segment.segmentID,
             sourceStartFrame: segment.startFrame, sourceEndFrame: segment.endFrame, payload: EmptyPayload()
         ))
         pendingSince[segment.segmentID] = pending.createdAt
     }
     let reader = try ProcessingTimelineReader(
-        directory: fixture.root, checkpoint: fixture.checkpoint, sessionURL: fixture.root
+        directory: SessionLayout(sessionURL: fixture.root).processingDirectory, checkpoint: fixture.checkpoint, sessionURL: fixture.root
     )
     let coordinator = PipelineCoordinator(
-        sessionID: storedSessionID, segmentationRunID: "seg_live_test", asrRunID: "asr_live_test",
+        sessionID: storedSessionID, segmentationRunID: "seg_pipeline_test", asrRunID: "asr_pipeline_test",
         writer: storedWriter, asr: storedEngine, loader: ASRAudioLoader(reader: reader),
         pacingMode: .normal, sleep: { try await Task.sleep(for: $0) }, shouldPause: { nil }
     )

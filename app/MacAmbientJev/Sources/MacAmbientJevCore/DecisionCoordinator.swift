@@ -49,12 +49,12 @@ public actor DecisionCoordinator {
         self.usageCounter = usageCounter
     }
 
-    public nonisolated func boundaryProvenance(mode: String) -> RunProvenance {
-        DecisionRunProvenance.boundary(mode: mode, identity: identity)
+    public nonisolated func boundaryProvenance() -> RunProvenance {
+        DecisionRunProvenance.boundary(identity: identity)
     }
 
-    public nonisolated func priorityProvenance(mode: String) -> RunProvenance {
-        DecisionRunProvenance.priority(mode: mode, identity: identity)
+    public nonisolated func priorityProvenance() -> RunProvenance {
+        DecisionRunProvenance.priority(identity: identity)
     }
 
     public func assessBoundaries(

@@ -236,7 +236,9 @@ struct CaptureSystemAudioCommand {
             if processing.disposition == .completed {
                 do {
                     transcriptText = try loadTranscriptText(
-                        sessionURL: sessionURL, sampleRate: result.checkpoint.sampleRate
+                        sessionURL: sessionURL,
+                        sessionID: sessionID,
+                        frameCount: result.checkpoint.committedFrames
                     )
                 } catch {
                     errors.append(error.localizedDescription)
@@ -267,24 +269,18 @@ struct CaptureSystemAudioCommand {
         )
     }
 
-    private static func loadTranscriptText(sessionURL: URL, sampleRate: Double) throws -> String {
-        guard let metadata = try ProcessingMetadataStore(sessionURL: sessionURL).load(),
-              let runs = metadata.activeRuns,
-              runs.segmentation != nil, runs.asr != nil else {
-            throw CaptureSystemAudioError.transcriptionFailed("Completed transcript runs are missing")
-        }
-        let recovered = try SessionRecovery.recoverJSONL(
-            SessionFileAccess.read(sessionURL.appending(path: "events.jsonl"), relativeTo: sessionURL)
+    private static func loadTranscriptText(
+        sessionURL: URL,
+        sessionID: UUID,
+        frameCount: Int64
+    ) throws -> String {
+        let stored = try EventLogTranscriptReader().validateCompletion(
+            eventsURL: sessionURL.appending(path: "events.jsonl"),
+            sessionID: sessionID,
+            frameCount: frameCount
         )
-        guard !recovered.droppedIncompleteTail else {
-            throw CaptureSystemAudioError.transcriptionFailed("Transcript event log has an incomplete tail")
-        }
-        _ = try DecisionRetryAnalyzer().retryTargets(lines: recovered.lines, metadata: metadata)
-        let events = try EventLogTranscriptReader().events(
-            lines: recovered.lines, activeRuns: runs
-        )
-        let segments = try TranscriptMaterializer(sampleRate: sampleRate)
-            .materialize(events: events, activeRuns: runs)
+        let segments = try TranscriptMaterializer(sampleRate: stored.state.generation.sampleRate)
+            .materialize(events: stored.events, activeRuns: stored.state.runs)
         return try LiveTranscriptProjection().rows(for: segments)
             .map(\.text)
             .joined(separator: "\n")

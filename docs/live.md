@@ -1,11 +1,11 @@
 # ライブ文字起こし
 
-録音中の文字起こしは暫定表示です。録音保存、発話検出（VAD）、音声認識（ASR）は別々に進み、ASR が遅れても録音保存を止めません。ASR 結果は保存直後に、フィラー・相槌や LOW を除かず、RAW ASR とイベントを変更せずに表示用の数字表記変換だけを適用して表示し、区間ごとの境界 assessment が保存された後にだけ、その assessment の F・B除去範囲を表示から除きます。同梱の Core ML 発話文モデルが BTSJ 発話文単位の境界・継続・F・B除去範囲・優先度を任意に判定します。保存 key や内部名の `clause` / `節` はこの発話文単位を識別し、別の節分割器はありません。停止後は、保存音声全体を[確定処理](final.md)して表示を置き換えます。
+録音中のライブ表示は、最新の durable `pipeline.started` generation が選択する区間・ASR 成功行を保存直後に表示します。停止・確定処理は同じ generation を sealed source まで完了します。録音保存、発話検出（VAD）、音声認識（ASR）は別々に進み、ASR が遅れても録音保存を止めません。ASR 結果は保存直後に、フィラー・相槌や LOW を除かず、RAW ASR とイベントを変更せずに表示用の数字表記変換だけを適用して表示し、区間ごとの境界 assessment が保存された後にだけ、その assessment の F・B除去範囲を表示から除きます。同梱の Core ML 発話文モデルが BTSJ 発話文単位の境界・継続・F・B除去範囲・優先度を任意に判定します。保存 key や内部名の `clause` / `節` はこの発話文単位を識別し、別の節分割器はありません。[停止と確定処理](final.md)
 
 ## VAD と ASR の区切り
 
 - 保存済みの処理タイムラインだけを VAD に渡します。まだディスクに確定していない音声は対象にしません。
-- 録音中の durable chunk（確定処理の後に FLAC へ変換して削除する PCM）は 0.5 秒、アプリの checkpoint 確認間隔は 250 ms です。保存済みの 16 kHz mono float32 を直接 FluidAudio のストリーミング VAD に渡します。VAD と ASR は入力形式を検証し、処理段階の SRC・downmix は行いません。
+- 録音中の durable chunk（必須処理完了後、sealed source を検証してから FLAC 化・削除する PCM）は 0.5 秒、アプリの checkpoint 確認間隔は 250 ms です。ライブ中・未完了 generation の compaction はありません。保存済みの 16 kHz mono float32 を直接 FluidAudio のストリーミング VAD に渡します。VAD と ASR は入力形式を検証し、処理段階の SRC・downmix は行いません。
 - 発話開始は VAD 確率 0.50 以上、発話終了は 0.35 未満（FluidAudio streaming VAD は開始閾値から 0.15 引く）です。発話開始前に 0.10 秒の pre-roll を含め、無音終了は 0.75 秒です。確定処理も同じ設定で区間を作り、Linux / Windows は同じ値を Silero VAD の確率に適用します（[Windows の VAD](windows.md#silero-vad-の区間検出)）。
 - `SpeechRangeAssembler` は 0.10 秒の VAD pre-roll を含む speech range を作り、独立 speech range が 0.5 秒未満なら破棄します。これは最終 ASR segment の長さ判定ではありません。VAD が利用できない録音ではライブ ASR を実行しません。
 - speech range が 14 秒に達すると、`[rangeStart+12s,rangeStart+14s)` の範囲で、絶対 sample 0 に揃えた 320 sample（20 ms）frame の RMS が最小の位置で分割します。
@@ -21,10 +21,9 @@
 - 検出した区間は ASR の待ち行列に入れる前に `segment.created` として保存します。ライブ経路は `asr.pending` を書きません。このイベントは確定処理の ASR 待ち状態に使います。
 - 区間の音声読取・認識・pacing・計測・結果保存は確定処理・ファイル評価と同じ [`PipelineCoordinator.execute`](../app/MacAmbientJev/Sources/MacAmbientJevCore/PipelineCoordinator.swift) を使い、保存後の callback で行と件数を更新します。ライブは通常 pacing を指定し、モデル準備は共有 `execute` に集約し、成功する session では一度だけ行います。pending age の起点は保存した `segment.created` の時刻です。各バッチは段階を終了せず、`LiveASRSession.finish` が ASR run の完了を保存します。
 - 未認識区間の新規登録・同じ ID の再登録は認識済み行を変えず、ライブセッション内の行配列を返し、登録 progress 取得は履歴全体の sort・materialization・ID 集合差の生成を行いません。`LiveASRSession.open` は durable events から指定した segmentation / ASR runs を復元し、`segment.created` の全 `speechRanges` と登録時刻、成功した空結果を含む `asr.completed`、既存の `processing.run.started` を保持します。成功結果の重複は consistency error です。
-- `process(reader:)` は任意の `TimelineAudioReading` を受け取り、登録済みの未成功区間を古い順に処理します。pending 件数は durable 登録 ID 数から `asr.completed` の成功 ID 数だけを引き、`asr.failed` は diagnostic のみなので失敗区間も pending です。
-- reopen は durable events から pending set を再導出し、既登録区間・成功済み区間・run-start を重複登録・再処理・保存せず、新しい `open` 後に失敗区間を retry します。行・status・件数は ASR event の durable write 後と保存済み発話文 event の適用時に更新し、保存失敗は元の error を throw します。区間順の認識済み・空・失敗・未処理 status は独立した判定キューへ渡します。未完了と `asr.failed` は観測して待ち、durable な成功結果だけを後続区間として扱います。成功した空結果は区切りです。空白・改行・句読点だけの ASR 原文は空の結果です。
+- `process(reader:)` は任意の `TimelineAudioReading` を受け取り、durable events から pending set を再導出して、未成功区間を古い順に処理します。pending count は登録 ID 数から成功 `asr.completed` ID 数を引いた値で、failure も pending に含みます。成功済み区間・登録・run-start を重複保存せず、ASR event の durable write 後に行・status・件数を更新します。保存失敗は元の error を throw します。recognized / empty / failed / pending status は独立した判定 queue に渡り、pending と failure を後続 ASR 成功として扱いません。最初の `asr.failed` はその attempt を停止し、先行成功行を保持して後続を処理しません。未解決 ASR failure は起動時に自動復旧せず、明示 CLI `--resume-session` は同 generation で不足区間だけを再開できます。利用者の再処理は空の新 generation から始めます。成功した空結果は区切りです。空白・改行・句読点だけの ASR 原文は空の結果です。
 - [`VADSession`](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/VADSession.swift) の saved-reader API は固定4096 sample chunk を保持し、partial chunk は EOF の一度だけ flush します。4096 frame 境界に揃う実消費 progress（無音を含む）は、今回の全 segment を `segment.created` として保存後だけ記録し、正確な EOF frame 数の seal、tail 保存、完了の順です（[保存形式](storage.md#eventsjsonl)）。
-- 未完了 run は sample 0 から replay し、全 ordinal の ID / speech ranges が一致する prefix だけを受け入れ、不一致は error にします。完了済み run は保存済み segments を使い、processor factory も VAD も呼びません（[recovery と保存形式](storage.md#eventsjsonl)）。これらは `VADSession` saved-reader API の動作で、production `LiveVADSession` caller は未接続です。`VADSession.open` / `processAvailable` / `finish` と `LiveASRSession.open` / `process(reader:)` は現行アプリの停止・recovery・CLI caller に接続されておらず、既存の停止時 finalization routing は変わりません。
+- `VADSession` saved-reader API は未完了 run を sample 0 から replay し、全 ordinal の ID / speech ranges が一致する prefix だけを受け入れ、不一致を error にします。完了済み run は保存済み segments を使い、processor factory / VAD を呼びません（[recovery と保存形式](storage.md#eventsjsonl)）。production の live VAD は `LiveVADSession`、stop/finalize は同じ generation に対する `StoredSegmentation.finish` を使います。後者は segmentation が未完了の場合だけ sealed source を sample 0 から再生成・prefix 照合し、完了済みなら保存済み segments を使います。`LiveASRSession.open` / `drain` は stop/finalize と明示 CLI resume で同じ ASR run の durable 成功行を復元し、不足区間だけを処理します。
 - アプリのライブ ASR 待ち行列はバッチごとの `SegmentReference` だけを保持します。`AudioCheckpoint` はセッションごとに最新の保存済み checkpoint を 1 件だけ保持し、各バッチの認識時に使います。保存範囲は単調に伸びるため、最新 checkpoint は待機中の全区間を含みます。checkpoint の chunk 一覧・フレーム数・gap 一覧をバッチごとに保持せず、区間参照はメモリ内に残します。冷却後も登録順で処理し、停止後のライブ処理終了・取消時にキューと checkpoint を解放します。
 
 `LiveTranscriptionState.enqueue` の前提条件は、区間が空でなく、失敗が記録されていないことです。VAD が空の終端区間を返す場合、coordinator は enqueue 前に空を除外します。`await registerLiveSegments` の待機中に ASR 認識失敗が記録されることがあり、登録完了後に coordinator は失敗状態を再確認し、失敗済みならキューへ追加しません。認識失敗が記録されると、既存の待機バッチも破棄します。一方、区間登録の永続化失敗は失敗を記録しても既存の未処理キューを空にせず保持します。未処理キューが残る間はアイドル時のモデル解放条件を満たさず、確定処理または取消時の後始末までモデルは解放されません。
@@ -35,8 +34,8 @@ Mac の ASR は日本語専用 Haas-ja-v1.0 を ONNX Runtime の CPU で実行�
 
 モデルが app に同梱されていなくても、録音は始められて保存されます。ライブ文字起こしは、2つのモデル（ASR、VAD）の取得・照合・読み込みが終わった状態（ready）でだけ動きます。
 
-- 取得中・未取得・取得に失敗した間は、ライブ ASR を実行せず、表示は「モデルの取得後に文字起こしします」（失敗したときは理由）です。登録済みの発話区間は ASR 待ちキューに積まず、後で再開もしません。ready になった後に登録した区間からライブ ASR を行い、録音全体は停止後の確定処理が認識します。
-- 照合と読み込みの間（毎回の起動後は ASR の SHA-256 照合に数秒かかります）だけは、従来のモデル読み込みと同じようにバッチが待ち、ready になれば処理し、失敗に終われば破棄します。破棄したバッチの区間は登録済みなので、確定処理が認識します。
+- 取得中・未取得・取得に失敗した間はライブ ASR を実行せず、表示は「モデルの取得後に文字起こしします」（失敗したときは理由）です。モデルが揃う前の音声も保存され、停止後の finalization は既存 generation を続けるか、generation がなければ新規開始し、未完了 segmentation / 未成功 ASR を処理します。保存済み成功 ASR 行は再認識しません。
+- 照合と読み込みの間（毎回の起動後は ASR の SHA-256 照合に数秒かかります）だけは、読み込み中の既存バッチを保持します。ready になれば処理し、失敗に終わればその attempt を停止します。未処理区間の durable 登録は残り、ASR failure が発生した generation は起動時に自動再試行せず、明示 CLI resume または利用者の新 generation 再処理を待ちます。
 - 録音を始めた時点で VAD のモデルが取得済みでなければ、その録音は全長にわたってライブ VAD なしで進みます（録音は継続）。録音中に VAD を始めません。停止後は `finalize`（`.reject`）がモデルの取得を待ちます。
 - 録音の開始時にモデルの取得を始めます。取得は録音の開始・停止をまたいで続き、録音を止めても止まりません。`asr.completed` の engine/model は実際に認識したエンジンの来歴から取得します。
 
@@ -46,9 +45,9 @@ Mac の ASR は日本語専用 Haas-ja-v1.0 を ONNX Runtime の CPU で実行�
 
 | 表示 | 意味 |
 | --- | --- |
-| ライブ（暫定） | 録音中の結果、または確定できなかった際に保持する暫定結果 |
-| 確定処理中 | 保存音声の確定処理を実行中 |
-| 確定済み | 公開済みの確定結果 |
+| ライブ（暫定） | 録音中に増分保存している現在 generation の行、または確定処理が完了しなかった場合に保持する行 |
+| 確定処理中 | sealed source を使って現在 generation の未完了段階を処理中 |
+| 確定済み | segmentation / ASR が完了した現在 generation の結果。任意判定 pending を含む場合がある |
 
 画面と `transcript.txt` は同じ表示用 projection を使い、表示本文が空白・改行だけでない認識済み発話をすべて含めます。認識不能と、空白・改行・句読点だけの ASR 原文は `asr.completed` の `outcome: empty` で表し、「聞き取れませんでした」などの文字列に一致しただけでは除外しません。
 
@@ -81,11 +80,11 @@ source の同一性、境界候補、次区間の原文 head、時間順、組�
 
 モデルの初期化失敗、符号化失敗、または判定結果の検証失敗なら、該当境界／優先度を保留して本文を表示したままにします。境界保留では分割せず、継続を no と偽装しません。優先度だけが保留の発話文も本文を表示します。ライブの後続待ちは、登録済みでも成功結果がない区間（`asr.failed` を含む）を待ち続け、`asr_gap` にも EOF にもしません。成功した空 ASR 区間は現在のテキスト列だけを区切り、それ以前の保留を解決せず、次の列と切り離します。
 
-`LiveContentPrioritySession.open` を同一の decision run ID 群で明示実行し、ASR も reopen 済みなら、pending を含む durable boundary / assignment を再要求せず、cursor・successor wait・open clause parts を復元します。既存 event 間で中断していた場合は不足する derived closure を保存し、未割当の非空 clause だけを分類して続行します。これは worker API であり、通常の app lifecycle / startup wiring では呼び出しません。
+`LiveContentPrioritySession.open` は録音中と通常 stop/finalization で、同じ選択済み decision run ID 群を開きます。durable な boundary / assignment を再要求せず、cursor・successor wait・open clause parts を復元します。既存 event 間で中断していれば不足する derived closure と未割当の非空 clause だけを続けます。ASR が完了した stop/finalization は `finishInput` を通知して同 worker を drain し、確定専用の新しい batch pass を作りません。
 
 判定 `processing.run.started` の provenance は run 開始時に実際にロードした tagger の engine/model/revision を記録します。本文のある各区間には、終端で候補がない場合も F・B除去範囲を得る実際の境界 request があり、終端を理由に判定呼出しや provenance を省略しません。`unavailable` はモデルの初期化失敗など、tagger を取得していない場合に限ります。成功した各判定呼出しの request record は request ID と入力 token 数を持ち、モデルは run の provenance が示します。モデル確認は live 判定 request ではありません。
 
-通常の録音停止では、VAD polling の停止要求は次の polling を防ぎ、進行中の poll は完了まで待ちます。sleep 中なら polling sleep だけをキャンセルし、既に `segment.created` が durable になった区間登録はキャンセルせず完了させて ASR drain へ渡します。続く final VAD enqueue も同じ drain に加わり、poll で検出した区間と final 区間の両方を処理します。segmentation 完了後に判定キューへ `finishInput` を呼び出して入力終了を通知しますが、未完了 ASR が残れば通知は拒否され、入力全体の EOF にはなりません。この停止処理は実際の VAD・区間登録・ASR の失敗を隠しません。確定処理はイベント append と同じ file lock で、その時点までに保存済みのライブ classified 結果だけを固定してから判定キューを取り消します。推論の完了は待ちません。取り消し後に遅れて返った結果は保存も表示もせず、固定より後に保存された結果も確定処理の再利用には使いません。確定と再試行の比較は各 run 自身の保存済み F・B除去範囲を原文へ適用し、発話文 parts を区間順に区切りなしで連結した UTF-8 byte 列が完全一致する場合だけ優先度を carry-over します。trim・空白・句読点・Unicode 正規化はしません。[確定時の再利用](final.md)
+通常の録音停止では VAD polling の停止要求が次の polling を防ぎ、進行中の poll は完了まで待ちます。sleep 中なら polling sleep だけをキャンセルし、durable な `segment.created` 登録は完了させて同じ ASR drain に渡します。final VAD enqueue も同じ segmentation generation / ASR drain に加わり、poll と final の両区間を処理します。finalization は正確な committed frame count を sealed input boundary として記録し、未完了 segmentation を再生する場合は sample 0 から再生成した prefix を保存済み区間と比較します。ASR は同じ run の成功行を保持し、未成功区間だけを認識します。失敗は隠さず、その attempt を止めます。ASR completion 後は同じ初期 decision pair の worker を開き、durable boundary / priority events を復元して `finishInput` と drain を行います。後続の判定結果もこの worker が同じ選択 run のイベントとして保存します。
 
 ASR drain は判定に関係なく動作します。CLI の `ContentPriorityAccess.disabled` は境界・F・B除去範囲・優先度の判定を行わず、assessment と `filler_ranges` を作らないため、表示本文は RAW ASR 原文に表示用の数字表記変換だけを適用し、ASR とイベントは変更しません。ライブ判定と確定判定は共通の confidence ≥ 0.90 の優先度表示規則を使います。
 
@@ -103,22 +102,22 @@ ASR drain は判定に関係なく動作します。CLI の `ContentPriorityAcce
 
 `critical` または状態不明では「発熱のためライブ表示を一時停止中」と表示します。録音保存、VAD、durable な区間登録は継続し、滞留時間が長くても認識を強行しません。熱状態を 1 秒ごとに確認し、認識を再開できる状態になったらキューの最古のバッチから処理します。`serious` まで冷えた場合は 750 ms 待機します。進行中の同期推論を途中で中断する仕組みではありません。
 
-このライブ熱判定は録音中に適用します。録音停止後の残存ライブキューはこの判定では待たずに処理します。続く確定処理は実際の `critical` の間だけ一時停止し、状態不明では一時停止しません。一時停止中は公開済み結果を保持し、冷却後は新しい run で全量を再実行します。CLI は明示的な再開操作を必要とします。[確定処理](final.md#発熱による一時停止と再開)
+このライブ熱判定は録音中に適用します。録音停止後の残存ライブキューはこの判定では待たずに処理します。続く確定処理は実際の `critical` の間だけ一時停止し、状態不明では一時停止しません。一時停止中は同 generation の durable rows を保持し、冷却後は未完了 segmentation / 未成功 ASR だけを再開します。CLI は明示的な再開操作を必要とします。[確定処理](final.md#発熱による一時停止と再開)
 
 ## リソース保護によるライブ認識の停止
 
 `LiveTranscriptionCoordinator` は初期化時に `resourceMonitor` を optional に受け取る portable seam です。`nil` は monitor 未設定であり、`.healthy` を観測した意味ではありません。Mac の [`AppState`](../app/MacAmbientJev/Sources/MacAmbientJev/AppState.swift) は明示的に `resourceMonitor: nil` を渡します。Windows Engine は [`WindowsInferenceResourceMonitor`](../app/MacAmbientJev/Sources/MacAmbientJevWindowsSupport/WindowsInferenceResourceMonitor.swift) を注入します（[Windows の推論リソース監視](windows.md#windows-の推論リソース監視)）。
 resource 状態の変化を観測したとき、VAD 開始時、VAD が checkpoint を処理する直前、ASR batch を dequeue する直前に gate を確認します。`healthy`・`pressure`・`monitorFailed` を受け、pressure / monitorFailed はこの録音のライブ認識停止を failure としてラッチします（「メモリ不足のためライブ認識を停止しました。録音は継続しています」「リソース監視に失敗したためライブ認識を停止しました。録音は継続しています」）。
 VAD の新規処理と ASR の新規登録・認識を止め、破棄するのは未処理のライブ待ち行列だけです。進行中の native call は完了することがあり、capture・audio drain・durable writer は継続し、保存済み events と audio は保持します。
-同じ録音中に healthy へ戻ってもライブ認識を再開しません。failure は cleanup までその録音にラッチされます。停止時は放棄したライブ drain を省いて新しい全録音確定処理へ進みますが、その処理も monitor が設定されている場合は resource gate の対象です。
+同じ録音中に healthy へ戻ってもライブ認識を再開しません。failure は cleanup までその録音にラッチされます。停止時は放棄した live drain を省き、保存済み generation の finalization へ進みます。その処理も monitor 設定時は resource gate の対象で、再開時は segmentation 未完了なら sealed source から prefix 照合し、ASR の成功済み行を保持して不足区間だけを処理します。
 熱制御の backlog 保持と冷却後の再開は別動作で、変更ありません。詳細は [monitoring protocol](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/InferenceResourceMonitoring.swift) と [ライブ coordinator](../app/MacAmbientJev/Sources/MacAmbientJevPipeline/LiveTranscriptionCoordinator.swift) を参照してください。
 
 ## ライブ処理の失敗
 
-VAD の失敗時は「録音は継続しています。発話検出を停止しました: …」と表示し、マイクの発話音量監視も利用不能にします。ASR の開始失敗、区間登録失敗、認識結果や失敗イベントの保存失敗は、それぞれ理由を表示します。ライブ ASR が継続できなくても録音保存は継続し、停止後に保存音声を確定処理します。録音保存自体が失敗した場合は[キャプチャの保存障害](capture.md#保存障害と健全範囲の確定処理)の扱いになります。
+VAD の失敗時は「録音は継続しています。発話検出を停止しました: …」と表示し、マイクの発話音量監視も利用不能にします。ASR の開始失敗、区間登録失敗、認識結果や失敗イベントの保存失敗は、それぞれ理由を表示します。ライブ ASR が継続できなくても録音保存は継続し、停止後は同じ generation の finalization が保存済み segmentation / ASR を検証して不足分を処理します。録音保存自体が失敗した場合は[キャプチャの保存障害](capture.md#保存障害と健全範囲の確定処理)の扱いになります。
 
 登録・ASR 完了・ASR 失敗の件数と status は、それぞれのイベントが durable になってから更新します。イベント保存失敗は元の error を throw し、その event の行・件数・status を公開しません。
-model prepare・音声読取・文字起こしの最初の失敗は `asr.failed` 診断を保存してその attempt を止めます。それ以前の成功は保持し、後続区間は処理せず、失敗区間は pending のまま次の `open` で再試行します。未処理区間が残る場合や保存済み ASR 失敗がある場合、ライブ run の終了結果は成功になりません。終了は進行中の保存・推論を待ち、終了結果を保存した後は同じ completion を返します。
+model prepare・音声読取・文字起こしの最初の失敗は `asr.failed` 診断を保存してその attempt を止めます。それ以前の成功は保持し、後続区間は処理しません。未解決 failure がある generation は起動時に自動復旧せず、明示 CLI resume だけが同じ generation で未成功区間を再試行します。利用者の再処理は新 generation を空から開始します。未処理区間や failure があればライブ run の終了結果は成功になりません。終了は進行中の保存・推論を待ち、終了結果を保存した後は同じ completion を返します。
 
 モデルの初期化失敗・判定失敗は録音保存やライブ ASR を停止せず、その対象を保留して通常表示を保ちます。モデルの欠損・未学習・metadata/tokenizer 不正では「発話文の判定を保留しました。判定エンジンを初期化できませんでした: <実際の理由>」と表示し、保存済み ASR 原文は通常表示のまま録音を続けます。ライブ判定のイベント保存・materialization 公開に失敗した場合は保留への置換をせず、理由をエラー表示してその判定キューを停止します。録音と ASR は継続します。
 

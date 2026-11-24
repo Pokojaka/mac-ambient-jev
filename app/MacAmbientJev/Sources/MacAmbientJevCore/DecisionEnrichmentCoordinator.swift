@@ -14,9 +14,8 @@ public enum DecisionRunProvenance {
     private static let maximumTokens = "192"
     private static let computeUnits = "cpu-only"
 
-    /// `mode` is `live`, `final` or `retry`.
-    public static func boundary(mode: String, identity: DecisionModelIdentity) -> RunProvenance {
-        var configuration = commonConfiguration(identity: identity, mode: mode)
+    public static func boundary(identity: DecisionModelIdentity) -> RunProvenance {
+        var configuration = commonConfiguration(identity: identity)
         configuration["candidate_characters"] = "、。？！?!"
         configuration["boundary_threshold"] = String(ClauseBoundaryPolicy.boundaryThreshold)
         configuration["continuation_threshold"] = String(ClauseBoundaryPolicy.continuationThreshold)
@@ -29,28 +28,26 @@ public enum DecisionRunProvenance {
         return RunProvenance(engine: identity.backend, model: identity.model, version: identity.modelRevision, configuration: configuration)
     }
 
-    public static func priority(mode: String, identity: DecisionModelIdentity) -> RunProvenance {
-        var configuration = commonConfiguration(identity: identity, mode: mode)
+    public static func priority(identity: DecisionModelIdentity) -> RunProvenance {
+        var configuration = commonConfiguration(identity: identity)
         configuration["minimum_demotion_confidence"] = String(ContentPriorityPolicy.minimumDemotionConfidence)
         configuration["maximum_targets"] = String(PriorityBatchPolicy.maximumTargets)
         configuration["text_policy"] = "filler-backchannel-removed-neutral-punctuation-piecewise"
         return RunProvenance(engine: identity.backend, model: identity.model, version: identity.modelRevision, configuration: configuration)
     }
 
-    /// A live run whose tagger could not be loaded.
-    public static func unavailable(mode: String) -> RunProvenance {
+    /// A run whose tagger could not be loaded.
+    public static func unavailable() -> RunProvenance {
         RunProvenance(engine: "unavailable", model: nil, version: "1", configuration: [
-            "mode": mode,
             "unit_policy": unitPolicy,
         ])
     }
 
-    private static func commonConfiguration(identity: DecisionModelIdentity, mode: String) -> [String: String] {
+    private static func commonConfiguration(identity: DecisionModelIdentity) -> [String: String] {
         [
             "model_id": identity.model,
             "model_revision": identity.modelRevision,
             "unit_policy": unitPolicy,
-            "mode": mode,
             "encoding_revision": encodingRevision,
             "max_tokens": maximumTokens,
             "compute_units": computeUnits,
@@ -243,7 +240,7 @@ public actor DecisionEnrichmentCoordinator {
                 throw EventLogTranscriptReaderError.unreadableLine(index: recovered.lines.count)
             }
             rebuildsUnpublishedSnapshot = try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(
-                lines: recovered.lines, activeRuns: activeRuns
+                lines: recovered.lines, sessionID: sessionID
             )
         }
         if !reusableDecisions.isEmpty {
@@ -251,7 +248,11 @@ public actor DecisionEnrichmentCoordinator {
             guard !recovered.droppedIncompleteTail else {
                 throw EventLogTranscriptReaderError.unreadableLine(index: recovered.lines.count)
             }
-            let log = try ClauseEventLog(lines: EventLogLine.decode(recovered.lines),
+            let decoded = try EventLogLine.decode(recovered.lines)
+            guard let generation = try GenerationEventLog(lines: decoded, sessionID: sessionID) else {
+                throw ProcessingLogStateError.missingGeneration
+            }
+            let log = try ClauseEventLog(lines: generation.lines,
                 selectedRuns: Set(reusableDecisions.values.flatMap {
                     [$0.sourcePriorityRunID, $0.sourceClause.boundaryRunID]
                 }), sessionID: sessionID)
@@ -260,16 +261,16 @@ public actor DecisionEnrichmentCoordinator {
         _ = try materializer.materialize(events: existingEvents, activeRuns: activeRuns)
         let timeline = try SourceTimeline(events: existingEvents, activeRuns: activeRuns)
         let published = try PublishedDecisionSnapshot(events: existingEvents, activeRuns: activeRuns)
-        let mode: String
+        let isRetry: Bool
         let boundaryTargets: Set<SegmentTextReference>?
         let clauseTargets: Set<ClauseReference>
         switch scope {
         case .all:
-            mode = "final"
+            isRetry = false
             boundaryTargets = nil
             clauseTargets = []
         case .retry(let segments, let clauses):
-            mode = "retry"
+            isRetry = true
             boundaryTargets = segments
             clauseTargets = clauses
             try validateRetry(segments: segments, clauses: clauses, published: published, timeline: timeline)
@@ -286,7 +287,7 @@ public actor DecisionEnrichmentCoordinator {
             let pendingBoundary: [SegmentTextReference]
             if rebuildsBoundaries {
                 (clauses, pendingBoundary) = try await buildBoundaryRun(
-                    timeline: timeline, published: published, carriedSegments: boundaryTargets, mode: mode
+                    timeline: timeline, published: published, carriedSegments: boundaryTargets, isRetry: isRetry
                 )
             } else {
                 clauses = published.clauses
@@ -296,7 +297,7 @@ public actor DecisionEnrichmentCoordinator {
             let assignments = try await buildPriorityRun(
                 clauses: clauses, timeline: timeline, published: published,
                 rebuildsBoundaries: rebuildsBoundaries, scope: scope, clauseTargets: clauseTargets,
-                reusableDecisions: reusableDecisions, mode: mode
+                reusableDecisions: reusableDecisions, isRetry: isRetry
             )
             let pendingClauses = clauses.map(\.reference).filter { assignments[$0]?.needsRetry == true }
             let selected = activeRuns.withDecisionRuns(clauseBoundary: boundaryRunID, contentPriority: priorityRunID)
@@ -332,17 +333,17 @@ public actor DecisionEnrichmentCoordinator {
         timeline: SourceTimeline,
         published: PublishedDecisionSnapshot,
         carriedSegments boundaryTargets: Set<SegmentTextReference>?,
-        mode: String
+        isRetry: Bool
     ) async throws -> (clauses: [ClauseUnit], pending: [SegmentTextReference]) {
         try await append(
             "processing.run.started", runID: boundaryRunID,
             payload: ProcessingRunStartedPayload(
                 stage: .clauseBoundary,
-                provenance: decisions.boundaryProvenance(mode: mode)
+                provenance: decisions.boundaryProvenance()
             ),
             kind: nil
         )
-        if mode == "retry" { registerRetryRun(runID: boundaryRunID, stage: .clauseBoundary) }
+        if isRetry { registerRetryRun(runID: boundaryRunID, stage: .clauseBoundary) }
         var assembly = ClauseBoundaryAssembly(boundaryRunID: boundaryRunID)
         var clauses: [ClauseUnit] = []
         var pending: [SegmentTextReference] = []
@@ -363,7 +364,7 @@ public actor DecisionEnrichmentCoordinator {
                 newlyRequested = true
                 state = try await requestBoundary(index: index, timeline: timeline)
             }
-            if mode == "retry", newlyRequested,
+            if isRetry, newlyRequested,
                case .pending(reason: .requestFailed, message: let message) = state {
                 updateRetryProgress(runID: boundaryRunID, completed: 0, failed: 1)
                 throw DecisionEnrichmentError.retryRequestFailed(message)
@@ -372,13 +373,13 @@ public actor DecisionEnrichmentCoordinator {
             case .assessed(let assessment):
                 try await append(ClauseEventType.boundaryAssessed, runID: boundaryRunID, payload: assessment,
                                  kind: .clauseBoundaryAssessed(assessment))
-                if mode == "retry" { updateRetryProgress(runID: boundaryRunID, completed: 1, failed: 0) }
+                if isRetry { updateRetryProgress(runID: boundaryRunID, completed: 1, failed: 0) }
             case .pending(let reason, let message):
                 let payload = ClauseBoundaryPendingPayload(source: entry.source, reason: reason, message: message)
                 try await append(ClauseEventType.boundaryPending, runID: boundaryRunID, payload: payload,
                                  kind: .clauseBoundaryPending(payload))
                 pending.append(entry.source)
-                if mode == "retry" { updateRetryProgress(runID: boundaryRunID, completed: 0, failed: 1) }
+                if isRetry { updateRetryProgress(runID: boundaryRunID, completed: 0, failed: 1) }
             }
             let delta = try assembly.consume(ClauseAssemblyInput(source: entry.source, text: entry.text, state: state))
             clauses += try await appendClosed(delta.closed)
@@ -387,7 +388,7 @@ public actor DecisionEnrichmentCoordinator {
             }
         }
         clauses += try await appendClosed(try assembly.finish().closed)
-        if mode != "retry" {
+        if !isRetry {
             try await append(
                 "processing.run.completed", runID: boundaryRunID,
                 payload: ProcessingRunCompletedPayload(
@@ -433,17 +434,17 @@ public actor DecisionEnrichmentCoordinator {
         scope: DecisionEnrichmentScope,
         clauseTargets: Set<ClauseReference>,
         reusableDecisions: [ExactClauseTextKey: ReusableClauseDecision],
-        mode: String
+        isRetry: Bool
     ) async throws -> [ClauseReference: ClausePriorityAssignment] {
         try await append(
             "processing.run.started", runID: priorityRunID,
             payload: ProcessingRunStartedPayload(
                 stage: .contentPriority,
-                provenance: decisions.priorityProvenance(mode: mode)
+                provenance: decisions.priorityProvenance()
             ),
             kind: nil
         )
-        if mode == "retry" { registerRetryRun(runID: priorityRunID, stage: .contentPriority) }
+        if isRetry { registerRetryRun(runID: priorityRunID, stage: .contentPriority) }
         var composer = ClauseTextComposer()
         for event in self.events {
             guard event.processingRunID == boundaryRunID,
@@ -520,7 +521,7 @@ public actor DecisionEnrichmentCoordinator {
             let payload = try ContentPriorityAssignedPayload(assignments: carried, request: nil)
             payloads.append(payload)
             try await record(payload)
-            if mode == "retry" { recordRetryPriorityOutcomes(runID: priorityRunID, assignments: payload.assignments) }
+            if isRetry { recordRetryPriorityOutcomes(runID: priorityRunID, assignments: payload.assignments) }
         }
         var batches = try ClausePriorityBatches(targets: targets)
         while batches.hasRemaining {
@@ -536,14 +537,14 @@ public actor DecisionEnrichmentCoordinator {
             }
             payloads.append(payload)
             try await record(payload)
-            if mode == "retry" { recordRetryPriorityOutcomes(runID: priorityRunID, assignments: payload.assignments) }
+            if isRetry { recordRetryPriorityOutcomes(runID: priorityRunID, assignments: payload.assignments) }
         }
         var assignments: [ClauseReference: ClausePriorityAssignment] = [:]
         for payload in payloads {
             for assignment in payload.assignments { assignments[assignment.reference] = assignment }
         }
         let pendingCount = assignments.values.filter(\.needsRetry).count
-        if mode != "retry" {
+        if !isRetry {
             try await append(
                 "processing.run.completed", runID: priorityRunID,
                 payload: ProcessingRunCompletedPayload(

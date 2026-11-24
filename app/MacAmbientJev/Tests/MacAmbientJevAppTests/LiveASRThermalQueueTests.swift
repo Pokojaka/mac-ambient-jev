@@ -169,8 +169,7 @@ func coolingResumesThermallyHeldFinalization() async throws {
         let sessionURL = try SessionDirectoryLocator(fileManager: .default)
             .resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
         let metadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
-        #expect(metadata.finalizationAttempt?.state == .complete)
-        #expect(metadata.activeRuns != nil)
+        #expect(metadata.state == .complete)
         #expect(await asr.inputs() == [])
     } catch {
         pressure.pressure = .fair

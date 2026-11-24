@@ -8,7 +8,7 @@ func finalSnapshotJoinsSegmentsIntoClausesAndClassifiesFillerRemovedText() async
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     let events = try await writeTranscript(["えー、これは", "コピーと。うん、うん。", "次の話です"], root: root, sessionID: sessionID)
-    _ = try publishLocal(root: root, events: events)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
     let knownFiller = try TextUTF16Range(start: 0, end: 2)
     let provider = ScriptedDecisionProvider(
         boundary: punctuationBoundaries(
@@ -31,7 +31,7 @@ func finalSnapshotJoinsSegmentsIntoClausesAndClassifiesFillerRemovedText() async
     #expect(result.pendingBoundarySegments.isEmpty)
     #expect(result.pendingPriorityClauses.isEmpty)
 
-    let published = try readPublished(root: root)
+    let published = try readPublished(root: root, sessionID: sessionID)
     #expect(published == result.materializedSegments)
     #expect(published.map(\.clauseState) == [.classified, .classified, .classified])
     #expect(published.map(\.text) == ["えー、これは", "コピーと。うん、うん。", "次の話です"])
@@ -62,7 +62,8 @@ func finalSnapshotPersistsModelProvenanceAndRequestRecords() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     let events = try await writeTranscript(["最初。後続", "独立"], root: root, sessionID: sessionID)
-    let initialMetadata = try publishLocal(root: root, events: events)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
+    let initialStored = try readStored(root: root, sessionID: sessionID)
     let modelID = "Pokojaka/modernbert-ja-30m-utterance-tagger"
     let revision = String(repeating: "a", count: 64)
     let counter = DecisionUsageCounter()
@@ -72,7 +73,7 @@ func finalSnapshotPersistsModelProvenanceAndRequestRecords() async throws {
     )
     let boundaryRunID = "boundary_local_final"
     let priorityRunID = "priority_local_final"
-    let activeRuns = try requireValue(initialMetadata.activeRuns)
+    let activeRuns = initialStored.state.runs
     let coordinator = DecisionEnrichmentCoordinator(
         sessionID: sessionID, boundaryRunID: boundaryRunID, priorityRunID: priorityRunID,
         writer: try SessionWriter(sessionURL: root), decisions: decisions,
@@ -80,16 +81,14 @@ func finalSnapshotPersistsModelProvenanceAndRequestRecords() async throws {
     )
 
     let result = try await coordinator.process(
-        existingEvents: try EventLogTranscriptReader().events(lines: eventLines(root), activeRuns: activeRuns),
+        existingEvents: initialStored.events,
         activeRuns: activeRuns, scope: .all, reusableDecisions: [:], onEvent: nil
     )
-    try ProcessingMetadataStore(sessionURL: root).publishDecisionSnapshot(
-        basedOn: activeRuns, clauseBoundaryRunID: result.boundaryRunID,
-        contentPriorityRunID: result.priorityRunID,
-        pendingClauseBoundarySegments: result.pendingBoundarySegments,
-        pendingContentPriorityClauses: result.pendingPriorityClauses
-    )
-    await coordinator.recordPublished(result, replacing: initialMetadata.pendingDecisionTargets)
+    try await SessionWriter(sessionURL: root).append(DecisionRunReplacement(
+        generationID: initialStored.state.generation.id, previous: nil,
+        replacement: DecisionRunIDs(boundary: result.boundaryRunID, priority: result.priorityRunID)
+    ).selectionEvent(sessionID: sessionID))
+    await coordinator.recordPublished(result, replacing: initialStored.pendingDecisions.pendingTargets)
 
     let objects = try eventObjects(root)
     let starts = objects.filter { $0["event_type"] as? String == "processing.run.started" }
@@ -130,10 +129,9 @@ func finalSnapshotPersistsModelProvenanceAndRequestRecords() async throws {
     #expect(requestRecords.allSatisfy { Set($0.keys) == ["request_id", "input_tokens"] })
     #expect(Set(requestRecords.compactMap { $0["input_tokens"] as? Int }) == [11, 17])
 
-    let selectedRuns = activeRuns.withDecisionRuns(clauseBoundary: boundaryRunID, contentPriority: priorityRunID)
-    let reconstructed = try EventLogTranscriptReader().events(lines: eventLines(root), activeRuns: selectedRuns)
+    let reconstructed = try readStored(root: root, sessionID: sessionID).events
     #expect(reconstructed.count == result.events.count)
-    #expect(try readPublished(root: root).filter(\.hasRecognizedText).map(\.clauseState)
+    #expect(try readPublished(root: root, sessionID: sessionID).filter(\.hasRecognizedText).map(\.clauseState)
         == [.classified, .classified])
     let usage = await counter.snapshot()
     #expect(usage.boundaryRequests.sendCount == 2)
@@ -184,7 +182,8 @@ func malformedFillerRangesFailBoundaryRequestWithoutSuccessUsage() async throws 
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     let events = try await writeTranscript(["本文"], root: root, sessionID: sessionID)
-    let local = try publishLocal(root: root, events: events)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
+    let pendingBefore = try readStored(root: root, sessionID: sessionID).pendingDecisions
     let provider = ScriptedDecisionProvider(boundary: { request in
         ClauseBoundaryResponse(
             probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.9) }),
@@ -200,9 +199,9 @@ func malformedFillerRangesFailBoundaryRequestWithoutSuccessUsage() async throws 
     )
 
     #expect(await provider.boundaryRequests.count == 1)
-    #expect(result.pendingBoundarySegments == local.pendingClauseBoundarySegments)
+    #expect(result.pendingBoundarySegments == pendingBefore.boundarySegments)
     #expect(result.pendingPriorityClauses.isEmpty)
-    #expect(try readPublished(root: root).first?.clauseState == .boundaryPending)
+    #expect(try readPublished(root: root, sessionID: sessionID).first?.clauseState == .boundaryPending)
     let usage = await counter.snapshot()
     #expect(usage.boundaryRequests.sendCount == 1)
     #expect(usage.boundaryRequests.successCount == 0)
@@ -217,7 +216,8 @@ func fortyOneClausesAreSentAsTwoOrderedPriorityRequests() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     let text = (1...41).map { "文\($0)。" }.joined() + "終わり"
-    _ = try publishLocal(root: root, events: try await writeTranscript([text], root: root, sessionID: sessionID))
+    _ = try await writeTranscript([text], root: root, sessionID: sessionID)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: lowForBackchannel)
 
     let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
@@ -230,83 +230,13 @@ func fortyOneClausesAreSentAsTwoOrderedPriorityRequests() async throws {
     #expect(result.materializedSegments.first?.clauseSlices.count == 42)
 }
 
-@Test(arguments: [40, 41])
-func priorityBatchLimitAppliesAfterRemovingDurableReusableClauses(_ remaining: Int) async throws {
-    let root = temporarySessionRoot()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let sessionID = UUID()
-    let texts = (1...(remaining + 1)).map { "文\($0)。" }
-    _ = try publishLocal(root: root, events: try await writeTranscript([texts.joined()], root: root, sessionID: sessionID))
-    try await writeLiveRun(root: root, sessionID: sessionID, texts: [texts[0]],
-                           fillerRangesByIndex: [:], results: [(0, .lowPriority)], complete: false)
-    let reusable = try EventLogTranscriptReader().liveContentPriorityDecisions(
-        from: Data(contentsOf: root.appending(path: "events.jsonl")),
-        modelRevision: testDecisionIdentity.modelRevision
-    )
-    let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: lowForBackchannel)
-    let counter = DecisionUsageCounter()
-    let result = try await buildAndPublish(
-        root: root, sessionID: sessionID, provider: provider, scope: .all,
-        reusable: reusable, counter: counter
-    )
-    let requests = await provider.priorityRequests
-    #expect(requests.map(\.count) == (remaining == 40 ? [40] : [40, 1]))
-    #expect(requests.flatMap { $0.map(\.text) } == Array(texts.dropFirst()))
-    #expect(result.materializedSegments.first?.clauseSlices.first?.priority == .lowPriority)
-    let usage = await counter.snapshot()
-    #expect(usage.boundaryRequests.sendCount == 1)
-    #expect(usage.priorityRequests.sendCount == (remaining == 40 ? 1 : 2))
-    #expect(usage.inputTokens == (remaining == 40 ? 20 : 30))
-    #expect(try readPublished(root: root) == result.materializedSegments)
-}
-
-@Test
-func liveDecisionIsReusedOnlyForTheByteIdenticalFilteredText() async throws {
-    let root = temporarySessionRoot()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let sessionID = UUID()
-    // The first clause differs from the live text only by a removed filler; the second by Unicode normalization.
-    _ = try publishLocal(root: root, events: try await writeTranscript(["えー、同じ発話。か\u{3099}くせい"], root: root, sessionID: sessionID))
-    let knownFiller = try TextUTF16Range(start: 0, end: 2)
-    let provider = ScriptedDecisionProvider(
-        boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: ["s01": [knownFiller]]),
-        priority: lowForBackchannel
-    )
-    try await writeLiveRun(
-        root: root, sessionID: sessionID, texts: ["同じ発話。", "がくせい"],
-        fillerRangesByIndex: [:], results: [(0, .lowPriority), (1, .lowPriority)], complete: false
-    )
-    let reusable = try EventLogTranscriptReader().liveContentPriorityDecisions(
-        from: Data(contentsOf: root.appending(path: "events.jsonl")),
-        modelRevision: testDecisionIdentity.modelRevision
-    )
-
-    let result = try await buildAndPublish(
-        root: root, sessionID: sessionID, provider: provider, scope: .all,
-        reusable: reusable
-    )
-
-    #expect(await provider.priorityRequests.map { $0.map(\.text) } == [["か\u{3099}くせい"]])
-    let slices = try requireValue(result.materializedSegments.first).clauseSlices
-    #expect(slices.map(\.priority) == [.lowPriority, .primary])
-    let assigned = try eventObjects(root).filter {
-        $0["event_type"] as? String == "content_priority.assigned"
-            && $0["processing_run_id"] as? String == result.priorityRunID
-    }
-    let carried = try requireValue(assigned.first?["payload"] as? [String: Any])
-    #expect(carried["request"] is NSNull)
-    let decision = try requireValue(((carried["assignments"] as? [[String: Any]])?.first?["decision"]) as? [String: Any])
-    #expect(decision["kind"] as? String == "carried_over")
-    #expect(decision["source_priority_run_id"] as? String == "priority_live")
-    #expect(decision["source_event_seq"] as? UInt64 == reusable[ExactClauseTextKey(text: "同じ発話。")]?.sourceEventSeq)
-}
-
 @Test
 func nonexistentReuseIsRejectedBeforeAnyBoundaryRequest() async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
-    _ = try publishLocal(root: root, events: try await writeTranscript(["本文。次"], root: root, sessionID: sessionID))
+    _ = try await writeTranscript(["本文。次"], root: root, sessionID: sessionID)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: lowForBackchannel)
     let reuse = ReusableClauseDecision(
         sourcePriorityRunID: "unknown", sourceEventSeq: 999,
@@ -328,13 +258,14 @@ func localOnlyTargetedBoundaryRetryLeavesOtherSourcesPending() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     let events = try await writeTranscript(["最初。後半", "", "独立"], root: root, sessionID: sessionID)
-    let local = try publishLocal(root: root, events: events)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
+    let pendingBefore = try readStored(root: root, sessionID: sessionID).pendingDecisions
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: lowForBackchannel)
     let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider,
         scope: .retry(boundarySegments: [try source("s01", in: events)], clauses: []))
     #expect(await provider.boundaryRequests.map(\.source.segmentID) == ["s01"])
-    #expect(result.pendingBoundarySegments == [local.pendingClauseBoundarySegments[1]])
-    #expect(try readPublished(root: root).filter(\.hasRecognizedText).map(\.clauseState) == [.classified, .boundaryPending])
+    #expect(result.pendingBoundarySegments == [pendingBefore.boundarySegments[1]])
+    #expect(try readPublished(root: root, sessionID: sessionID).filter(\.hasRecognizedText).map(\.clauseState) == [.classified, .boundaryPending])
 }
 
 @Test
@@ -342,14 +273,15 @@ func emptyASRTerminatesAnUnresolvedComponentWithoutResolvingIt() async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
-    _ = try publishLocal(root: root, events: try await writeTranscript(["保留。末尾", "", "独立。次"], root: root, sessionID: sessionID))
+    _ = try await writeTranscript(["保留。末尾", "", "独立。次"], root: root, sessionID: sessionID)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
     let provider = ScriptedDecisionProvider(boundary: { request in
         if request.source.segmentID == "s01" { throw DecisionResponseError.missingAnswer }
         return try punctuationBoundaries(continuing: [], fillerRangesBySegment: [:])(request)
     }, priority: lowForBackchannel)
     _ = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
     #expect(await provider.priorityRequests.map { $0.map(\.text) } == [["独立。", "次"]])
-    let rows = try readPublished(root: root).filter(\.hasRecognizedText)
+    let rows = try readPublished(root: root, sessionID: sessionID).filter(\.hasRecognizedText)
     #expect(rows.map(\.clauseState) == [.boundaryPending, .classified])
     #expect(rows[0].clauseSlices.isEmpty)
 }
@@ -365,7 +297,7 @@ func punctuationOnlyASRTerminatesBoundaryStream() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     let events = try await writeTranscript(["最初。後続", "。", "次の本文"], root: root, sessionID: sessionID)
-    _ = try publishLocal(root: root, events: events)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
     let provider = ScriptedDecisionProvider(boundary: { request in
         if request.next != nil {
             _ = try ClauseTaggerEncoding.continuationInput(request) { piece -> [ClauseTaggerToken] in
@@ -399,7 +331,7 @@ func punctuationOnlyASRTerminatesBoundaryStream() async throws {
     #expect(punctuationPayload?["text"] as? String == "。")
     #expect(punctuationPayload?["outcome"] as? String == ASRRecognitionOutcome.empty.rawValue)
 
-    let published = try readPublished(root: root)
+    let published = try readPublished(root: root, sessionID: sessionID)
     #expect(published.map(\.segmentID) == ["s01", "s02", "s03"])
     let punctuationSegment = try requireValue(published.first { $0.segmentID == "s02" })
     #expect(punctuationSegment.text == "。")
@@ -413,19 +345,20 @@ func failedBoundaryRequestsLeaveRecognizedSourcesUnresolved() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     let events = try await writeTranscript(["一つ目。二つ目", "三つ目"], root: root, sessionID: sessionID)
-    let local = try publishLocal(root: root, events: events)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
+    let pendingBefore = try readStored(root: root, sessionID: sessionID).pendingDecisions
     let provider = ScriptedDecisionProvider(
         boundary: { _ in throw DecisionResponseError.missingAnswer }, priority: lowForBackchannel
     )
     let counter = DecisionUsageCounter()
-    await counter.recordDeferred(sessionID: sessionID, targets: local.pendingDecisionTargets)
+    await counter.recordDeferred(sessionID: sessionID, targets: pendingBefore.pendingTargets)
 
     let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all, counter: counter)
 
     #expect(await provider.boundaryRequests.map(\.source.segmentID) == ["s01", "s02"])
     #expect(await provider.priorityRequests.isEmpty)
-    #expect(result.pendingBoundarySegments == local.pendingClauseBoundarySegments)
-    let published = try readPublished(root: root)
+    #expect(result.pendingBoundarySegments == pendingBefore.boundarySegments)
+    let published = try readPublished(root: root, sessionID: sessionID)
     #expect(published.map(\.clauseState) == [.boundaryPending, .boundaryPending])
     #expect(published.allSatisfy { $0.clauseSlices.isEmpty })
     // Unsplit, unclassified rows still use display formatting; a failed boundary is never turned into "no".
@@ -446,7 +379,8 @@ func requestSpecificPriorityFailureKeepsItsBatchPendingAndSendsTheNext() async t
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     let text = (1...41).map { "文\($0)。" }.joined()
-    _ = try publishLocal(root: root, events: try await writeTranscript([text], root: root, sessionID: sessionID))
+    _ = try await writeTranscript([text], root: root, sessionID: sessionID)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
     let failedFirst = Locked(false)
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: { targets in
         if !failedFirst.value {
@@ -460,7 +394,7 @@ func requestSpecificPriorityFailureKeepsItsBatchPendingAndSendsTheNext() async t
 
     #expect(await provider.priorityRequests.map(\.count) == [40, 1])
     #expect(result.pendingPriorityClauses.count == 40)
-    let published = try readPublished(root: root)
+    let published = try readPublished(root: root, sessionID: sessionID)
     #expect(published.map(\.clauseState) == [.priorityPending])
     #expect(try LiveTranscriptProjection().rows(for: published).map(\.text) == [text])
 }
@@ -470,7 +404,8 @@ func priorityOnlyRetryRequestsOnlyTheTargetsAndCarriesEveryOtherResult() async t
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
-    _ = try publishLocal(root: root, events: try await writeTranscript(["一。二。三"], root: root, sessionID: sessionID))
+    _ = try await writeTranscript(["一。二。三"], root: root, sessionID: sessionID)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
     let failing = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: { _ in
         throw DecisionResponseError.missingAnswer
     })
@@ -492,10 +427,10 @@ func priorityOnlyRetryRequestsOnlyTheTargetsAndCarriesEveryOtherResult() async t
     #expect(retried.boundaryRunID == first.boundaryRunID)
     // Pending results that were not requested stay pending; they are never turned into results.
     #expect(retried.pendingPriorityClauses == [first.pendingPriorityClauses[0], first.pendingPriorityClauses[2]])
-    let metadata = try requireValue(try ProcessingMetadataStore(sessionURL: root).load())
-    #expect(metadata.activeRuns?.contentPriority == retried.priorityRunID)
-    #expect(metadata.pendingContentPriorityClauses == retried.pendingPriorityClauses)
-    #expect(try readPublished(root: root).first?.clauseSlices.map(\.needsRetry) == [true, false, true])
+    let stored = try readStored(root: root, sessionID: sessionID)
+    #expect(stored.state.runs.contentPriority == retried.priorityRunID)
+    #expect(stored.pendingDecisions.clauses == retried.pendingPriorityClauses)
+    #expect(try readPublished(root: root, sessionID: sessionID).first?.clauseSlices.map(\.needsRetry) == [true, false, true])
     let snapshot = await counter.snapshot()
     #expect(snapshot.pendingPriorityClauseCount == 2)
     #expect(snapshot.priorityRequests.sendCount == 1)
@@ -507,7 +442,7 @@ func boundaryRetryCarriesPublishedAssessmentsAndRequestsOnlyPendingSegments() as
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     let events = try await writeTranscript(["前。続く", "途中", "終わり。後"], root: root, sessionID: sessionID)
-    _ = try publishLocal(root: root, events: events)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
     let failingMiddle = ScriptedDecisionProvider(boundary: { request in
         if request.source.segmentID == "s02" { throw DecisionResponseError.missingAnswer }
         return try punctuationBoundaries(continuing: ["s01", "s02"], fillerRangesBySegment: [:])(request)
@@ -515,7 +450,7 @@ func boundaryRetryCarriesPublishedAssessmentsAndRequestsOnlyPendingSegments() as
     let first = try await buildAndPublish(root: root, sessionID: sessionID, provider: failingMiddle, scope: .all)
     #expect(first.pendingBoundarySegments == [try source("s02", in: events)])
     // Only "前。" closed independently; the clause touching the pending segment stays unsplit.
-    #expect(try readPublished(root: root).map(\.clauseState) == [.boundaryPending, .boundaryPending, .boundaryPending])
+    #expect(try readPublished(root: root, sessionID: sessionID).map(\.clauseState) == [.boundaryPending, .boundaryPending, .boundaryPending])
     #expect(await failingMiddle.priorityRequests.map { $0.map(\.text) } == [["前。", "後"]])
 
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: ["s01", "s02"], fillerRangesBySegment: [:]), priority: lowForBackchannel)
@@ -528,7 +463,7 @@ func boundaryRetryCarriesPublishedAssessmentsAndRequestsOnlyPendingSegments() as
     // Unchanged clauses keep their priority; only the clause that now closes is classified.
     #expect(await provider.priorityRequests.map { $0.map(\.text) } == [["続く途中終わり。"]])
     #expect(retried.pendingBoundarySegments.isEmpty)
-    #expect(try readPublished(root: root).map(\.clauseState) == [.classified, .classified, .classified])
+    #expect(try readPublished(root: root, sessionID: sessionID).map(\.clauseState) == [.classified, .classified, .classified])
     let carried = try eventObjects(root).filter {
         $0["event_type"] as? String == "clause_boundaries.assessed" && $0["processing_run_id"] as? String == retried.boundaryRunID
     }.compactMap { (($0["payload"] as? [String: Any])?["source_decision"] as? [String: Any])?["kind"] as? String }
@@ -541,7 +476,6 @@ func boundaryRetryWithoutTheNextASRSourceFailsBeforeSending() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     let events = try await writeTranscript(["前", nil, "後"], root: root, sessionID: sessionID)
-    _ = try publishLocal(root: root, events: events)
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: lowForBackchannel)
     let first = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
     #expect(first.pendingBoundarySegments == [try source("s01", in: events)])
@@ -562,7 +496,7 @@ func retryRejectsTargetsThatAreNotPublishedPendingResults() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     let events = try await writeTranscript(["一。二"], root: root, sessionID: sessionID)
-    _ = try publishLocal(root: root, events: events)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: lowForBackchannel)
     let first = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
     let resolved = try requireValue(first.materializedSegments.first?.clauseSlices.first?.reference)
@@ -616,7 +550,7 @@ func cancelledSnapshotDoesNotSaveAResponseThatArrivesLate() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     let events = try await writeTranscript(["一。"], root: root, sessionID: sessionID)
-    _ = try publishLocal(root: root, events: events)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
     let provider = SuspendedPriorityProvider()
     let coordinator = DecisionEnrichmentCoordinator(
         sessionID: sessionID, boundaryRunID: "boundary", priorityRunID: "priority",
@@ -650,11 +584,11 @@ func leadingASRGapDoesNotInventTheFollowingHeadsStart() async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
-    _ = try publishLocal(root: root, events: try await writeTranscript([nil, "未解決。独立"], root: root, sessionID: sessionID))
+    _ = try await writeTranscript([nil, "未解決。独立"], root: root, sessionID: sessionID)
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: lowForBackchannel)
     _ = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all)
     #expect(await provider.priorityRequests.map { $0.map(\.text) } == [["独立"]])
-    let row = try requireValue(try readPublished(root: root).first)
+    let row = try requireValue(try readPublished(root: root, sessionID: sessionID).first)
     #expect(row.clauseState == .boundaryPending)
     #expect(row.clauseSlices.map(\.sourceRange) == [try TextUTF16Range(start: 4, end: 6)])
 }
@@ -664,9 +598,8 @@ func boundaryRetryReusesExactPublishedTextAtDifferentRawParts() async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
-    _ = try publishLocal(root: root, events: try await writeTranscript(
-        ["同じ。", "", "同じ。後半"], root: root, sessionID: sessionID
-    ))
+    _ = try await writeTranscript(["同じ。", "", "同じ。後半"], root: root, sessionID: sessionID)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
     let failing = ScriptedDecisionProvider(boundary: { request in
         if request.source.segmentID == "s03" { throw DecisionResponseError.missingAnswer }
         return try punctuationBoundaries(continuing: [], fillerRangesBySegment: [:])(request)
@@ -714,9 +647,8 @@ func boundaryRetryDoesNotReusePriorityWhenFillerChangesExactText() async throws 
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
-    _ = try publishLocal(root: root, events: try await writeTranscript(
-        ["えー、同じ。", "", "えー、同じ。後半"], root: root, sessionID: sessionID
-    ))
+    _ = try await writeTranscript(["えー、同じ。", "", "えー、同じ。後半"], root: root, sessionID: sessionID)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
     let knownFiller = try TextUTF16Range(start: 0, end: 2)
     let failing = ScriptedDecisionProvider(boundary: { request in
         if request.source.segmentID == "s03" { throw DecisionResponseError.missingAnswer }
@@ -743,9 +675,8 @@ func unpublishedRetryRebuildsFromPublishedAssessmentsWithoutResendingBoundaries(
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
-    _ = try publishLocal(root: root, events: try await writeTranscript(
-        ["前。後"], root: root, sessionID: sessionID
-    ))
+    _ = try await writeTranscript(["前。後"], root: root, sessionID: sessionID)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
     let initial = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: { targets in
         if pending { throw DecisionResponseError.missingAnswer }
         return try lowForBackchannel(targets)
@@ -755,7 +686,7 @@ func unpublishedRetryRebuildsFromPublishedAssessmentsWithoutResendingBoundaries(
     try await writer.append(EventDraft(
         eventType: "processing.run.started", sessionID: sessionID, processingRunID: "interrupted_retry",
         payload: ProcessingRunStartedPayload(stage: .contentPriority,
-                                             provenance: DecisionRunProvenance.priority(mode: "retry", identity: testDecisionIdentity))
+                                             provenance: DecisionRunProvenance.priority(identity: testDecisionIdentity))
     ))
     // A durable but unpublished answer must not leak into either reuse or retry selection.
     let reference = try requireValue(first.materializedSegments.first?.clauseSlices.first?.reference)
@@ -783,7 +714,7 @@ func unpublishedRetryRebuildsFromPublishedAssessmentsWithoutResendingBoundaries(
     #expect(await provider.boundaryRequests.isEmpty)
     #expect(await provider.priorityRequests.map { $0.map(\.text) } == (pending ? [["前。", "後"]] : []))
     #expect(retried.pendingTargets.isEmpty)
-    #expect(try readPublished(root: root) == retried.materializedSegments)
+    #expect(try readPublished(root: root, sessionID: sessionID) == retried.materializedSegments)
     #expect(retried.materializedSegments.first?.clauseSlices.map(\.priority) == [.primary, .primary])
 }
 
@@ -792,7 +723,8 @@ func priorityRetryCannotAppendIntoThePublishedPriorityRun() async throws {
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
-    _ = try publishLocal(root: root, events: try await writeTranscript(["本文"], root: root, sessionID: sessionID))
+    _ = try await writeTranscript(["本文"], root: root, sessionID: sessionID)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
     let failing = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]),
                                            priority: { _ in throw DecisionResponseError.missingAnswer })
     let first = try await buildAndPublish(root: root, sessionID: sessionID, provider: failing, scope: .all)
@@ -803,33 +735,7 @@ func priorityRetryCannotAppendIntoThePublishedPriorityRun() async throws {
             boundaryRunID: first.boundaryRunID, priorityRunID: first.priorityRunID)
     }
     #expect(await provider.priorityRequests.isEmpty)
-    #expect(try readPublished(root: root) == first.materializedSegments)
-}
-
-@Test(arguments: [" 同じ。", "同じ。 ", "同じ！"])
-func liveReuseDoesNotTrimWhitespaceOrNormalizePunctuation(_ finalText: String) async throws {
-    let root = temporarySessionRoot()
-    defer { try? FileManager.default.removeItem(at: root) }
-    let sessionID = UUID()
-    _ = try publishLocal(root: root, events: try await writeTranscript([finalText], root: root, sessionID: sessionID))
-    try await writeLiveRun(root: root, sessionID: sessionID, texts: ["同じ。"],
-                           fillerRangesByIndex: [:], results: [(0, .lowPriority)], complete: false)
-    let reusable = try EventLogTranscriptReader().liveContentPriorityDecisions(
-        from: Data(contentsOf: root.appending(path: "events.jsonl")),
-        modelRevision: testDecisionIdentity.modelRevision
-    )
-    let provider = ScriptedDecisionProvider(boundary: { request in
-        ClauseBoundaryResponse(
-            probabilities: Dictionary(uniqueKeysWithValues: request.candidates.map { ($0.id, 0.1) }),
-            continuationProbability: nil, fillerRanges: [], inputTokens: testInputTokens
-        )
-    }, priority: lowForBackchannel)
-    let result = try await buildAndPublish(
-        root: root, sessionID: sessionID, provider: provider, scope: .all, reusable: reusable
-    )
-    #expect(await provider.priorityRequests.map { $0.map(\.text) } == [[finalText]])
-    #expect(result.materializedSegments.first?.clauseSlices.map(\.priority) == [.primary])
-    #expect(try readPublished(root: root) == result.materializedSegments)
+    #expect(try readPublished(root: root, sessionID: sessionID) == first.materializedSegments)
 }
 
 private struct FixedResponseDecisionProvider: DecisionProvider {

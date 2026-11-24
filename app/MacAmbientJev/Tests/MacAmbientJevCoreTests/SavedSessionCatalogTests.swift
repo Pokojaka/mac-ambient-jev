@@ -220,10 +220,8 @@ func catalogSummaryShowsFinalizationStateAndActiveTranscript() async throws {
     let session = try writeCatalogSession(id: id, createdAt: 1_700_000_000, source: .recording(.microphone), root: root, includeAudio: true)
     _ = try await writeTranscript([], root: session, sessionID: id)
     try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
-        finalizationAttempt: FinalizationAttempt(attemptID: "a", state: .failed, failureReason: "decode failed"),
-        activeRuns: transcriptRuns,
-        pendingClauseBoundarySegments: [],
-        pendingContentPriorityClauses: []
+        generationID: try readStored(root: session, sessionID: id).state.generation.id,
+        state: .failed, failureReason: "decode failed"
     ))
 
     let row = try readable(#require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first))
@@ -243,10 +241,8 @@ func catalogReportsHeatPausedFinalizationAsPaused() async throws {
     )
     _ = try await writeTranscript([], root: session, sessionID: id)
     try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
-        finalizationAttempt: FinalizationAttempt(attemptID: "a", state: .paused, failureReason: nil),
-        activeRuns: transcriptRuns,
-        pendingClauseBoundarySegments: [],
-        pendingContentPriorityClauses: []
+        generationID: try readStored(root: session, sessionID: id).state.generation.id,
+        state: .paused, failureReason: nil
     ))
 
     let row = try readable(#require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first))
@@ -317,13 +313,8 @@ func catalogReportsPendingClassificationAfterLocalFinalization() async throws {
     let session = try writeCatalogSession(
         id: id, createdAt: 1_700_000_000, source: .recording(.microphone), root: root, includeAudio: true
     )
-    let events = try await writeTranscript(["本文"], root: session, sessionID: id)
-    try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
-        finalizationAttempt: FinalizationAttempt(attemptID: "a", state: .complete, failureReason: nil),
-        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"),
-        pendingClauseBoundarySegments: [try source("s01", in: events)],
-        pendingContentPriorityClauses: []
-    ))
+    _ = try await writeTranscript(["本文"], root: session, sessionID: id)
+    try saveCompletedStatus(root: session, sessionID: id)
 
     let row = try readable(#require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first))
 
@@ -340,7 +331,8 @@ func catalogReportsSuccessfulZeroVADSessionAsComplete() async throws {
         id: id, createdAt: 1_700_000_000, source: .imported(originalFilename: "lecture.wav"), root: root, includeAudio: true
     )
     try Data([1, 2, 3]).write(to: session.appending(path: "audio/original.wav"))
-    _ = try publishLocal(root: session, events: try await writeTranscript([], root: session, sessionID: id))
+    _ = try await writeTranscript([], root: session, sessionID: id)
+    try saveCompletedStatus(root: session, sessionID: id)
 
     let row = try readable(#require(SavedSessionCatalog(fileManager: .default).list(sessionsRoot: root).first))
     #expect(row.processingStatus == .complete)
@@ -367,12 +359,9 @@ func catalogRejectsUnreadableEventLog(kind: String) throws {
         id: UUID(), createdAt: 1_700_000_000, source: .recording(.systemAudio),
         root: root, includeAudio: true
     )
-    try ProcessingMetadataStore(sessionURL: session).save(ProcessingMetadata(
-        finalizationAttempt: FinalizationAttempt(attemptID: "final", state: .complete, failureReason: nil),
-        activeRuns: ActiveRuns(segmentation: "seg", asr: "asr"),
-        pendingClauseBoundarySegments: [],
-        pendingContentPriorityClauses: []
-    ))
+    try ProcessingMetadataStore(sessionURL: session).save(
+        ProcessingMetadata(generationID: UUID(), state: .complete, failureReason: nil)
+    )
     let eventsURL = session.appending(path: "events.jsonl")
     if kind == "malformed" {
         try Data("{broken\n".utf8).write(to: eventsURL)
@@ -404,7 +393,8 @@ func catalogReportsCorruptClauseCoverageInsteadOfClassificationPending() async t
     let id = UUID()
     let session = try writeCatalogSession(id: id, createdAt: 1_700_000_000,
                                           source: .recording(.microphone), root: root, includeAudio: true)
-    _ = try publishLocal(root: session, events: try await writeTranscript(["一。二"], root: session, sessionID: id))
+    _ = try await writeTranscript(["一。二"], root: session, sessionID: id)
+    try saveCompletedStatus(root: session, sessionID: id)
     _ = try await buildAndPublish(
         root: session, sessionID: id,
         provider: ScriptedDecisionProvider(

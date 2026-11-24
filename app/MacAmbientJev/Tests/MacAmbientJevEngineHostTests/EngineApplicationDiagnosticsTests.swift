@@ -357,9 +357,9 @@ struct EngineApplicationDiagnosticsTests {
             let sessionURL = harness.paths.sessionsRoot.appending(
                 path: finalized.folderID, directoryHint: .isDirectory
             )
-            let pendingMetadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
-            #expect(pendingMetadata.pendingClauseBoundarySegments.isEmpty)
-            #expect(pendingMetadata.pendingContentPriorityClauses.count == 1)
+            let pending = try pendingDecisions(sessionURL: sessionURL)
+            #expect(pending.boundarySegments.isEmpty)
+            #expect(pending.clauses.count == 1)
             expectUsage(
                 try availableUsage(try await harness.diagnostics()),
                 send: 2, tokens: 11, successes: 1, failures: 1,
@@ -369,9 +369,7 @@ struct EngineApplicationDiagnosticsTests {
             )
 
             try await harness.call("session.retry_decisions", payload: "{\"session_id\":\(try diagnosticsJSONString(imported.sessionID))}")
-            let resolvedMetadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
-            #expect(resolvedMetadata.pendingClauseBoundarySegments.isEmpty)
-            #expect(resolvedMetadata.pendingContentPriorityClauses.isEmpty)
+            #expect(try pendingDecisions(sessionURL: sessionURL).pendingTargets.isEmpty)
             expectUsage(
                 try availableUsage(try await harness.diagnostics()),
                 send: 3, tokens: 28, successes: 2, failures: 1,
@@ -408,9 +406,9 @@ struct EngineApplicationDiagnosticsTests {
             let sessionURL = harness.paths.sessionsRoot.appending(
                 path: finalized.folderID, directoryHint: .isDirectory
             )
-            let metadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
-            #expect(metadata.pendingClauseBoundarySegments.count == 1)
-            #expect(metadata.pendingContentPriorityClauses.isEmpty)
+            let pending = try pendingDecisions(sessionURL: sessionURL)
+            #expect(pending.boundarySegments.count == 1)
+            #expect(pending.clauses.isEmpty)
             expectUsage(
                 try availableUsage(try await harness.diagnostics()),
                 send: 1, tokens: 0, successes: 0, failures: 1,

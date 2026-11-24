@@ -196,49 +196,62 @@ public struct SavedSessionCatalog {
     }
 
     private func summary(layout: SessionLayout, manifest: SessionManifest) -> SavedSessionSummary {
-
         let audio = self.audio(layout: layout, manifest: manifest)
         let metadata: ProcessingMetadata?
-        var processingStatus: SavedSessionProcessingStatus
+        let stored: StoredTranscriptEvents?
         do {
             metadata = try ProcessingMetadataStore(sessionURL: layout.sessionURL).load()
-            processingStatus = status(for: metadata)
+            stored = try EventLogTranscriptReader().read(
+                eventsURL: layout.eventsURL,
+                sessionID: manifest.sessionID
+            )
         } catch {
-            metadata = nil
-            processingStatus = .corrupted(error.localizedDescription)
+            return readableSummary(
+                layout: layout,
+                manifest: manifest,
+                audio: audio,
+                hasActiveTranscript: false,
+                processingStatus: .corrupted(error.localizedDescription)
+            )
         }
 
-        let hasActiveTranscript: Bool
-        if let activeRuns = metadata?.activeRuns {
-            do {
-                let data = try SessionFileAccess.read(layout.eventsURL, relativeTo: layout.sessionURL)
-                let recovered = try SessionRecovery.recoverJSONL(data)
-                guard !recovered.droppedIncompleteTail else {
-                    throw EventLogTranscriptReaderError.unreadableLine(index: recovered.lines.count)
-                }
-                _ = try EventLogTranscriptReader().events(lines: recovered.lines, activeRuns: activeRuns)
-                if let metadata, activeRuns.segmentation != nil || activeRuns.asr != nil {
-                    _ = try DecisionRetryAnalyzer().retryTargets(lines: recovered.lines, metadata: metadata)
-                }
-                hasActiveTranscript = activeRuns.asr != nil
-            } catch {
-                processingStatus = .corrupted(error.localizedDescription)
-                return .readable(SavedSession(
-                    sessionID: manifest.sessionID,
-                    sessionURL: layout.sessionURL,
-                    createdAt: manifest.createdAt,
-                    source: manifest.source,
-                    duration: duration(audio: audio),
-                    audio: audio,
-                    hasActiveTranscript: false,
-                    processingStatus: processingStatus
-                ))
-            }
-        } else {
-            hasActiveTranscript = false
+        guard let stored else {
+            let processingStatus: SavedSessionProcessingStatus = metadata == nil
+                ? .notProcessed
+                : .corrupted(ProcessingLogStateError.missingGeneration.localizedDescription)
+            return readableSummary(
+                layout: layout,
+                manifest: manifest,
+                audio: audio,
+                hasActiveTranscript: false,
+                processingStatus: processingStatus
+            )
         }
 
-        return .readable(SavedSession(
+        let currentMetadata = metadata.flatMap {
+            $0.generationID == stored.state.generation.id ? $0 : nil
+        }
+        let hasActiveTranscript = stored.state.recognitionCompleted || stored.state.events.contains {
+            if case .asrCompleted = $0.kind { return true }
+            return false
+        }
+        return readableSummary(
+            layout: layout,
+            manifest: manifest,
+            audio: audio,
+            hasActiveTranscript: hasActiveTranscript,
+            processingStatus: status(for: currentMetadata, stored: stored)
+        )
+    }
+
+    private func readableSummary(
+        layout: SessionLayout,
+        manifest: SessionManifest,
+        audio: SavedSessionAudio,
+        hasActiveTranscript: Bool,
+        processingStatus: SavedSessionProcessingStatus
+    ) -> SavedSessionSummary {
+        .readable(SavedSession(
             sessionID: manifest.sessionID,
             sessionURL: layout.sessionURL,
             createdAt: manifest.createdAt,
@@ -272,23 +285,26 @@ public struct SavedSessionCatalog {
     }
 
     private func status(
-        for metadata: ProcessingMetadata?
+        for metadata: ProcessingMetadata?,
+        stored: StoredTranscriptEvents
     ) -> SavedSessionProcessingStatus {
-        switch metadata?.finalizationAttempt?.state {
+        if stored.state.hasUnresolvedASRFailure {
+            return .failed(metadata?.failureReason)
+        }
+        switch metadata?.state {
         case .running:
-            .running
+            return .running
         case .paused:
-            .paused
+            return .paused
         case .complete:
-            metadata?.pendingDecisionTargets.isEmpty == false
-                ? .classificationPending
-                : .complete
+            guard stored.state.recognitionCompleted else {
+                return .corrupted(ProcessingLogStateError.incompleteRecognition.localizedDescription)
+            }
+            return stored.pendingDecisions.pendingTargets.isEmpty ? .complete : .classificationPending
         case .failed:
-            .failed(metadata?.finalizationAttempt?.failureReason)
+            return .failed(metadata?.failureReason)
         case nil:
-            metadata?.activeRuns?.asr == nil
-                ? .notProcessed
-                : .complete
+            return .running
         }
     }
 }

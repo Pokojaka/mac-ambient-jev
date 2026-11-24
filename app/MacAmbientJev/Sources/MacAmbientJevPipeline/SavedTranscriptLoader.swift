@@ -7,34 +7,18 @@ public enum SavedTranscript: Sendable, Equatable {
 }
 
 public enum SavedTranscriptLoader {
-    public static func load(
-        sessionURL: URL,
-        audioSource: SessionAudioSource
-    ) throws -> SavedTranscript {
+    public static func load(sessionURL: URL) throws -> SavedTranscript {
         let layout = SessionLayout(sessionURL: sessionURL)
-        guard let metadata = try ProcessingMetadataStore(
-            sessionURL: layout.sessionURL
-        ).load(), let activeRuns = metadata.activeRuns, activeRuns.asr != nil else {
+        let manifest = try layout.loadManifest()
+        guard let stored = try EventLogTranscriptReader().read(
+            eventsURL: layout.eventsURL,
+            sessionID: manifest.sessionID
+        ) else {
             return .unavailable
         }
-
-        guard let timeline = try audioSource.timeline else {
-            return .unavailable
-        }
-
-        let recovered = try SessionRecovery.recoverJSONL(SessionFileAccess.read(layout.eventsURL, relativeTo: layout.sessionURL))
-        guard !recovered.droppedIncompleteTail else {
-            throw EventLogTranscriptReaderError.unreadableLine(index: recovered.lines.count)
-        }
-        let lines = recovered.lines
-        _ = try DecisionRetryAnalyzer().retryTargets(lines: lines, metadata: metadata)
-        let events = try EventLogTranscriptReader().events(
-            lines: lines,
-            activeRuns: activeRuns
-        )
         return .segments(
-            try TranscriptMaterializer(sampleRate: timeline.sampleRate)
-                .materialize(events: events, activeRuns: activeRuns)
+            try TranscriptMaterializer(sampleRate: stored.state.generation.sampleRate)
+                .materialize(events: stored.events, activeRuns: stored.state.runs)
         )
     }
 }

@@ -110,7 +110,8 @@ func invalidPriorityDecisionLeavesDurablePriorityPendingWithoutRetry(
     let root = temporarySessionRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
-    _ = try publishLocal(root: root, events: try await writeTranscript(["本文"], root: root, sessionID: sessionID))
+    _ = try await writeTranscript(["本文"], root: root, sessionID: sessionID)
+    try saveCompletedStatus(root: root, sessionID: sessionID)
     let provider = ScriptedDecisionProvider(
         boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]),
         priority: { targets in
@@ -123,7 +124,7 @@ func invalidPriorityDecisionLeavesDurablePriorityPendingWithoutRetry(
     let counter = DecisionUsageCounter()
     let result = try await buildAndPublish(root: root, sessionID: sessionID, provider: provider, scope: .all, counter: counter)
     #expect(result.pendingPriorityClauses.count == 1)
-    let published = try readPublished(root: root)
+    let published = try readPublished(root: root, sessionID: sessionID)
     #expect(published.first?.clauseState == .priorityPending)
     #expect(published.first?.clauseSlices.first?.priority == nil)
     #expect(published.first?.clauseSlices.first?.needsRetry == true)

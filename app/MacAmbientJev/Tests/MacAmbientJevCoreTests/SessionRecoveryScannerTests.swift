@@ -8,12 +8,12 @@ private struct ScannerRetryFailure: LocalizedError, Sendable {
 }
 
 private let recoveryCheckpoint = AudioCheckpoint(
-    committedFrames: 100,
+    committedFrames: 4_000,
     sampleRate: CanonicalAudio.sampleRate,
     channelCount: 1,
     sampleFormat: .float32LE,
     chunkFiles: ["chunk-000000.f32le"],
-    chunkFrameCounts: [100],
+    chunkFrameCounts: [4_000],
     gapEvents: []
 )
 
@@ -42,6 +42,7 @@ private func writeRecoveryManifest(
         try Data([0, 1, 2, 3]).write(to: audioURL.appending(path: "original.wav"))
     }
     try SessionAudioStorageStore(layout: SessionLayout(sessionURL: sessionURL)).save(.initial(for: source))
+    _ = try SessionWriter(sessionURL: sessionURL)
 }
 
 private func writeRecoveryCheckpoint(_ checkpoint: AudioCheckpoint, to sessionURL: URL) throws {
@@ -71,25 +72,30 @@ private func writeRecording(id: UUID, root: URL) throws -> URL {
     return url
 }
 
-private func saveMetadata(
+private func saveStatus(
     _ sessionURL: URL,
-    attempt: FinalizationAttempt.State?,
-    activeRuns: ActiveRuns?
-) throws {
+    sessionID: UUID,
+    state: ProcessingMetadata.State
+) async throws {
+    let eventsURL = sessionURL.appending(path: "events.jsonl")
+    let current = try EventLogTranscriptReader().read(eventsURL: eventsURL, sessionID: sessionID)
+    let generationID: UUID
+    if let current {
+        generationID = current.state.generation.id
+    } else {
+        let provenance = RunProvenance(engine: "test", model: nil, version: "1", configuration: [:])
+        let generation = PipelineGeneration(
+            id: UUID(), runs: ActiveRuns(segmentation: "seg_status", asr: "asr_status"),
+            sampleRate: recoveryCheckpoint.sampleRate,
+            segmentationProvenance: provenance, asrProvenance: provenance
+        )
+        try await SessionWriter(sessionURL: sessionURL).append(generation.startEvent(sessionID: sessionID))
+        generationID = generation.id
+    }
     try ProcessingMetadataStore(sessionURL: sessionURL).save(ProcessingMetadata(
-        finalizationAttempt: attempt.map {
-            FinalizationAttempt(attemptID: "attempt", state: $0, failureReason: $0 == .failed ? "failed" : nil)
-        },
-        activeRuns: activeRuns,
-        pendingClauseBoundarySegments: [],
-        pendingContentPriorityClauses: []
+        generationID: generationID, state: state, failureReason: state == .failed ? "failed" : nil
     ))
 }
-
-private let publishedRuns = ActiveRuns(
-    segmentation: "seg_active",
-    asr: "asr_active"
-)
 
 @Test
 func recordingThatCrashedBeforeStopIsFinalizedFromItsTimeline() async throws {
@@ -97,18 +103,8 @@ func recordingThatCrashedBeforeStopIsFinalizedFromItsTimeline() async throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
     let url = try writeRecording(id: id, root: root)
-    // Only the provisional live run reached the log.
-    let writer = try SessionWriter(sessionURL: url)
-    try await writer.append(EventDraft(
-        eventType: "asr.pending",
-        sessionID: id,
-        processingRunID: "asr_live_run",
-        segmentationRunID: "seg_live",
-        segmentID: "seg_000001",
-        sourceStartFrame: 0,
-        sourceEndFrame: 100,
-        payload: EmptyPayload()
-    ))
+    // The generation marker records the interrupted processing snapshot.
+    try await saveStatus(url, sessionID: id, state: .running)
 
     let scan = try SessionRecoveryScanner(sessionsRoot: root).pendingSessions()
 
@@ -151,13 +147,13 @@ func recordingWithoutCapturedAudioHasNothingToRecover() throws {
     #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery == nil)
 }
 
-@Test(arguments: [FinalizationAttempt.State.running, .paused])
-func interruptedOrPausedFinalizationIsFinalizedAgain(state: FinalizationAttempt.State) throws {
+@Test(arguments: [ProcessingMetadata.State.running, .paused])
+func interruptedOrPausedFinalizationIsFinalizedAgain(state: ProcessingMetadata.State) async throws {
     let root = temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
     let url = try writeRecording(id: id, root: root)
-    try saveMetadata(url, attempt: state, activeRuns: publishedRuns)
+    try await saveStatus(url, sessionID: id, state: state)
 
     let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery
 
@@ -165,13 +161,13 @@ func interruptedOrPausedFinalizationIsFinalizedAgain(state: FinalizationAttempt.
 }
 
 @Test
-func interruptedFinalizationWithoutAudioIsReportedAsMissingAudio() throws {
+func interruptedFinalizationWithoutAudioIsReportedAsMissingAudio() async throws {
     let root = temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
     let url = try recoveryURL(id: id, source: .recording(.microphone), root: root)
     try writeRecoveryManifest(sessionID: id, source: .recording(.microphone), to: url)
-    try saveMetadata(url, attempt: .running, activeRuns: nil)
+    try await saveStatus(url, sessionID: id, state: .running)
 
     #expect(throws: SessionRecoveryScannerError.missingAudio) {
         _ = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id)
@@ -183,11 +179,15 @@ func failedAndCompletedFinalizationsWaitForTheUser() async throws {
     let root = temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let failedID = UUID()
-    try saveMetadata(try writeRecording(id: failedID, root: root), attempt: .failed, activeRuns: nil)
+    let failedURL = try writeRecording(id: failedID, root: root)
+    try await saveStatus(failedURL, sessionID: failedID, state: .failed)
     let completeID = UUID()
     let completeURL = try writeRecording(id: completeID, root: root)
-    _ = try await writeTranscript([], root: completeURL, sessionID: completeID)
-    try saveMetadata(completeURL, attempt: .complete, activeRuns: transcriptRuns)
+    _ = try await writeTranscript(
+        [], root: completeURL, sessionID: completeID,
+        sampleRate: recoveryCheckpoint.sampleRate, frameCount: recoveryCheckpoint.committedFrames
+    )
+    try saveCompletedStatus(root: completeURL, sessionID: completeID)
 
     let scan = try SessionRecoveryScanner(sessionsRoot: root).pendingSessions()
 
@@ -206,11 +206,15 @@ func completedFinalizationRetriesOnlyItsPublishedPendingDecisionResults() async 
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
     let url = try writeRecording(id: id, root: root)
-    let events = try await writeTranscript(["一。二", "三"], root: url, sessionID: id)
-    _ = try publishLocal(root: url, events: events)
+    _ = try await writeTranscript(
+        ["一。二", "三"], root: url, sessionID: id,
+        sampleRate: recoveryCheckpoint.sampleRate, frameCount: recoveryCheckpoint.committedFrames
+    )
+    try saveCompletedStatus(root: url, sessionID: id)
+    let pending = try readStored(root: url, sessionID: id).pendingDecisions
     let localOnly = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery
     #expect(localOnly?.action == .retryContentPriority(
-        boundarySegments: [try source("s01", in: events), try source("s02", in: events)], clauses: []
+        boundarySegments: pending.boundarySegments, clauses: pending.clauses
     ))
 
     let provider = ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]), priority: { _ in
@@ -227,7 +231,7 @@ func completedFinalizationRetriesOnlyItsPublishedPendingDecisionResults() async 
     // An interrupted retry run that was never published is not adopted; launch recovery requests the published pendings again.
     _ = try await SessionWriter(sessionURL: url).append(EventDraft(
         eventType: "processing.run.started", sessionID: id, processingRunID: "priority_unpublished",
-        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: DecisionRunProvenance.priority(mode: "retry", identity: testDecisionIdentity))
+        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: DecisionRunProvenance.priority(identity: testDecisionIdentity))
     ))
 
     let candidate = try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery
@@ -244,8 +248,11 @@ func failedRetryInferenceRemainsAManualRetryCandidate(
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
     let url = try writeRecording(id: id, root: root)
-    let events = try await writeTranscript(["本文。"], root: url, sessionID: id)
-    _ = try publishLocal(root: url, events: events)
+    _ = try await writeTranscript(
+        ["本文。"], root: url, sessionID: id,
+        sampleRate: recoveryCheckpoint.sampleRate, frameCount: recoveryCheckpoint.committedFrames
+    )
+    try saveCompletedStatus(root: url, sessionID: id)
     let initialProvider = ScriptedDecisionProvider(
         boundary: { request in
             if initialBoundaryFails { throw DecisionResponseError.missingAnswer }
@@ -260,6 +267,7 @@ func failedRetryInferenceRemainsAManualRetryCandidate(
     #expect(initial.pendingBoundarySegments.count == (initialBoundaryFails ? 1 : 0))
     #expect(initial.pendingPriorityClauses.count == (initialPriorityFails ? 1 : 0))
     let publishedMetadata = try #require(try ProcessingMetadataStore(sessionURL: url).load())
+    let publishedPending = try readStored(root: url, sessionID: id).pendingDecisions
 
     let failureMessage = "scanner retry failed deterministically"
     let retryBoundaryRunID = "scanner_boundary_retry_\(UUID().uuidString.lowercased())"
@@ -275,8 +283,8 @@ func failedRetryInferenceRemainsAManualRetryCandidate(
         try await buildAndPublish(
             root: url, sessionID: id, provider: retryProvider,
             scope: .retry(
-                boundarySegments: Set(initial.pendingBoundarySegments),
-                clauses: Set(initial.pendingPriorityClauses)
+                boundarySegments: Set(publishedPending.boundarySegments),
+                clauses: Set(publishedPending.clauses)
             ),
             boundaryRunID: initial.pendingBoundarySegments.isEmpty ? initial.boundaryRunID : retryBoundaryRunID,
             priorityRunID: retryPriorityRunID
@@ -284,12 +292,11 @@ func failedRetryInferenceRemainsAManualRetryCandidate(
     }
 
     #expect(try #require(try ProcessingMetadataStore(sessionURL: url).load()) == publishedMetadata)
-    let activeRuns = try #require(publishedMetadata.activeRuns)
-    #expect(try !DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: eventLines(url), activeRuns: activeRuns))
+    #expect(try !DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: eventLines(url), sessionID: id))
     let candidate = try #require(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery)
     #expect(candidate.action == .retryContentPriority(
-        boundarySegments: initial.pendingBoundarySegments,
-        clauses: initial.pendingPriorityClauses
+        boundarySegments: publishedPending.boundarySegments,
+        clauses: publishedPending.clauses
     ))
 }
 
@@ -299,7 +306,11 @@ func retryAnalyzerDistinguishesFailedCompletedRunFromUnendedAndSuccessfulUnpubli
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
     let url = try writeRecording(id: id, root: root)
-    _ = try publishLocal(root: url, events: try await writeTranscript(["本文。"], root: url, sessionID: id))
+    _ = try await writeTranscript(
+        ["本文。"], root: url, sessionID: id,
+        sampleRate: recoveryCheckpoint.sampleRate, frameCount: recoveryCheckpoint.committedFrames
+    )
+    try saveCompletedStatus(root: url, sessionID: id)
     _ = try await buildAndPublish(
         root: url, sessionID: id,
         provider: ScriptedDecisionProvider(
@@ -308,7 +319,6 @@ func retryAnalyzerDistinguishesFailedCompletedRunFromUnendedAndSuccessfulUnpubli
         ),
         scope: .all
     )
-    let activeRuns = try #require(try ProcessingMetadataStore(sessionURL: url).load()?.activeRuns)
     let writer = try SessionWriter(sessionURL: url)
     let analyzer = DecisionRetryAnalyzer()
     let failedRunID = "failed_unpublished_retry"
@@ -316,17 +326,17 @@ func retryAnalyzerDistinguishesFailedCompletedRunFromUnendedAndSuccessfulUnpubli
         eventType: "processing.run.started", sessionID: id, processingRunID: failedRunID,
         payload: ProcessingRunStartedPayload(
             stage: .contentPriority,
-            provenance: DecisionRunProvenance.priority(mode: "retry", identity: testDecisionIdentity)
+            provenance: DecisionRunProvenance.priority(identity: testDecisionIdentity)
         )
     ))
-    #expect(try analyzer.hasUnpublishedDecisionRun(lines: eventLines(url), activeRuns: activeRuns))
+    #expect(try analyzer.hasUnpublishedDecisionRun(lines: eventLines(url), sessionID: id))
     try await writer.append(EventDraft(
         eventType: "processing.run.completed", sessionID: id, processingRunID: failedRunID,
         payload: ProcessingRunCompletedPayload(
             stage: .contentPriority, succeeded: false, completedCount: 0, failedCount: 1
         )
     ))
-    #expect(try !analyzer.hasUnpublishedDecisionRun(lines: eventLines(url), activeRuns: activeRuns))
+    #expect(try !analyzer.hasUnpublishedDecisionRun(lines: eventLines(url), sessionID: id))
     #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery == nil)
 
     let successfulRunID = "successful_unpublished_retry"
@@ -334,7 +344,7 @@ func retryAnalyzerDistinguishesFailedCompletedRunFromUnendedAndSuccessfulUnpubli
         eventType: "processing.run.started", sessionID: id, processingRunID: successfulRunID,
         payload: ProcessingRunStartedPayload(
             stage: .contentPriority,
-            provenance: DecisionRunProvenance.priority(mode: "retry", identity: testDecisionIdentity)
+            provenance: DecisionRunProvenance.priority(identity: testDecisionIdentity)
         )
     ))
     try await writer.append(EventDraft(
@@ -343,7 +353,7 @@ func retryAnalyzerDistinguishesFailedCompletedRunFromUnendedAndSuccessfulUnpubli
             stage: .contentPriority, succeeded: true, completedCount: 1, failedCount: 0
         )
     ))
-    #expect(try analyzer.hasUnpublishedDecisionRun(lines: eventLines(url), activeRuns: activeRuns))
+    #expect(try analyzer.hasUnpublishedDecisionRun(lines: eventLines(url), sessionID: id))
     #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery?.action
         == .recoverDecisionRun(boundarySegments: [], clauses: []))
 }
@@ -417,14 +427,17 @@ func recoveryScannerPrefersExistingProcessingCheckpoint() throws {
 }
 
 @Test
-func inspectReadsOnlyRequestedSessionAndLeavesItsLogUntouched() throws {
+func inspectReadsOnlyRequestedSessionAndLeavesItsLogUntouched() async throws {
     let root = temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let sessionID = UUID()
     let sessionURL = try recoveryURL(id: sessionID, source: .imported(originalFilename: "fixture.wav"), root: root)
     try writeRecoveryManifest(sessionID: sessionID, source: .imported(originalFilename: "fixture.wav"), to: sessionURL)
     let eventsURL = sessionURL.appending(path: "events.jsonl")
-    let original = Data("{\"event_seq\":1,\"event_type\":\"unused\",\"schema_version\":3}\n{\"unfinished\"".utf8)
+    let writer = try SessionWriter(sessionURL: sessionURL)
+    try await writer.append(EventDraft(eventType: "unused", sessionID: sessionID, payload: EmptyPayload()))
+    var original = try Data(contentsOf: eventsURL)
+    original.append(Data("{\"unfinished\"".utf8))
     try original.write(to: eventsURL)
 
     let otherURL = root.appending(path: UUID().uuidString)
@@ -465,83 +478,16 @@ func recoveryUsesIntactOriginalWhenImportCheckpointIsUnusable() throws {
 }
 
 @Test
-func finalizationAttemptPublishesRunsOnlyOnCompletion() throws {
-    let root = temporaryRoot()
-    defer { try? FileManager.default.removeItem(at: root) }
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let store = ProcessingMetadataStore(sessionURL: root)
-    let oldRuns = ActiveRuns(segmentation: "seg_old", asr: "asr_old",
-                             clauseBoundary: "boundary_old", contentPriority: "priority_old")
-    let oldSource = try SegmentTextReference(segmentationRunID: "seg_old", segmentID: "s", asrRunID: "asr_old", asrEventSeq: 1)
-    try store.save(ProcessingMetadata(
-        finalizationAttempt: nil,
-        activeRuns: oldRuns,
-        pendingClauseBoundarySegments: [oldSource],
-        pendingContentPriorityClauses: []
-    ))
-
-    try store.beginFinalization(attemptID: "attempt_1", policy: .reject)
-    try store.pauseFinalization(attemptID: "attempt_1")
-    #expect(try store.load() == ProcessingMetadata(
-        finalizationAttempt: FinalizationAttempt(attemptID: "attempt_1", state: .paused, failureReason: nil),
-        activeRuns: oldRuns,
-        pendingClauseBoundarySegments: [oldSource],
-        pendingContentPriorityClauses: []
-    ))
-    try store.failFinalization(attemptID: "attempt_1", reason: "ASR failed")
-    #expect(try store.load()?.activeRuns == oldRuns)
-
-    #expect(throws: ProcessingMetadataStoreError.finalizationAttemptMismatch) {
-        try store.completeFinalization(attemptID: "attempt_other", activeRuns: ActiveRuns(asr: "x"), pendingClauseBoundarySegments: [])
-    }
-
-    let newRuns = ActiveRuns(segmentation: "seg_new", asr: "asr_new")
-    try store.beginFinalization(attemptID: "attempt_2", policy: .reject)
-    let newSource = try SegmentTextReference(segmentationRunID: "seg_new", segmentID: "s", asrRunID: "asr_new", asrEventSeq: 9)
-    try store.completeFinalization(attemptID: "attempt_2", activeRuns: newRuns, pendingClauseBoundarySegments: [newSource])
-    // The local runs and the boundary-pending list of their segments are one write; old decision runs are gone.
-    #expect(try store.load() == ProcessingMetadata(
-        finalizationAttempt: FinalizationAttempt(attemptID: "attempt_2", state: .complete, failureReason: nil),
-        activeRuns: newRuns,
-        pendingClauseBoundarySegments: [newSource],
-        pendingContentPriorityClauses: []
-    ))
-}
-
-@Test
-func unreadableMetadataIsReplacedOnlyWhenTheCallerAllowsIt() throws {
-    let root = temporaryRoot()
-    defer { try? FileManager.default.removeItem(at: root) }
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let store = ProcessingMetadataStore(sessionURL: root)
-    let broken = Data("{broken".utf8)
-    try broken.write(to: store.url)
-
-    #expect {
-        try store.beginFinalization(attemptID: "attempt", policy: .reject)
-    } throws: { error in
-        guard case .unreadable = error as? ProcessingMetadataStoreError else { return false }
-        return true
-    }
-    #expect(try Data(contentsOf: store.url) == broken)
-
-    let replaced = try store.beginFinalization(attemptID: "attempt", policy: .replace)
-    #expect(replaced == nil)
-    #expect(try store.load() == ProcessingMetadata(
-        finalizationAttempt: FinalizationAttempt(attemptID: "attempt", state: .running, failureReason: nil),
-        activeRuns: nil,
-        pendingClauseBoundarySegments: [],
-        pendingContentPriorityClauses: []
-    ))
-}
-
-@Test
 func recoveryRebuildsAnUnpublishedRetryEvenWhenPublishedPendingIsEmpty() async throws {
     let root = temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
     let url = try writeRecording(id: id, root: root)
-    _ = try publishLocal(root: url, events: try await writeTranscript(["本文"], root: url, sessionID: id))
+    _ = try await writeTranscript(
+        ["本文"], root: url, sessionID: id,
+        sampleRate: recoveryCheckpoint.sampleRate, frameCount: recoveryCheckpoint.committedFrames
+    )
+    try saveCompletedStatus(root: url, sessionID: id)
     let provider = ScriptedDecisionProvider(
         boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]),
         priority: lowForBackchannel
@@ -559,20 +505,13 @@ func recoveryRebuildsAnUnpublishedRetryEvenWhenPublishedPendingIsEmpty() async t
     let assessmentPayload = try #require(assessment["payload"] as? [String: Any])
     #expect(assessmentPayload["filler_ranges"] as? [Any] != nil)
     #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery == nil)
-    let metadata = try #require(try ProcessingMetadataStore(sessionURL: url).load())
-    let active = try #require(metadata.activeRuns)
     let writer = try SessionWriter(sessionURL: url)
-    try await writer.append(EventDraft(
-        eventType: "processing.run.started", sessionID: id, processingRunID: "unfinished_live",
-        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: DecisionRunProvenance.priority(mode: "live", identity: testDecisionIdentity))
-    ))
-    #expect(try !DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: eventLines(url), activeRuns: active))
     #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery == nil)
     try await writer.append(EventDraft(
         eventType: "processing.run.started", sessionID: id, processingRunID: "unpublished_retry",
-        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: DecisionRunProvenance.priority(mode: "retry", identity: testDecisionIdentity))
+        payload: ProcessingRunStartedPayload(stage: .contentPriority, provenance: DecisionRunProvenance.priority(identity: testDecisionIdentity))
     ))
-    #expect(try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: eventLines(url), activeRuns: active))
+    #expect(try DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: eventLines(url), sessionID: id))
     #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery?.action
         == .recoverDecisionRun(boundarySegments: [], clauses: []))
     let retryProvider = ScriptedDecisionProvider(
@@ -588,18 +527,21 @@ func recoveryRebuildsAnUnpublishedRetryEvenWhenPublishedPendingIsEmpty() async t
     let retryBoundaryUsage = await retryCounter.snapshot().boundaryRequests
     #expect(retryBoundaryUsage.sendCount == 0)
     #expect(retryBoundaryUsage.inputTokens == 0)
-    let replaced = try #require(try ProcessingMetadataStore(sessionURL: url).load()?.activeRuns)
-    #expect(try !DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: eventLines(url), activeRuns: replaced))
+    #expect(try !DecisionRetryAnalyzer().hasUnpublishedDecisionRun(lines: eventLines(url), sessionID: id))
     #expect(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery == nil)
 }
 
 @Test
-func recoveryRejectsCorruptionEvenWhenMetadataHasNoPendingTargets() async throws {
+func recoveryRejectsCorruptionInCurrentEventLog() async throws {
     let root = temporaryRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     let id = UUID()
     let url = try writeRecording(id: id, root: root)
-    _ = try publishLocal(root: url, events: try await writeTranscript(["本文"], root: url, sessionID: id))
+    _ = try await writeTranscript(
+        ["本文"], root: url, sessionID: id,
+        sampleRate: recoveryCheckpoint.sampleRate, frameCount: recoveryCheckpoint.committedFrames
+    )
+    try saveCompletedStatus(root: url, sessionID: id)
     _ = try await buildAndPublish(root: url, sessionID: id,
                                   provider: ScriptedDecisionProvider(boundary: punctuationBoundaries(continuing: [], fillerRangesBySegment: [:]),
                                                                      priority: lowForBackchannel), scope: .all)

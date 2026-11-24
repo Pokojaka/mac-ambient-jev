@@ -6,41 +6,64 @@ public actor VADSession {
     public private(set) var segments: [SegmentReference]
 
     private let sessionID: UUID
+    private let sampleRate: Double
+    private let provenance: RunProvenance
     private let writer: any SessionEventAppending
     private let recoveredSegmentCount: Int
     private let processor: VADTimelineProcessor?
     private var durableConsumedFrames: Int64
     private var sealedFrames: Int64?
     private var regeneratedOrdinal = 0
+    private var runStarted: Bool
+    private var runCompleted: Bool
     private var finished: Bool
     private var operationInProgress = false
     private var requiresReopen = false
 
-    public static func open(sessionID: UUID, segmentationRunID: String, sessionURL: URL,
-                            writer: any SessionEventAppending,
-                            makeProcessor: @Sendable () async throws -> VADTimelineProcessor) async throws -> VADSession {
-        let recovery = try ASRSessionRecovery(eventsURL: SessionLayout(sessionURL: sessionURL).eventsURL,
-                                              sessionID: sessionID, segmentationRunID: segmentationRunID,
-                                              asrRunID: nil)
-        let processor = recovery.segmentationCompleted ? nil : try await makeProcessor()
-        return VADSession(sessionID: sessionID, segmentationRunID: segmentationRunID, writer: writer,
-                          segments: recovery.segments, processor: processor,
-                          durableConsumedFrames: recovery.consumedFrames, sealedFrames: recovery.sealedFrames,
-                          finished: recovery.segmentationCompleted)
+    public static func open(
+        sessionID: UUID,
+        sessionURL: URL,
+        writer: any SessionEventAppending,
+        provenance: RunProvenance,
+        makeProcessor: @Sendable (String) async throws -> VADTimelineProcessor
+    ) async throws -> VADSession {
+        let layout = SessionLayout(sessionURL: sessionURL)
+        guard let recovery = try ProcessingLogState(eventsURL: layout.eventsURL, sessionID: sessionID) else {
+            throw ProcessingLogStateError.missingGeneration
+        }
+        guard recovery.generation.segmentationProvenance == provenance else {
+            throw ProcessingLogStateError.incompatibleSettings
+        }
+        let processor = recovery.segmentationCompleted ? nil : try await makeProcessor(recovery.segmentationRunID)
+        return VADSession(
+            sessionID: sessionID,
+            provenance: provenance,
+            writer: writer,
+            processor: processor,
+            recovery: recovery
+        )
     }
 
-    private init(sessionID: UUID, segmentationRunID: String, writer: any SessionEventAppending,
-                 segments: [SegmentReference], processor: VADTimelineProcessor?,
-                 durableConsumedFrames: Int64, sealedFrames: Int64?, finished: Bool) {
+    private init(
+        sessionID: UUID,
+        provenance: RunProvenance,
+        writer: any SessionEventAppending,
+        processor: VADTimelineProcessor?,
+        recovery: ProcessingLogState
+    ) {
         self.sessionID = sessionID
-        self.segmentationRunID = segmentationRunID
+        self.segmentationRunID = recovery.segmentationRunID
+        self.sampleRate = recovery.generation.sampleRate
+        self.provenance = provenance
         self.writer = writer
-        self.segments = segments
-        self.recoveredSegmentCount = segments.count
+        self.segments = recovery.segments
+        self.recoveredSegmentCount = recovery.segments.count
         self.processor = processor
-        self.durableConsumedFrames = durableConsumedFrames
-        self.sealedFrames = sealedFrames
-        self.finished = finished
+        self.durableConsumedFrames = recovery.consumedFrames
+        self.sealedFrames = recovery.sealedFrames
+        self.runStarted = recovery.runStarts[.segmentation] != nil
+        self.runCompleted = recovery.runCompletions[.segmentation] != nil
+        self.finished = recovery.segmentationCompleted
     }
 
     public func processAvailable(reader: any TimelineAudioReading) async throws -> [SegmentReference] {
@@ -58,6 +81,9 @@ public actor VADSession {
         guard !requiresReopen else { throw SegmentationConsistencyError.sessionRequiresReopen }
 
         do {
+            guard reader.info.sampleRate == sampleRate else {
+                throw ProcessingLogStateError.incompatibleSettings
+            }
             let frameCount = reader.info.committedFrames
             guard frameCount >= durableConsumedFrames else {
                 throw SegmentationConsistencyError.inputFrameCountMismatch(expected: durableConsumedFrames, actual: frameCount)
@@ -65,7 +91,12 @@ public actor VADSession {
             if let sealedFrames, frameCount != sealedFrames {
                 throw SegmentationConsistencyError.inputFrameCountMismatch(expected: sealedFrames, actual: frameCount)
             }
-            guard !finished else { return [] }
+
+            try await ensureRunStarted()
+            if finished {
+                try await ensureRunCompleted()
+                return []
+            }
             if finishing, sealedFrames == nil {
                 try await writer.append(EventDraft(eventType: "segmentation.input.sealed", sessionID: sessionID,
                                                    segmentationRunID: segmentationRunID,
@@ -99,6 +130,7 @@ public actor VADSession {
                                                        consumedFrames: await processor.consumedFrames,
                                                        segmentCount: segments.count)))
                 finished = true
+                try await ensureRunCompleted()
             } else {
                 let consumedFrames = await processor.consumedFrames
                 if consumedFrames > durableConsumedFrames {
@@ -113,5 +145,32 @@ public actor VADSession {
             requiresReopen = true
             throw error
         }
+    }
+
+    private func ensureRunStarted() async throws {
+        guard !runStarted else { return }
+        try await writer.append(EventDraft(
+            eventType: "processing.run.started",
+            sessionID: sessionID,
+            processingRunID: segmentationRunID,
+            payload: ProcessingRunStartedPayload(stage: .segmentation, provenance: provenance)
+        ))
+        runStarted = true
+    }
+
+    private func ensureRunCompleted() async throws {
+        guard !runCompleted else { return }
+        try await writer.append(EventDraft(
+            eventType: "processing.run.completed",
+            sessionID: sessionID,
+            processingRunID: segmentationRunID,
+            payload: ProcessingRunCompletedPayload(
+                stage: .segmentation,
+                succeeded: true,
+                completedCount: segments.count,
+                failedCount: 0
+            )
+        ))
+        runCompleted = true
     }
 }

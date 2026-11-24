@@ -319,13 +319,20 @@ actor IncrementalFixtureASR: ASREngine {
 func incrementalLiveFixture(count: Int) async throws -> (root: URL, session: LiveASRSession) {
     let root = FileManager.default.temporaryDirectory.appending(path: "clause-incremental-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let audio = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
+    let audio = try DurableAudioWriter(
+        directory: SessionLayout(sessionURL: root).processingDirectory, chunkDurationSeconds: 1, sessionURL: root
+    )
     try await audio.append(samples: Array(repeating: Float(0.1), count: 16_000))
     let checkpoint = await audio.committedSnapshot()
-    let session = LiveASRSession(sessionID: UUID(), sessionURL: root,
-        segmentationRunID: incrementalSegmentationRun, asrRunID: incrementalASRRun, processingDirectory: root,
-        writer: try SessionWriter(sessionURL: root), asr: IncrementalFixtureASR(texts: Array(repeating: "合成の発話", count: count)),
-        sampleRate: checkpoint.sampleRate, clauseBoundaryRunID: incrementalBoundaryRun, contentPriorityRunID: incrementalPriorityRun)
+    let sessionID = UUID()
+    let writer = try SessionWriter(sessionURL: root)
+    let asr = IncrementalFixtureASR(texts: Array(repeating: "合成の発話", count: count))
+    try await seedLivePipeline(
+        writer: writer, sessionID: sessionID, segmentationRunID: incrementalSegmentationRun,
+        asrRunID: incrementalASRRun, sampleRate: checkpoint.sampleRate, asrProvenance: asr.provenance,
+        decisionRuns: (incrementalBoundaryRun, incrementalPriorityRun)
+    )
+    let session = try await LiveASRSession.open(sessionID: sessionID, sessionURL: root, writer: writer, asr: asr)
     let segments = (0..<count).map { (index: Int) -> SegmentReference in
         let startFrame = Int64(index) * 4
         return SegmentReference(segmentationRunID: incrementalSegmentationRun,

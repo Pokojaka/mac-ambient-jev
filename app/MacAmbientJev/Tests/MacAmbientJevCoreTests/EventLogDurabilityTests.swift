@@ -3,7 +3,7 @@ import Testing
 @testable import MacAmbientJevCore
 
 @Test func recoveryRejectsCorruptNewlineTerminatedFinalLine() throws {
-    let input = Data(("{\"event_seq\":1,\"schema_version\":3}\nnot-json\n").utf8)
+    let input = Data(("{\"event_seq\":1,\"schema_version\":4}\nnot-json\n").utf8)
     #expect(throws: SessionRecoveryError.self) {
         _ = try SessionRecovery.recoverJSONL(input)
     }
@@ -14,7 +14,7 @@ import Testing
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let eventsURL = root.appending(path: "events.jsonl")
-    try Data("{\"event_seq\":1,\"event_type\":\"segment.created\",\"schema_version\":3}".utf8).write(to: eventsURL)
+    try Data("{\"event_seq\":1,\"event_type\":\"segment.created\",\"schema_version\":4}".utf8).write(to: eventsURL)
 
     let writer = try SessionWriter(sessionURL: root)
     _ = try await writer.append(EventDraft(
@@ -43,7 +43,7 @@ import Testing
 @Test func recoveryRejectsNegativeAndOverflowingEventSequences() throws {
     for value in ["-1", "18446744073709551615", "1e30", "1.5", "true"] {
         #expect(throws: SessionRecoveryError.invalidEventSequence(index: 0)) {
-            _ = try SessionRecovery.recoverJSONL(Data("{\"event_seq\":\(value),\"schema_version\":3}\n".utf8))
+            _ = try SessionRecovery.recoverJSONL(Data("{\"event_seq\":\(value),\"schema_version\":4}\n".utf8))
         }
     }
 }
@@ -53,7 +53,7 @@ import Testing
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let eventsURL = root.appending(path: "events.jsonl")
-    let first = "{\"event_seq\":1,\"event_type\":\"segment.created\",\"schema_version\":3}\n"
+    let first = "{\"event_seq\":1,\"event_type\":\"segment.created\",\"schema_version\":4}\n"
     try Data((first + "{\"event_seq\":2,\"eve").utf8).write(to: eventsURL)
 
     let appended = try await SessionWriter(sessionURL: root).append(EventDraft(
@@ -71,13 +71,13 @@ func readersAndAppendRejectDuplicateOrReversedEventSequences(last: Int) throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let first = Data("{\"event_seq\":2,\"event_type\":\"future.event\",\"schema_version\":3}".utf8)
-    let second = Data("{\"event_seq\":\(last + 1),\"event_type\":\"future.event\",\"schema_version\":3}".utf8)
+    let first = Data("{\"event_seq\":2,\"event_type\":\"future.event\",\"schema_version\":4}".utf8)
+    let second = Data("{\"event_seq\":\(last + 1),\"event_type\":\"future.event\",\"schema_version\":4}".utf8)
     let bytes = first + Data([0x0A]) + second + Data([0x0A])
     let url = root.appending(path: "events.jsonl")
     try bytes.write(to: url)
     #expect(throws: SessionRecoveryError.invalidEventSequence(index: 1)) {
-        _ = try EventLogTranscriptReader().events(lines: [first, second], activeRuns: ActiveRuns())
+        _ = try EventLogTranscriptReader().read(lines: [first, second], sessionID: UUID())
     }
     #expect(throws: SessionRecoveryError.invalidEventSequence(index: 1)) {
         _ = try SessionWriter(sessionURL: root)

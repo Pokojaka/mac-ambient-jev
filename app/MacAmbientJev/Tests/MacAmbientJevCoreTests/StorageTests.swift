@@ -67,122 +67,45 @@ import Testing
 
 
 @Test
-func processingMetadataEncodesThePublishedStageContract() throws {
-    let metadata = ProcessingMetadata(
-        finalizationAttempt: FinalizationAttempt(attemptID: "final", state: .complete, failureReason: nil),
-        activeRuns: ActiveRuns(
-            segmentation: "seg", asr: "asr",
-            clauseBoundary: "boundary", contentPriority: "priority"
-        ),
-        pendingClauseBoundarySegments: [],
-        pendingContentPriorityClauses: []
-    )
+func processingMetadataEncodesTheGenerationAndItsState() throws {
+    let metadata = ProcessingMetadata(generationID: UUID(), state: .failed, failureReason: "reason")
     let data = try JSONEncoder().encode(metadata)
     let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-    #expect(object["schema_version"] as? Int == 3)
-    #expect(Set(object.keys) == Set([
-        "schema_version", "finalization_attempt", "active_runs",
-        "pending_clause_boundary_segments", "pending_content_priority_clauses"
-    ]))
-    let runs = try #require(object["active_runs"] as? [String: String])
-    #expect(runs == [
-        "segmentation": "seg", "asr": "asr",
-        "clause_boundary": "boundary", "content_priority": "priority"
-    ])
+    #expect(object["schema_version"] as? Int == EventLogSchema.version)
+    #expect(Set(object.keys) == Set(["schema_version", "generation_id", "state", "failure_reason"]))
+    #expect(object["state"] as? String == "failed")
     #expect(try JSONDecoder().decode(ProcessingMetadata.self, from: data) == metadata)
 }
 
-@Test(arguments: ["pending_clause_boundary_segments", "pending_content_priority_clauses"])
-func missingClauseMetadataArraysAreRejectedBeforeReadingOrAppending(key: String) throws {
+@Test(arguments: ["generation_id", "state"])
+func missingMetadataFieldsAreRejected(key: String) throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     var object: [String: Any] = [
         "schema_version": EventLogSchema.version,
-        "finalization_attempt": NSNull(), "active_runs": NSNull(),
-        "pending_clause_boundary_segments": [], "pending_content_priority_clauses": []
+        "generation_id": UUID().uuidString, "state": "running"
     ]
     object.removeValue(forKey: key)
-    let store = ProcessingMetadataStore(sessionURL: root)
+    let url = SessionLayout(sessionURL: root).processingMetadataURL
     let original = try JSONSerialization.data(withJSONObject: object)
-    try original.write(to: store.url)
-    #expect(throws: ProcessingMetadataStoreError.self) { _ = try store.load() }
-    #expect(throws: ProcessingMetadataStoreError.self) { _ = try SessionWriter(sessionURL: root) }
-    #expect(try Data(contentsOf: store.url) == original)
+    try original.write(to: url)
+    #expect(throws: ProcessingMetadataStoreError.self) { _ = try ProcessingMetadataStore(sessionURL: root).load() }
+    #expect(try Data(contentsOf: url) == original)
 }
 
-@Test(arguments: [1, 2, 4, nil] as [Int?])
-func unsupportedMetadataSchemaCannotBeReadAppendedOrReplaced(version: Int?) throws {
+@Test(arguments: [1, 2, 3, nil] as [Int?])
+func unsupportedMetadataSchemaCannotBeRead(version: Int?) throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    var object: [String: Any] = [
-        "finalization_attempt": NSNull(), "active_runs": NSNull(),
-        "pending_clause_boundary_segments": [], "pending_content_priority_clauses": []
-    ]
+    var object: [String: Any] = ["generation_id": UUID().uuidString, "state": "running"]
     object["schema_version"] = version
-    let store = ProcessingMetadataStore(sessionURL: root)
+    let url = SessionLayout(sessionURL: root).processingMetadataURL
     let original = try JSONSerialization.data(withJSONObject: object)
-    try original.write(to: store.url)
-    #expect(throws: ProcessingMetadataStoreError.unsupportedSchemaVersion) { _ = try store.load() }
+    try original.write(to: url)
     #expect(throws: ProcessingMetadataStoreError.unsupportedSchemaVersion) {
-        _ = try SessionWriter(sessionURL: root)
+        _ = try ProcessingMetadataStore(sessionURL: root).load()
     }
-    for policy in [UnreadableMetadataPolicy.reject, .replace] {
-        #expect(throws: ProcessingMetadataStoreError.unsupportedSchemaVersion) {
-            try store.beginFinalization(attemptID: "new", policy: policy)
-        }
-    }
-    #expect(try Data(contentsOf: store.url) == original)
-}
-
-@Test(arguments: ["duplicate", "wrongASR", "wrongBoundary", "orphanPriority"])
-func metadataRejectsInvalidAtomicSnapshotAndLeavesPublishedBytesIntact(kind: String) throws {
-    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let source = try SegmentTextReference(segmentationRunID: "seg", segmentID: "s", asrRunID: "asr", asrEventSeq: 2)
-    let store = ProcessingMetadataStore(sessionURL: root)
-    let active = ActiveRuns(segmentation: "seg", asr: "asr")
-    try store.save(ProcessingMetadata(
-        finalizationAttempt: FinalizationAttempt(attemptID: "a", state: .complete, failureReason: nil),
-        activeRuns: active, pendingClauseBoundarySegments: [source], pendingContentPriorityClauses: []
-    ))
-    let original = try Data(contentsOf: store.url)
-    var invalid = try #require(try store.load())
-    switch kind {
-    case "duplicate": invalid.pendingClauseBoundarySegments = [source, source]
-    case "wrongASR":
-        invalid.pendingClauseBoundarySegments = [
-            try SegmentTextReference(segmentationRunID: "seg", segmentID: "s", asrRunID: "other", asrEventSeq: 2)
-        ]
-    case "wrongBoundary":
-        invalid.activeRuns = active.withDecisionRuns(clauseBoundary: "boundary", contentPriority: "priority")
-        invalid.pendingContentPriorityClauses = [try ClauseReference(boundaryRunID: "other", clauseID: "c2_0")]
-    default:
-        invalid.activeRuns = active.withDecisionRuns(clauseBoundary: nil, contentPriority: "priority")
-    }
-    #expect(throws: ProcessingMetadataStoreError.self) { try store.save(invalid) }
-    #expect(try Data(contentsOf: store.url) == original)
-}
-
-@Test
-func staleDecisionPublicationCannotOverwriteNewLocalRunsOrPendingSources() throws {
-    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-    defer { try? FileManager.default.removeItem(at: root) }
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let old = ActiveRuns(segmentation: "oldSeg", asr: "oldASR")
-    let current = ActiveRuns(segmentation: "newSeg", asr: "newASR")
-    let source = try SegmentTextReference(segmentationRunID: "newSeg", segmentID: "s", asrRunID: "newASR", asrEventSeq: 8)
-    let store = ProcessingMetadataStore(sessionURL: root)
-    try store.save(ProcessingMetadata(
-        finalizationAttempt: FinalizationAttempt(attemptID: "new", state: .complete, failureReason: nil),
-        activeRuns: current, pendingClauseBoundarySegments: [source], pendingContentPriorityClauses: []
-    ))
-    let original = try Data(contentsOf: store.url)
-    #expect(throws: ProcessingMetadataStoreError.publishedRunsChanged) {
-        try store.publishDecisionSnapshot(basedOn: old, clauseBoundaryRunID: "staleBoundary", contentPriorityRunID: "stalePriority",
-                                     pendingClauseBoundarySegments: [], pendingContentPriorityClauses: [])
-    }
-    #expect(try Data(contentsOf: store.url) == original)
+    #expect(try Data(contentsOf: url) == original)
 }

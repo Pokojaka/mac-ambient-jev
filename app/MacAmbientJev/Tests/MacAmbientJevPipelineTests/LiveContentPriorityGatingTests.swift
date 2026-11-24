@@ -273,7 +273,7 @@ private struct LiveDecisionFixture {
     let priority: LiveContentPrioritySession
     let segments: [SegmentReference]
     let counter: DecisionUsageCounter
-    let recorder = LiveRecorder()
+    let recorder: LiveRecorder
 
     init(
         texts: [String?], makeDecisions: @escaping NativeSessionProcessor.DecisionCoordinatorFactory,
@@ -281,7 +281,9 @@ private struct LiveDecisionFixture {
     ) async throws {
         root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let audio = try DurableAudioWriter(directory: root, chunkDurationSeconds: 1, sessionURL: root)
+        let audio = try DurableAudioWriter(
+            directory: SessionLayout(sessionURL: root).processingDirectory, chunkDurationSeconds: 1, sessionURL: root
+        )
         let durableFrames = max(16_000, ((texts.count + 3) / 4) * 16_000)
         try await audio.append(samples: Array(repeating: Float(0.1), count: durableFrames))
         checkpoint = await audio.committedSnapshot()
@@ -291,14 +293,19 @@ private struct LiveDecisionFixture {
             SegmentReference(segmentationRunID: "live_seg", segmentID: "seg_\($0 + 1)",
                              speechRanges: [Int64($0 * 4_000)..<Int64($0 * 4_000 + 3_000)])
         }
-        asr = LiveASRSession(
-            sessionID: sessionID, sessionURL: root, segmentationRunID: "live_seg", asrRunID: "live_asr",
-            processingDirectory: root, writer: writer, asr: ScriptedASR(texts), sampleRate: checkpoint.sampleRate,
-            clauseBoundaryRunID: "boundary_live", contentPriorityRunID: "priority_live"
+        let scripted = ScriptedASR(texts)
+        try await seedLivePipeline(
+            writer: writer, sessionID: sessionID, segmentationRunID: "live_seg", asrRunID: "live_asr",
+            sampleRate: checkpoint.sampleRate, asrProvenance: scripted.provenance,
+            decisionRuns: ("boundary_live", "priority_live")
         )
-        priority = LiveContentPrioritySession(
-            sessionID: sessionID, boundaryRunID: "boundary_live", priorityRunID: "priority_live",
-            writer: writer, liveASR: asr, makeDecisions: makeDecisions, usageCounter: counter
+        asr = try await LiveASRSession.open(sessionID: sessionID, sessionURL: root, writer: writer, asr: scripted)
+        let recorder = LiveRecorder()
+        self.recorder = recorder
+        priority = try await LiveContentPrioritySession.open(
+            sessionID: sessionID, writer: writer, liveASR: asr, makeDecisions: makeDecisions, usageCounter: counter,
+            onStatus: { await recorder.record(status: $0) },
+            onUpdate: { await recorder.record($0.progress.materializedSegments) }
         )
         self.counter = counter
     }
@@ -381,7 +388,7 @@ func liveRowsShowAtOnceAndAClauseSpanningSegmentsClosesOnlyAfterItsBoundaries() 
 
     try await fixture.priority.finishInput(snapshot: await fixture.asr.snapshot())
     try await fixture.recorder.wait { $0.map(\.clauseState) == [.classified, .classified, .classified] }
-    let log = try await fixture.waitForDecisionCompletion()
+    _ = try await fixture.waitForDecisionCompletion()
 
     let requests = await provider.boundaryRequests
     #expect(requests.map(\.source.segmentID) == ["seg_1", "seg_2", "seg_3"])
@@ -389,12 +396,6 @@ func liveRowsShowAtOnceAndAClauseSpanningSegmentsClosesOnlyAfterItsBoundaries() 
     #expect(await provider.priorityRequests == [["これはコピーというか。", "うん、うん。"]])
     let rows = try LiveTranscriptProjection().rows(for: await fixture.recorder.latest)
     #expect(rows.map(\.text) == ["これは", "コピーと", "いうか。"])
-    // The durable live results are what finalization may reuse.
-    let reused = try EventLogTranscriptReader().liveContentPriorityDecisions(
-        from: log,
-        modelRevision: testDecisionIdentity.modelRevision
-    )
-    #expect(Set(reused.keys) == [ExactClauseTextKey(text: "これはコピーというか。"), ExactClauseTextKey(text: "うん、うん。")])
     let snapshot = await counter.snapshot()
     #expect(snapshot.boundaryRequests.sendCount == 3)
     #expect(snapshot.priorityRequests.sendCount == 1)
@@ -572,7 +573,6 @@ func failedTaggerLoadKeepsLiveRowsUnsplitAndPendingWithoutRequests() async throw
         == ProcessingStage.clauseBoundary.rawValue)
     let provenance = try #require((firstRun["payload"] as? [String: Any])?["provenance"] as? [String: Any])
     #expect(provenance["engine"] as? String == "unavailable")
-    #expect((provenance["configuration"] as? [String: String])?["mode"] == "live")
     await fixture.priority.worker?.value
 }
 
@@ -645,16 +645,13 @@ func decisionRecoveryWaitsForTheMissingSuccessorWithoutRepeatingSavedRequests() 
 
     let writer = try SessionWriter(sessionURL: fixture.root)
     let reopenedASR = try await LiveASRSession.open(
-        sessionID: fixture.sessionID, sessionURL: fixture.root,
-        segmentationRunID: "live_seg", asrRunID: "live_asr", processingDirectory: fixture.root,
-        writer: writer, asr: ScriptedASR(["です。", ""]), sampleRate: fixture.checkpoint.sampleRate,
-        clauseBoundaryRunID: "boundary_live", contentPriorityRunID: "priority_live"
+        sessionID: fixture.sessionID, sessionURL: fixture.root, writer: writer, asr: ScriptedASR(["です。", ""])
     )
     let recorder = fixture.recorder
     let onStatus: LiveContentPrioritySession.StatusHandler = { await recorder.record(status: $0) }
     let onUpdate: LiveContentPrioritySession.UpdateHandler = { await recorder.record($0.progress.materializedSegments) }
     let reopened = try await LiveContentPrioritySession.open(
-        sessionID: fixture.sessionID, boundaryRunID: "boundary_live", priorityRunID: "priority_live",
+        sessionID: fixture.sessionID,
         writer: writer, liveASR: reopenedASR, makeDecisions: { decisions }, usageCounter: counter,
         onStatus: onStatus, onUpdate: onUpdate
     )

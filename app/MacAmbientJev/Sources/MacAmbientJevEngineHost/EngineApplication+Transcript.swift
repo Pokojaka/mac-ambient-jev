@@ -238,13 +238,13 @@ extension EngineApplicationCore {
         let materializedSegments: [MaterializedTranscriptSegment]
         do {
             let session = try readableSession(sessionID)
-            guard let audioSource = session.audioSource else {
+            guard session.audioSource != nil else {
                 throw EngineFailures.commandError(
                     .filesystem, "保存済み音声を使えないため、文字起こしを表示できません", stage: .finalization,
                     sessionID: sessionID, recoveryAction: .inspectSession
                 )
             }
-            switch try SavedTranscriptLoader.load(sessionURL: session.sessionURL, audioSource: audioSource) {
+            switch try SavedTranscriptLoader.load(sessionURL: session.sessionURL) {
             case .unavailable:
                 throw EngineFailures.commandError(
                     .processingFailure, "確定済みの文字起こしを読み込めませんでした", stage: .finalization,
@@ -393,7 +393,7 @@ extension EngineApplicationCore {
                 isLiveState: true, projection: nil
             )
         }
-        guard let audioSource = session.audioSource else {
+        guard session.audioSource != nil else {
             throw EngineFailures.commandError(
                 .filesystem, "保存済み音声を使えないため、文字起こしを表示できません", stage: .finalization,
                 sessionID: sessionID, recoveryAction: .inspectSession
@@ -402,7 +402,7 @@ extension EngineApplicationCore {
         let rows: [EngineTranscriptRow]
         let materializedSegments: [MaterializedTranscriptSegment]
         do {
-            switch try SavedTranscriptLoader.load(sessionURL: session.sessionURL, audioSource: audioSource) {
+            switch try SavedTranscriptLoader.load(sessionURL: session.sessionURL) {
             case .unavailable:
                 rows = []
                 materializedSegments = []

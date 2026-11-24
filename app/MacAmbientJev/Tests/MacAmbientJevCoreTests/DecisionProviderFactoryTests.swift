@@ -286,8 +286,8 @@ struct DecisionProviderFactoryTests {
         #expect(loadCounter.count == 1)
         #expect(await usageCounter.snapshot() == initialUsage)
 
-        let boundaryProvenance = coordinator.boundaryProvenance(mode: "live")
-        let priorityProvenance = coordinator.priorityProvenance(mode: "live")
+        let boundaryProvenance = coordinator.boundaryProvenance()
+        let priorityProvenance = coordinator.priorityProvenance()
         for provenance in [boundaryProvenance, priorityProvenance] {
             #expect(provenance.engine == "test-backend")
             #expect(provenance.model == identity.modelID)

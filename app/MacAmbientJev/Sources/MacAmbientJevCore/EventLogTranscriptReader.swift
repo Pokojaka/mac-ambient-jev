@@ -5,8 +5,6 @@ public enum EventLogTranscriptReaderError: Error, Equatable, LocalizedError {
     case unreadableLine(index: Int)
     /// An event the reader needs is missing a required field or has a field of the wrong type.
     case malformedEvent(eventSeq: UInt64, eventType: String)
-    /// A decision event whose `request` carries `metadata`, the format used before 2026-10-14.
-    case obsoleteDecisionFormat(eventSeq: UInt64, eventType: String)
     /// An `asr.completed` event whose `outcome` contradicts its `text`.
     case asrOutcomeMismatch(eventSeq: UInt64)
     /// Clause events that do not match the ASR text, the boundary results, or each other.
@@ -18,8 +16,6 @@ public enum EventLogTranscriptReaderError: Error, Equatable, LocalizedError {
             "イベントログの \(index + 1) 行目を読めません"
         case .malformedEvent(let eventSeq, let eventType):
             "イベントログの \(eventType)（event_seq \(eventSeq)）が壊れています"
-        case .obsoleteDecisionFormat(let eventSeq, let eventType):
-            "このセッションは 2026-10-14 より前の判定形式（\(eventType)、event_seq \(eventSeq)）を含むため確定できません。元の音声ファイルを読み込み直してください"
         case .asrOutcomeMismatch(let eventSeq):
             "イベントログの asr.completed（event_seq \(eventSeq)）の outcome が本文と一致しません"
         case .inconsistentClauseRun(let runID, let reason):
@@ -78,27 +74,8 @@ struct EventLogLine {
         }
     }
 
-    /// Discover the reuse roots without decoding unrelated final/retry payloads.
-    func livePriorityRunID() throws -> String? {
-        guard header.eventType == "processing.run.started",
-              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let payload = object["payload"] as? [String: Any],
-              let provenance = payload["provenance"] as? [String: Any],
-              let configuration = provenance["configuration"] as? [String: Any],
-              configuration["mode"] as? String == "live",
-              payload["stage"] as? String == ProcessingStage.contentPriority.rawValue else { return nil }
-        _ = try body(PayloadBody<ProcessingRunStartedPayload>.self)
-        return try requiredRunID()
-    }
-
     var malformed: EventLogTranscriptReaderError {
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let payload = object["payload"] as? [String: Any],
-              let request = payload["request"] as? [String: Any],
-              request["metadata"] != nil else {
-            return .malformedEvent(eventSeq: header.eventSeq, eventType: header.eventType)
-        }
-        return .obsoleteDecisionFormat(eventSeq: header.eventSeq, eventType: header.eventType)
+        .malformedEvent(eventSeq: header.eventSeq, eventType: header.eventType)
     }
 
     /// The run ID a known event type is keyed by; its absence makes the event unattributable.
@@ -207,117 +184,74 @@ struct RunCompletedBody: Decodable {
 }
 
 
-/// Reads the events of the active runs. Events of other runs and unknown event types are skipped;
-/// an active-run event with a missing or mistyped field throws.
+public struct StoredTranscriptEvents: Sendable {
+    public let state: ProcessingLogState
+    public let events: [TranscriptEvent]
+    public let pendingDecisions: DecisionRetryTargets
+}
+
+/// Projects the durable transcript selected by its latest pipeline generation.
 public struct EventLogTranscriptReader: Sendable {
     public init() {}
 
-    /// Durable classified decisions of live priority runs, keyed by the exact filler-removed
-    /// clause text. For one text the latest classified event wins; a later pending result
-    /// does not remove it. `data` is the event log at the moment finalization freezes it.
-    /// Only runs of the tagger revision that classifies the final transcript are reused.
-    public func liveContentPriorityDecisions(
-        from data: Data,
-        modelRevision: String
-    ) throws -> [ExactClauseTextKey: ReusableClauseDecision] {
-        let recovered = try SessionRecovery.recoverJSONL(data)
-        guard !recovered.droppedIncompleteTail else {
-            throw EventLogTranscriptReaderError.unreadableLine(index: recovered.lines.count)
-        }
-        let decoded = try EventLogLine.decode(recovered.lines)
-        let roots = Set(try decoded.compactMap { try $0.livePriorityRunID() })
-        let log = try ClauseEventLog(lines: decoded, selectedRuns: roots)
-        var boundaryRuns: [String: ClauseEventLog.BoundaryRun] = [:]
-        var decisions: [(seq: UInt64, key: ExactClauseTextKey, decision: ReusableClauseDecision)] = []
-        for (runID, run) in log.runs
-        where run.stage == .contentPriority && run.mode == "live" && run.modelRevision == modelRevision {
-            // A run without results references no boundary run yet.
-            guard let boundaryRunID = Self.boundaryRunID(of: runID, in: log) else { continue }
-            guard log.runs[boundaryRunID]?.mode == "live" else {
-                throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: runID, reason: "ライブ優先度 run が確定境界 run を参照しています")
-            }
-            let boundary = try boundaryRuns[boundaryRunID] ?? log.boundaryRun(boundaryRunID)
-            boundaryRuns[boundaryRunID] = boundary
-            let priority = try log.priorityRun(runID, boundary: boundary)
-            for (seq, payload) in priority.events {
-                for assignment in payload.assignments {
-                    guard case .classified(_, _, let response) = assignment.decision,
-                          let priorityValue = assignment.priority,
-                          let text = boundary.clauseTexts[assignment.reference] else { continue }
-                    let key = ExactClauseTextKey(text: text)
-                    decisions.append((seq, key, ReusableClauseDecision(
-                        sourcePriorityRunID: runID, sourceEventSeq: seq, sourceClause: assignment.reference,
-                        decision: response, visiblePriority: priorityValue
-                    )))
-                }
-            }
-        }
-        var result: [ExactClauseTextKey: ReusableClauseDecision] = [:]
-        for entry in decisions.sorted(by: { $0.seq < $1.seq }) {
-            result[entry.key] = entry.decision
-        }
-        return result
+    public func read(eventsURL: URL, sessionID: UUID) throws -> StoredTranscriptEvents? {
+        let lines = try SessionRecovery.recoverJSONL(SessionWriter.readDurableLog(eventsURL: eventsURL)).lines
+        return try project(lines: lines, sessionID: sessionID, frameCount: nil)
     }
 
-    private static func boundaryRunID(of priorityRunID: String, in log: ClauseEventLog) -> String? {
-        log.firstReference(ofPriorityRun: priorityRunID)?.boundaryRunID
+    public func read(lines: [Data], sessionID: UUID) throws -> StoredTranscriptEvents? {
+        try project(lines: lines, sessionID: sessionID, frameCount: nil)
     }
 
-    public func events(
-        lines: [Data],
-        activeRuns: ActiveRuns
-    ) throws -> [TranscriptEvent] {
-        var events: [TranscriptEvent] = []
+    public func validateCompletion(eventsURL: URL, sessionID: UUID, frameCount: Int64) throws -> StoredTranscriptEvents {
+        let lines = try SessionRecovery.recoverJSONL(SessionWriter.readDurableLog(eventsURL: eventsURL)).lines
+        guard let stored = try project(lines: lines, sessionID: sessionID, frameCount: frameCount) else {
+            throw ProcessingLogStateError.missingGeneration
+        }
+        return stored
+    }
+
+    private func project(lines: [Data], sessionID: UUID, frameCount: Int64?) throws -> StoredTranscriptEvents? {
         let decoded = try EventLogLine.decode(lines)
+        guard let generation = try GenerationEventLog(lines: decoded, sessionID: sessionID) else { return nil }
+        let state = try ProcessingLogState(log: generation, sessionID: sessionID)
+        if let frameCount { try state.validateRecognitionCompletion(frameCount: frameCount) }
 
-        for line in decoded {
-            let header = line.header
-            let seq = header.eventSeq
-
-            switch header.eventType {
-            case "segment.created":
-                let segmentationRunID = try line.requiredSegmentationRunID()
-                guard segmentationRunID == activeRuns.segmentation else { continue }
-                let body = try line.body(SegmentCreatedBody.self)
-                events.append(.segmentCreated(
-                    seq: seq,
-                    segmentationRunID: segmentationRunID,
-                    segmentID: body.segmentID,
-                    startFrame: body.startFrame,
-                    endFrame: body.endFrame
-                ))
-
-            case "asr.completed":
-                let runID = try line.requiredRunID()
-                let segmentationRunID = try line.requiredSegmentationRunID()
-                guard runID == activeRuns.asr,
-                      segmentationRunID == activeRuns.segmentation else { continue }
-                let body = try line.body(ASRCompletedBody.self)
-                guard body.outcome == ASRRecognitionOutcome(text: body.text) else {
-                    throw EventLogTranscriptReaderError.asrOutcomeMismatch(eventSeq: seq)
-                }
-                events.append(.asrCompleted(
-                    seq: seq,
-                    runID: runID,
-                    segmentationRunID: segmentationRunID,
-                    segmentID: body.segmentID,
-                    text: body.text,
-                    detectedLanguage: body.detectedLanguage
-                ))
-
-            default:
-                continue
-            }
+        let selected = generation.runs
+        var roots = Set([state.segmentationRunID, state.asrRunID]
+            + [selected.clauseBoundary, selected.contentPriority].compactMap { $0 })
+        var replacements: [(seq: UInt64, runs: ActiveRuns)] = []
+        for line in generation.lines where line.header.eventType == "pipeline.decisions.replaced" {
+            let ids = try line.body(PayloadBody<DecisionRunReplacement>.self).payload.replacement
+            roots.formUnion([ids.boundary, ids.priority])
+            replacements.append((line.header.eventSeq, selected.withDecisionRuns(
+                clauseBoundary: ids.boundary, contentPriority: ids.priority
+            )))
         }
-
-        let log = try ClauseEventLog(lines: decoded, selectedRuns: Set([
-            activeRuns.segmentation, activeRuns.asr,
-            activeRuns.clauseBoundary, activeRuns.contentPriority
-        ].compactMap { $0 }))
-        if let published = try log.publishedRuns(activeRuns) {
-            events += Self.clauseEvents(boundary: published.boundary, priority: published.priority)
+        let log = try ClauseEventLog(lines: generation.lines, selectedRuns: roots, sessionID: sessionID)
+        for replacement in replacements {
+            _ = try log.decisionRuns(
+                replacement.runs, requireCompletion: true, selectedBefore: replacement.seq
+            )
         }
-        return events.sorted { $0.eventSeq < $1.eventSeq }
+        let decisions = try log.decisionRuns(
+            selected, requireCompletion: frameCount != nil, selectedBefore: nil
+        )
+        let recognizedSources = log.recognizedSources(
+            segmentationRunID: state.segmentationRunID, asrRunID: state.asrRunID
+        )
+        let pendingBoundary = selected.clauseBoundary == nil
+            ? recognizedSources : (decisions.boundary?.pendingSources ?? [])
+        let pendingPriority = (decisions.boundary?.clauses ?? []).compactMap { _, clause in
+            decisions.priority?.assignments[clause.reference]?.needsRetry == true ? clause.reference : nil
+        }
+        let events = (state.events + Self.clauseEvents(
+            boundary: decisions.boundary, priority: decisions.priority
+        )).sorted { $0.eventSeq < $1.eventSeq }
+        return StoredTranscriptEvents(
+            state: state, events: events,
+            pendingDecisions: DecisionRetryTargets(boundarySegments: pendingBoundary, clauses: pendingPriority)
+        )
     }
 
     static func clauseEvents(boundary: ClauseEventLog.BoundaryRun?, priority: ClauseEventLog.PriorityRun?) -> [TranscriptEvent] {
@@ -346,7 +280,7 @@ public struct EventLogTranscriptReader: Sendable {
     }
 }
 
-/// Reconstructs one explicitly selected incremental decision session from its durable event log.
+/// Reconstructs the generation's initially selected incremental decision session from its durable event log.
 public struct DecisionSessionRecovery: Sendable {
     public let events: [TranscriptEvent], handledSources: [SegmentTextReference]
     public let assembly: ClauseBoundaryAssembly, composer: ClauseTextComposer
@@ -354,37 +288,29 @@ public struct DecisionSessionRecovery: Sendable {
     public let startedRuns: Set<ProcessingStage>, completedRuns: Set<ProcessingStage>
     public let boundaryCounts: (assessed: Int, pending: Int), priorityCounts: (classified: Int, pending: Int)
     public let pendingTargets: Set<DecisionPendingTarget>
+    public let boundaryRunID, priorityRunID: String
 
-    public init(eventsURL: URL, sessionID: UUID, segmentationRunID: String, asrRunID: String, boundaryRunID: String,
-                priorityRunID: String) throws {
-        guard boundaryRunID != priorityRunID, boundaryRunID != segmentationRunID,
-              boundaryRunID != asrRunID, priorityRunID != segmentationRunID, priorityRunID != asrRunID else {
-            throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: boundaryRunID, reason: "判定 run ID が他の run ID と重複しています")
-        }
+    public init(eventsURL: URL, sessionID: UUID) throws {
         let lines = try EventLogLine.decode(SessionRecovery.recoverJSONL(SessionWriter.readDurableLog(eventsURL: eventsURL)).lines)
-        let log = try ClauseEventLog(lines: lines, selectedRuns: [segmentationRunID, asrRunID, boundaryRunID, priorityRunID], sessionID: sessionID)
-        for (id, stage) in [(boundaryRunID, ProcessingStage.clauseBoundary), (priorityRunID, .contentPriority)] where log.runs[id] != nil {
-            guard let run = log.runs[id], run.stage == stage, run.mode == "live" else {
-                throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: id, reason: "選択した判定 run の段階または mode が一致しません")
-            }
+        guard let generation = try GenerationEventLog(lines: lines, sessionID: sessionID) else {
+            throw ProcessingLogStateError.missingGeneration
         }
-        for line in lines where [ClauseEventType.boundaryAssessed, ClauseEventType.boundaryPending,
-                                 ClauseEventType.clauseClosed, ClauseEventType.priorityAssigned].contains(line.header.eventType) {
-            guard let id = line.header.processingRunID, id == boundaryRunID || id == priorityRunID else { continue }
-            let boundaryType = line.header.eventType != ClauseEventType.priorityAssigned
-            guard (id == boundaryRunID) == boundaryType, log.runs[id] != nil else {
-                throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: id, reason: "判定イベントに対応する run の開始記録または event type が一致しません")
-            }
+        let initialRuns = generation.generation.runs
+        guard let segmentationRunID = initialRuns.segmentation, let asrRunID = initialRuns.asr else {
+            throw ProcessingLogStateError.missingGeneration
         }
-        let boundary: ClauseEventLog.BoundaryRun? = try log.runs[boundaryRunID] == nil ? nil : log.boundaryRun(boundaryRunID)
-        let priority: ClauseEventLog.PriorityRun?
-        if log.runs[priorityRunID] == nil { priority = nil }
-        else {
-            guard let boundary else {
-                throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: priorityRunID, reason: "境界判定 run なしに優先度 run があります")
-            }
-            priority = try log.priorityRun(priorityRunID, boundary: boundary)
+        guard let boundaryRunID = initialRuns.clauseBoundary,
+              let priorityRunID = initialRuns.contentPriority else {
+            throw EventLogTranscriptReaderError.inconsistentClauseRun(runID: "", reason: "この世代では判定 run が選択されていません")
         }
+        let log = try ClauseEventLog(
+            lines: generation.lines,
+            selectedRuns: [segmentationRunID, asrRunID, boundaryRunID, priorityRunID],
+            sessionID: sessionID
+        )
+        let decisions = try log.decisionRuns(initialRuns, requireCompletion: false)
+        let boundary = decisions.boundary
+        let priority = decisions.priority
         if let end = log.runs[priorityRunID]?.completionSeq {
             guard let boundaryEnd = log.runs[boundaryRunID]?.completionSeq,
                   log.runs[boundaryRunID]?.completed == true, boundaryEnd < end else {
@@ -431,9 +357,10 @@ public struct DecisionSessionRecovery: Sendable {
         pendingTargets = targets
 
         let selected = [(ProcessingStage.clauseBoundary, boundaryRunID), (.contentPriority, priorityRunID)]
-            .filter { log.runs[$0.1]?.stage == $0.0 }
-        startedRuns = Set(selected.map(\.0))
+        startedRuns = Set(selected.filter { log.runs[$0.1] != nil }.map(\.0))
         completedRuns = Set(selected.filter { log.runs[$0.1]?.completed == true }.map(\.0))
+        self.boundaryRunID = boundaryRunID
+        self.priorityRunID = priorityRunID
     }
 }
 

@@ -15,7 +15,6 @@ public protocol SessionProcessingExecuting: Sendable {
     func finishLiveTranscription(
         sessionID: UUID,
         checkpoint: AudioCheckpoint,
-        finalSegments: [SegmentReference],
         pacingMode: ASRPacingMode,
         shouldPause: @escaping NativeSessionProcessor.PauseCheck,
         onPhase: @escaping NativeSessionProcessor.PhaseHandler,
@@ -427,7 +426,6 @@ public final class SessionProcessingCoordinator {
                     let result = await processor.finishLiveTranscription(
                         sessionID: sessionID,
                         checkpoint: checkpoint,
-                        finalSegments: [],
                         pacingMode: .normal,
                         shouldPause: shouldPause,
                         onPhase: { _ in },

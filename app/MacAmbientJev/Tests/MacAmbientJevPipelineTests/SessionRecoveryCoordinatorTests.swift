@@ -133,7 +133,6 @@ private actor RecoveryTestExecutor: SessionProcessingExecuting {
     func finishLiveTranscription(
         sessionID: UUID,
         checkpoint: AudioCheckpoint,
-        finalSegments: [SegmentReference],
         pacingMode: ASRPacingMode,
         shouldPause: @escaping NativeSessionProcessor.PauseCheck,
         onPhase: @escaping NativeSessionProcessor.PhaseHandler,

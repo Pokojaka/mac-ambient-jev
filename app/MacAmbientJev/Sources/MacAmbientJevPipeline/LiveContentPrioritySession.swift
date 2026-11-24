@@ -58,9 +58,9 @@ public actor LiveContentPrioritySession {
     private var onUpdate: UpdateHandler?
     private(set) var worker: Task<Void, Never>?
     private var stopped = false
-    private var halted = false
+    private var workerError: Error?
 
-    public init(
+    private init(
         sessionID: UUID,
         boundaryRunID: String,
         priorityRunID: String,
@@ -80,20 +80,24 @@ public actor LiveContentPrioritySession {
     }
 
     public static func open(
-        sessionID: UUID, boundaryRunID: String, priorityRunID: String, writer: SessionWriter,
+        sessionID: UUID,
+        writer: SessionWriter,
         liveASR: LiveASRSession,
         makeDecisions: @escaping NativeSessionProcessor.DecisionCoordinatorFactory,
-        usageCounter: DecisionUsageCounter, onStatus: @escaping StatusHandler, onUpdate: @escaping UpdateHandler
+        usageCounter: DecisionUsageCounter,
+        onStatus: @escaping StatusHandler,
+        onUpdate: @escaping UpdateHandler
     ) async throws -> LiveContentPrioritySession {
         let eventsURL = await writer.eventsURL
-        let recovery = try DecisionSessionRecovery(
-            eventsURL: eventsURL, sessionID: sessionID,
-            segmentationRunID: liveASR.segmentationRunID, asrRunID: liveASR.asrRunID,
-            boundaryRunID: boundaryRunID, priorityRunID: priorityRunID
-        )
+        let recovery = try DecisionSessionRecovery(eventsURL: eventsURL, sessionID: sessionID)
         let session = LiveContentPrioritySession(
-            sessionID: sessionID, boundaryRunID: boundaryRunID, priorityRunID: priorityRunID,
-            writer: writer, liveASR: liveASR, makeDecisions: makeDecisions, usageCounter: usageCounter
+            sessionID: sessionID,
+            boundaryRunID: recovery.boundaryRunID,
+            priorityRunID: recovery.priorityRunID,
+            writer: writer,
+            liveASR: liveASR,
+            makeDecisions: makeDecisions,
+            usageCounter: usageCounter
         )
         try await session.hydrate(recovery, onStatus: onStatus, onUpdate: onUpdate)
         return session
@@ -181,6 +185,18 @@ public actor LiveContentPrioritySession {
         startWorker()
     }
 
+    func waitForDrain() async throws {
+        if let currentWorker = worker {
+            await withTaskCancellationHandler {
+                await currentWorker.value
+            } onCancel: {
+                currentWorker.cancel()
+            }
+        }
+        try Task.checkCancellation()
+        if let workerError { throw workerError }
+    }
+
     /// Cancels the queue immediately, even if a decision engine ignores cancellation. Results already
     /// saved stay durable; a response that arrives later is neither saved nor shown.
     public func stop() async {
@@ -218,7 +234,7 @@ public actor LiveContentPrioritySession {
     }
 
     private func startWorker() {
-        guard worker == nil, onUpdate != nil, !halted, !stopped else { return }
+        guard worker == nil, onUpdate != nil, workerError == nil, !stopped else { return }
         worker = Task { await drain() }
     }
 
@@ -245,10 +261,9 @@ public actor LiveContentPrioritySession {
                     return
                 }
             }
-        } catch is CancellationError {
-            return
         } catch {
-            halted = true
+            guard !(error is CancellationError && (stopped || Task.isCancelled)) else { return }
+            workerError = error
             guard !stopped && !Task.isCancelled else { return }
             await onStatus?("発話文の判定を保存できませんでした: \(error.localizedDescription)")
         }
@@ -294,16 +309,16 @@ public actor LiveContentPrioritySession {
             let provenance: RunProvenance
             switch stage {
             case .clauseBoundary:
-                provenance = decisions.boundaryProvenance(mode: "live")
+                provenance = decisions.boundaryProvenance()
             case .contentPriority:
-                provenance = decisions.priorityProvenance(mode: "live")
+                provenance = decisions.priorityProvenance()
             default:
                 preconditionFailure("Live decisions require a boundary or priority stage")
             }
             storeProvenance(provenance, for: stage)
             return .available(decisions)
         } catch {
-            storeProvenance(DecisionRunProvenance.unavailable(mode: "live"), for: stage)
+            storeProvenance(DecisionRunProvenance.unavailable(), for: stage)
             let message = "判定エンジンを初期化できませんでした: \(error.localizedDescription)"
             return .pending(.initializationFailed, message)
         }
@@ -442,10 +457,10 @@ public actor LiveContentPrioritySession {
             switch stage {
             case .clauseBoundary:
                 provenance = boundaryProvenance
-                    ?? DecisionRunProvenance.unavailable(mode: "live")
+                    ?? DecisionRunProvenance.unavailable()
             case .contentPriority:
                 provenance = priorityProvenance
-                    ?? DecisionRunProvenance.unavailable(mode: "live")
+                    ?? DecisionRunProvenance.unavailable()
             default:
                 preconditionFailure("Live decisions require a boundary or priority stage")
             }
