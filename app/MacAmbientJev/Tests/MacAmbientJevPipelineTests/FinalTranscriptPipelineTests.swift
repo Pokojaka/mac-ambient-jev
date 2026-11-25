@@ -176,7 +176,7 @@ private struct CancellationGatedCompactionAudioHandling: SessionProcessingAudioH
         try SessionAudioReaders.open(source, layout: layout)
     }
 
-    func compactRecording(layout: SessionLayout) async throws {
+    func convergeStorage(layout: SessionLayout, manifest: SessionManifest) async throws {
         try await gate.suspendUntilCancelled()
     }
 }

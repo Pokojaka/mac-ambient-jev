@@ -11,7 +11,11 @@ struct RecordingTestAudioHandling: SessionProcessingAudioHandling {
         try SessionAudioReaders.open(source, layout: layout)
     }
 
-    func compactRecording(layout: SessionLayout) async throws {
-        _ = try RecordingAudioCompactor(interrupt: nil).compact(layout: layout)
+    func convergeStorage(layout: SessionLayout, manifest: SessionManifest) async throws {
+        if try SessionStorageMaintenance.required(layout: layout, manifest: manifest) == .compactRecording {
+            _ = try RecordingAudioCompactor(interrupt: nil).compact(layout: layout)
+        } else if case .recordedPCM(let checkpoint)? = try layout.audioSource(for: manifest), checkpoint.committedFrames > 0 {
+            throw SessionProcessingAudioError.compactionNotRequired
+        }
     }
 }

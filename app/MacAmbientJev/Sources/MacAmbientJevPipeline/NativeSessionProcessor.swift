@@ -77,6 +77,18 @@ public actor NativeSessionProcessor {
         let decisions: LiveContentPrioritySession?
     }
 
+    /// What a drained generation reports once its storage work has finished.
+    private struct CompletionReport {
+        let rows: [MaterializedTranscriptSegment]
+        let status: Status
+    }
+
+    /// How one drain ended. A drained generation always carries what it reports after storage finishes.
+    private enum Drained {
+        case completed(CompletionReport, metrics: ASRBatchMetrics?, noSpeech: Bool)
+        case ended(SessionProcessingResult)
+    }
+
     private struct OpenedGeneration {
         let state: ProcessingLogState
         let startedNew: Bool
@@ -493,13 +505,13 @@ public actor NativeSessionProcessor {
             let manifest = try sessionLayout.loadManifest()
             loadedManifest = manifest
             let source = try sessionLayout.processingSource(for: manifest)
-            let result = await runFinalization(
+            let drained = await runFinalization(
                 sessionID: sessionID, layout: sessionLayout, source: source,
                 metadataPolicy: metadataPolicy, allowFailed: allowFailed, pacingMode: pacingMode,
                 shouldPause: shouldPause, onPhase: onPhase, onStatus: onStatus, onUpdate: onUpdate
             )
             return await closeStorage(
-                result, sessionID: sessionID, layout: sessionLayout, manifest: manifest, source: source,
+                drained, sessionID: sessionID, layout: sessionLayout, manifest: manifest,
                 onPhase: onPhase, onStatus: onStatus, onUpdate: onUpdate
             )
         } catch {
@@ -530,7 +542,7 @@ public actor NativeSessionProcessor {
         onPhase: @escaping PhaseHandler,
         onStatus: @escaping StatusHandler,
         onUpdate: @escaping UpdateHandler
-    ) async -> SessionProcessingResult {
+    ) async -> Drained {
         let live = takeLiveWorker(sessionID: sessionID)
         let result = await drain(
             sessionID: sessionID, layout: layout, source: source, live: live,
@@ -553,7 +565,7 @@ public actor NativeSessionProcessor {
         onPhase: @escaping PhaseHandler,
         onStatus: @escaping StatusHandler,
         onUpdate: @escaping UpdateHandler
-    ) async -> SessionProcessingResult {
+    ) async -> Drained {
         var attemptGenerationID: UUID?
         var metrics: ASRBatchMetrics?
         do {
@@ -637,16 +649,16 @@ public actor NativeSessionProcessor {
                     if reportedMessage == message { await onStatus(.paused(reason)) }
                     else { await onStatus(.message(reportedMessage)) }
                     await onUpdate(rows, .backlogged)
-                    return .paused(
+                    return .ended(.paused(
                         metrics: metrics, retained: rows.isEmpty ? .nothing : .finalized,
                         message: reportedMessage, reason: reason
-                    )
+                    ))
                 case .failed(let failure):
                     let message = failure.localizedDescription
                     try saveStatus(sessionID: sessionID, layout: layout, generationID: generationID, state: .failed, reason: message)
                     let (rows, reportedMessage) = rowsForFailure(layout: layout, sessionID: sessionID, message: message)
                     await onPhase(.complete); await onStatus(.message("確定処理に失敗しました: \(reportedMessage)")); await onUpdate(rows, .partialFailure(reportedMessage))
-                    return .failed(message: reportedMessage, metrics: metrics, retained: rows.isEmpty ? .nothing : .finalized)
+                    return .ended(.failed(message: reportedMessage, metrics: metrics, retained: rows.isEmpty ? .nothing : .finalized))
                 case .completed: break
                 }
             }
@@ -681,21 +693,23 @@ public actor NativeSessionProcessor {
                 )
                 await usageCounter.recordDeferred(sessionID: sessionID, targets: stored.pendingDecisions.pendingTargets)
             }
-            await onUpdate(finalRows, .complete)
-            await onPhase(.complete)
             let initializationFailure = stored.events.lazy.compactMap { event -> String? in
                 guard case .clauseBoundaryPending(let payload) = event.kind,
                       payload.reason == .initializationFailed else { return nil }
                 return payload.message
             }.last
+            let finalStatus: Status
             if stored.pendingDecisions.pendingTargets.isEmpty || decisionIDs(stored.state.generation.runs) == nil {
-                await onStatus(.message(finalRows.isEmpty ? "発話区間は検出されませんでした" : "文字起こしが完了しました（\(completion.completedCount)区間）"))
+                finalStatus = .message(finalRows.isEmpty ? "発話区間は検出されませんでした" : "文字起こしが完了しました（\(completion.completedCount)区間）")
             } else if let initializationFailure {
-                await onStatus(.message("\(UserFacingStatus.decisionDeferred.text)。\(initializationFailure)"))
+                finalStatus = .message("\(UserFacingStatus.decisionDeferred.text)。\(initializationFailure)")
             } else {
-                await onStatus(.activity(.decisionDeferred))
+                finalStatus = .activity(.decisionDeferred)
             }
-            return .completed(metrics: metrics, noSpeech: completion.completedCount == 0)
+            return .completed(
+                CompletionReport(rows: finalRows, status: finalStatus),
+                metrics: metrics, noSpeech: completion.completedCount == 0
+            )
         } catch {
             if let cancellation = error as? ASRRunCancellation { metrics = cancellation.metrics }
             // The error decides: only a cancellation pauses. A read, validation or saved failure stays
@@ -718,9 +732,9 @@ public actor NativeSessionProcessor {
                 : "確定処理に失敗しました: \(reportedMessage)"
             await onStatus(.message(statusText))
             await onUpdate(rows, cancelled ? .backlogged : .partialFailure(reportedMessage))
-            return cancelled
+            return .ended(cancelled
                 ? .paused(metrics: metrics, retained: rows.isEmpty ? .nothing : .finalized, message: reportedMessage)
-                : .failed(message: reportedMessage, metrics: metrics, retained: rows.isEmpty ? .nothing : .finalized)
+                : .failed(message: reportedMessage, metrics: metrics, retained: rows.isEmpty ? .nothing : .finalized))
         }
     }
 
@@ -896,30 +910,46 @@ public actor NativeSessionProcessor {
         }
     }
 
+    /// Finishes the storage work after the workers released their readers (FLAC conversion, then transient
+    /// cleanup), and only then reports completion: the completion callbacks, and the export and refresh
+    /// they trigger, never see PCM that is about to be compacted.
     private func closeStorage(
-        _ attempt: SessionProcessingResult,
+        _ drained: Drained,
         sessionID: UUID,
         layout: SessionLayout,
         manifest: SessionManifest,
-        source: SessionAudioSource,
         onPhase: PhaseHandler,
         onStatus: StatusHandler,
         onUpdate: UpdateHandler
     ) async -> SessionProcessingResult {
-        var result = attempt
-        if result.disposition == .completed,
-           case .recordedPCM(let checkpoint) = source, checkpoint.committedFrames > 0 {
+        var result: SessionProcessingResult
+        var report: CompletionReport?
+        switch drained {
+        case .completed(let completion, let metrics, let noSpeech):
+            result = .completed(metrics: metrics, noSpeech: noSpeech)
+            report = completion
+        case .ended(let ended):
+            result = ended
+        }
+        if report != nil {
             do {
                 try Task.checkCancellation()
-                try await audioHandling.compactRecording(layout: layout)
+                // The launch maintenance predicate decides the FLAC step, so a crash after the storage
+                // switch but before the PCM removal converges here too.
+                try await audioHandling.convergeStorage(layout: layout, manifest: manifest)
                 try Task.checkCancellation()
             } catch is CancellationError {
-                let message = "文字起こしは完了しましたが、音声の保存整理が中断されました"
-                await onPhase(.complete); await onStatus(.message(message))
+                let (rows, message) = rowsForFailure(
+                    layout: layout, sessionID: sessionID, message: "文字起こしは完了しましたが、音声の保存整理が中断されました"
+                )
+                await onPhase(.complete); await onStatus(.message(message)); await onUpdate(rows, .backlogged)
                 result = .paused(metrics: result.metrics, retained: .finalized, message: message)
             } catch {
-                let message = "文字起こしは保存しましたが、録音を FLAC にできませんでした: \(error.localizedDescription)"
-                await onPhase(.complete); await onStatus(.message(message))
+                let (rows, message) = rowsForFailure(
+                    layout: layout, sessionID: sessionID,
+                    message: "文字起こしは保存しましたが、録音を FLAC にできませんでした: \(error.localizedDescription)"
+                )
+                await onPhase(.complete); await onStatus(.message(message)); await onUpdate(rows, .partialFailure(message))
                 result = .failed(message: message, metrics: result.metrics, retained: .finalized)
             }
         }
@@ -934,6 +964,7 @@ public actor NativeSessionProcessor {
                     layout: layout, sessionID: sessionID, message: "文字起こしは保存しましたが、\(message)"
                 )
                 result = .failed(message: reportedMessage, metrics: result.metrics, retained: .finalized)
+                await onPhase(.complete)
                 await onStatus(.message(reportedMessage))
                 await onUpdate(rows, .partialFailure(reportedMessage))
             case .failed:
@@ -946,6 +977,11 @@ public actor NativeSessionProcessor {
                 )
                 await onStatus(.message(message))
             }
+        }
+        if result.disposition == .completed, let report {
+            await onUpdate(report.rows, .complete)
+            await onPhase(.complete)
+            await onStatus(report.status)
         }
         return result
     }

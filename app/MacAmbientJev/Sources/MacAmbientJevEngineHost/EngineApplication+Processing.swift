@@ -79,7 +79,7 @@ extension EngineApplicationCore: SessionProcessingEffects {
     }
 
     func autoExportIfEnabled(sessionID: UUID) async {
-        guard !pausesProcessing, !Task.isCancelled else { return }
+        guard !isShuttingDown, !Task.isCancelled else { return }
         guard let settings, settings.automaticExport else { return }
         guard let destination = settings.exportDestinationPath else {
             report(EngineFailures.failure(
@@ -98,7 +98,7 @@ extension EngineApplicationCore: SessionProcessingEffects {
                 break
             }
         } catch {
-            guard !pausesProcessing, !Task.isCancelled else { return }
+            guard !isShuttingDown, !Task.isCancelled else { return }
             let command = EngineFailures.commandError(from: error, fallback: .exportFailure, stage: .exporting, sessionID: sessionID)
             report(command.failure(requestID: nil))
         }
