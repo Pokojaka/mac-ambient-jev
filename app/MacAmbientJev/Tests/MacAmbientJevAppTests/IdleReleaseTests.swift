@@ -106,6 +106,13 @@ func noReleaseWhileBusy() async throws {
     #expect(state.idleReleaseTask == nil)
 
     state.processingQueue = SessionProcessingQueue()
+    state.processingQueue.holdForModels(.finalize(
+        sessionID: UUID(), metadataPolicy: .reject
+    ))
+    state.releaseIdleResourcesIfIdle()
+    #expect(state.idleReleaseTask == nil)
+
+    state.processingQueue = SessionProcessingQueue()
     state.processingQueue.enqueue(.finalize(
         sessionID: UUID(), metadataPolicy: .reject
     ))

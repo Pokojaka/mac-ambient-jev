@@ -1,6 +1,14 @@
 import Foundation
 import MacAmbientJevCore
 
+public enum SessionProcessingAudioError: LocalizedError, Equatable {
+    case compactionNotRequired
+
+    public var errorDescription: String? {
+        "完了した録音が PCM のまま FLAC 化の対象になっていません"
+    }
+}
+
 public struct SessionProcessingAudio: SessionProcessingAudioHandling {
     private let timelineBuilder: any ImportedAudioTimelineBuilding
     private let compactionOperation: @Sendable (SessionLayout) throws -> Void
@@ -45,14 +53,31 @@ public struct SessionProcessingAudio: SessionProcessingAudioHandling {
         return reader
     }
 
-    public func compactRecording(layout: SessionLayout) async throws {
-        try Task.checkCancellation()
-        let compactionOperation = self.compactionOperation
-        // Detached does not move blocking file work off the cooperative pool; use a dedicated executor.
-        let task = Task.detached(executorPreference: BlockingIOExecutor.shared) {
-            try compactionOperation(layout)
+    /// Runs the storage step the launch maintenance predicate asks for. A drained recording that the
+    /// predicate does not ask to compact is an error, not a skip.
+    public func convergeStorage(layout: SessionLayout, manifest: SessionManifest) async throws {
+        let needsCompaction = try await runBlocking {
+            if try SessionStorageMaintenance.required(layout: layout, manifest: manifest) == .compactRecording {
+                return true
+            }
+            if case .recordedPCM(let checkpoint)? = try layout.audioSource(for: manifest), checkpoint.committedFrames > 0 {
+                throw SessionProcessingAudioError.compactionNotRequired
+            }
+            return false
         }
-        try await withTaskCancellationHandler(
+        if needsCompaction { try await compactRecording(layout: layout) }
+    }
+
+    func compactRecording(layout: SessionLayout) async throws {
+        let compactionOperation = self.compactionOperation
+        try await runBlocking { try compactionOperation(layout) }
+    }
+
+    private func runBlocking<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
+        try Task.checkCancellation()
+        // Detached does not move blocking file work off the cooperative pool; use a dedicated executor.
+        let task = Task.detached(executorPreference: BlockingIOExecutor.shared) { try work() }
+        return try await withTaskCancellationHandler(
             operation: { try await task.value },
             onCancel: { task.cancel() }
         )

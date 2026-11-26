@@ -1,7 +1,7 @@
 import AVFoundation
 import Foundation
 import Testing
-import MacAmbientJevPipeline
+@testable import MacAmbientJevPipeline
 @testable import MacAmbientJevAppleSupport
 @testable import MacAmbientJevCore
 @testable import MacAmbientJevRuntime
@@ -27,11 +27,20 @@ private let speechSamples: [Float] =
     Array(repeating: 0.3, count: 16_000) + Array(repeating: -0.5, count: 16_000)
 private let silentSamples = [Float](repeating: 0, count: 32_000)
 
+private final class CallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func increment() { lock.withLock { value += 1 } }
+    var count: Int { lock.withLock { value } }
+}
+
 private struct ProbeVAD: FinalTranscriptVADSegmenter {
     let provenance = RunProvenance(engine: "probe-vad", model: nil, version: "test", configuration: [:])
     let fails: Bool
+    let calls = CallCounter()
 
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
+        calls.increment()
         guard !fails else { throw ExpectedFailure() }
         let samples = try reader.readSamples(frameRange: 0..<reader.info.committedFrames)
         guard let first = samples.firstIndex(where: { abs($0) > 0.05 }),
@@ -45,11 +54,13 @@ private struct ProbeVAD: FinalTranscriptVADSegmenter {
 private struct ProbeASR: ASREngine {
     let provenance = RunProvenance(engine: "probe-asr", model: nil, version: "test", configuration: [:])
     let fails: Bool
+    let calls = CallCounter()
 
     func prepare() async throws {}
     func unload() async {}
 
     func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
+        calls.increment()
         guard !fails else { throw ExpectedFailure() }
         let mean = input.samples.reduce(0, +) / Float(input.samples.count)
         return ASRResult(text: "mean \(String(format: "%.3f", mean))", detectedLanguage: "ja")
@@ -424,4 +435,84 @@ func aSessionCompactedByMaintenanceFinalizesFromTheFLACWithoutAStaleSource() asy
     #expect(rows.map(\.startMilliseconds) == [0])
     #expect(rows.map(\.endMilliseconds) == [2_000])
     #expect(exists(fixture.layout.recordingFLACURL))
+}
+
+private actor CompletionObservations {
+    private(set) var flacPresentAtCompletion: [Bool] = []
+    func record(_ flacPresent: Bool) { flacPresentAtCompletion.append(flacPresent) }
+}
+
+@Test
+func completionCallbacksSeeTheFinishedFLAC() async throws {
+    let fixture = try await makeFixture(.recording, samples: speechSamples)
+    defer { fixture.cleanUp() }
+    let observations = CompletionObservations()
+    let flac = fixture.layout.recordingFLACURL
+
+    let result = await fixture.processor(engines(for: .success)).processSession(
+        sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil },
+        onPhase: { if $0 == .complete { await observations.record(exists(flac)) } },
+        metadataPolicy: .reject, onStatus: { _ in },
+        onUpdate: { _, state in if state == .complete { await observations.record(exists(flac)) } }
+    )
+
+    #expect(result.disposition == .completed)
+    #expect(await observations.flacPresentAtCompletion == [true, true])
+}
+
+private enum Reopening: CaseIterable, CustomTestStringConvertible {
+    case launchMaintenance, queuedFinalize
+
+    var testDescription: String { String(describing: self) }
+}
+
+@Test(arguments: Reopening.allCases, [
+    RecordingAudioCompactor.Boundary.published, .stateSaved, .pcmRemovalStarted
+])
+private func recoveryAfterRecognitionCompletionRunsOnlyStorageWork(
+    reopening: Reopening, interruptedAt boundary: RecordingAudioCompactor.Boundary
+) async throws {
+    let fixture = try await makeFixture(.recording, samples: speechSamples)
+    defer { fixture.cleanUp() }
+    // Recognition is saved, then the compactor stops at a real boundary and the app "quits".
+    let interruptedAudio = SessionProcessingAudio(
+        timelineBuilder: AudioFileTimelineBuilder(),
+        compactionOperation: { layout in
+            _ = try RecordingAudioCompactor(interrupt: { if $0 == boundary { throw ExpectedFailure() } })
+                .compact(layout: layout)
+        }
+    )
+    let (interrupted, _) = try await fixture.process(NativeSessionProcessor(
+        paths: fixture.paths, engines: engines(for: .success), audioHandling: interruptedAudio,
+        contentPriority: .disabled, sleep: { _ in }
+    ))
+    #expect(interrupted.disposition == .failed)
+    let generation = try #require(
+        try ProcessingLogState(eventsURL: fixture.layout.eventsURL, sessionID: fixture.sessionID)?.generation.id
+    )
+    #expect(exists(fixture.layout.processingDirectory))
+
+    switch reopening {
+    case .launchMaintenance:
+        // Launch maintenance has no engines: the scan must also leave no recognition to redo.
+        let scan = try SessionRecoveryScanner(sessionsRoot: fixture.paths.sessionsRoot).pendingSessions()
+        #expect(!scan.candidates.contains { $0.action == .finalize })
+        let failures = await SessionStorageMaintainer.maintain(scan.maintenance, willMaintain: { _ in })
+        #expect(scan.maintenance.count == 1 && failures.isEmpty)
+    case .queuedFinalize:
+        let reopenedEngines = engines(for: .success)
+        let vad = try #require(reopenedEngines.finalTranscriptVAD as? ProbeVAD)
+        let asr = try #require(reopenedEngines.asr as? ProbeASR)
+        let (result, _) = try await fixture.process(fixture.processor(reopenedEngines))
+        #expect(result.disposition == .completed)
+        #expect(vad.calls.count == 0 && asr.calls.count == 0)
+    }
+
+    let after = try #require(
+        try ProcessingLogState(eventsURL: fixture.layout.eventsURL, sessionID: fixture.sessionID)
+    )
+    #expect(after.generation.id == generation)
+    #expect(exists(fixture.layout.recordingFLACURL))
+    #expect(!exists(fixture.layout.processingDirectory))
+    expectNoTransients(fixture)
 }

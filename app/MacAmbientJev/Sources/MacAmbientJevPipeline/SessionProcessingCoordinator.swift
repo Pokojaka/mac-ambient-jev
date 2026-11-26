@@ -296,6 +296,14 @@ public final class SessionProcessingCoordinator {
                     .maintenanceFinished(count: maintenance.count, previous: previousStatus)
                 )
             }
+            // A recording whose storage converged only now has finished processing, so it exports like a run
+            // that converged in place.
+            for item in maintenance where item.maintenance == .compactRecording
+                && maintenanceFailures[item.sessionID] == nil {
+                // Export needs no models, so a paused or not-ready engine still exports; only shutdown stops it.
+                guard !Task.isCancelled else { break }
+                await requiredEffects.autoExportIfEnabled(sessionID: item.sessionID)
+            }
 
             let recoveries = Self.recoveryRequests(
                 candidates: recoveryScan.candidates,

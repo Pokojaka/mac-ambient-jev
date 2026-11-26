@@ -7,7 +7,8 @@ public protocol SessionProcessingAudioHandling: Sendable {
         layout: SessionLayout,
         onStatus: @escaping @Sendable (String) async -> Void
     ) async throws -> any TimelineAudioReading
-    func compactRecording(layout: SessionLayout) async throws
+    /// Finishes the storage step of a drained recording (FLAC conversion) off the calling actor.
+    func convergeStorage(layout: SessionLayout, manifest: SessionManifest) async throws
 }
 
 public protocol FinalTranscriptVADSegmenter: Sendable {

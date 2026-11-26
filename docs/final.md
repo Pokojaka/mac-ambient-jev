@@ -46,7 +46,7 @@ CLI の `ContentPriorityAccess.disabled` は判定 run pair を作らず、必�
 
 任意判定は初期 pair を増分使用します。判定の再試行は別 run を作り、その結果が `pipeline.decisions.replaced` として durable になった時点で選択を切り替えます。以前の run / event は不変で、未選択の replacement 結果を表示しません。各 `processing.run.started` provenance は実際にロードした engine/model/revision、request record は実推論 request の ID と入力 token 数を示します。候補のない終端 source も source-only window で推論します。
 
-ASR の計測 phase は推論完了時に終了します。その後の `postprocessing` phase は保存済み結果の検証、表示の組み立て、metadata の公開、および**任意の Core ML 発話文判定**を含みます。これは必須ローカル推論段階ではなく、必須の segmentation・ASR の2段階は変わりません。
+ASR の計測 phase は推論完了時に終了します。その後の `postprocessing` phase は保存済み結果の検証、表示の組み立て、metadata の公開、**任意の Core ML 発話文判定**、および録音の FLAC 化と一時音声の削除を含みます。ProcessRecording の計測も、この FLAC 化と削除の時間を postprocessing として数えます。これは必須ローカル推論段階ではなく、必須の segmentation・ASR の2段階は変わりません。
 
 保存済み判定・origin 参照の破損、不整合、イベントログ破損、イベント保存・metadata 書込失敗は pending に変換せず処理エラーとして報告します。既に durable な選択済み行・判定イベントは保持し、未保存の結果や未選択 replacement を表示しません。
 
@@ -63,7 +63,7 @@ ASR の計測 phase は推論完了時に終了します。その後の `postpro
 
 任意判定の pending は必須 transcript の完了を妨げず、起動時に自動再試行しません。利用者の再試行は durable な選択済み結果を入力に新しい decision run を追記し、replacement event が保存された後だけ最新 run pair を切り替えます。開始済みだが未選択の decision run で中断した場合は scanner が `recoverDecisionRun` を返し、起動時に判定だけを回復します。pending snapshot の `retryContentPriority` は設定からの明示操作だけで実行します。いずれも segmentation・ASR はやり直しません。
 
-録音の PCM compaction は、必須 segmentation / ASR が完了し、sealed source と frame count を検証して generation を `complete` にした後だけ行います。ライブ中・未完了 generation は compact しません。compaction 中断時も `complete` と transcript を保ち、起動時は `compactRecording` maintenance を再開して VAD・ASR をやり直しません。完了録音を `recording.flac` へ変換し、FLAC を検証してから `storage.json` の音声正本を切り替え、その後 PCM を削除します。finalization の親 task のキャンセルは detached compactor に転送され、各境界で PCM または検証済み FLAC を保持します。FLAC の録音の再処理は再符号化しません。
+録音の PCM compaction は、必須 segmentation / ASR が完了し、sealed source と frame count を検証して generation を `complete` にした後だけ行います。ライブ中・未完了 generation は compact しません。compaction 中断時も `complete` と transcript を保ち、起動時は `compactRecording` maintenance を再開して VAD・ASR をやり直しません。完了録音を `recording.flac` へ変換し、FLAC を検証してから `storage.json` の音声正本を切り替え、その後 PCM を削除します。finalization の親 task のキャンセルは detached compactor に転送され、各境界で PCM または検証済み FLAC を保持します。FLAC の録音の再処理は再符号化しません。保存整理（FLAC 化と一時ファイルの削除）は worker が音声 reader を手放した後、完了通知（完了状態の更新、状態文、保存済み一覧の更新、自動書き出し）より前に終えます。保存整理が失敗・中断した実行は完了を通知せず、失敗または一時停止として報告します。compaction だけが残った録音の復旧（起動時の保存整理、`complete` の録音への `finalize`）は VAD・ASR を呼ばず、新しい generation や run ID も作りません。
 
 セッション情報を読めない開始失敗を除く全ての結果で、確定処理は終了時に一度だけ一時音声（FLAC の partial と、import の処理タイムライン）を削除します。型付きキャンセル以外の変換・一時音声削除エラーは成功結果も `failed` とし、公開済み transcript と元の run error があればその両方を保持・報告します。一時停止後の削除失敗は `paused` を維持し、元の一時停止理由と cleanup error の両方を状態文へ残します。詳細は [保存形式](storage.md) を参照してください。
 

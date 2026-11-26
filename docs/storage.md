@@ -114,7 +114,7 @@ frame index は byte offset と先頭 sample（および小さな frame 情報�
 4. `recording.flac` へ rename して公開し、`storage.json` を `recordingFLAC(timeline)` に保存します。この保存が権威を切り替える唯一の操作です。
 5. processing ディレクトリを削除して audio ディレクトリを synchronize します。
 
-変換は現在世代のローカル両段階が完全成功し metadata が同世代の `complete` を示した後に実行し、起動時も同条件を再検証して必要な保存整理を再開します。変換の失敗は「文字起こしは保存しましたが、録音を FLAC にできませんでした: …」として報告し、公開済みの文字起こしと PCM は残ります。一時ファイルの削除に失敗した場合は、一時停止した実行なら一時停止のまま削除エラーだけを状態文として報告し、完了した実行なら「文字起こしは保存しましたが、音声の一時ファイルを削除できませんでした: …」、失敗した実行なら元のエラーに「。音声の一時ファイルを削除できませんでした: …」を続けて報告します。`recordingPCM` の compact は generation status・sealed/checkpoint frame 数と sample rate・segmentation/ASR completion・全 ASR 成功数の一致が確認できた録音だけです。open generation の権威 PCM は残します。
+変換は現在世代のローカル両段階が完全成功し metadata が同世代の `complete` を示した後に実行し、起動時も同条件を再検証して必要な保存整理を再開します。変換の失敗は「文字起こしは保存しましたが、録音を FLAC にできませんでした: …」として報告し、公開済みの文字起こしと PCM は残ります。一時ファイルの削除に失敗した場合は、一時停止した実行なら一時停止のまま削除エラーだけを状態文として報告し、完了した実行なら「文字起こしは保存しましたが、音声の一時ファイルを削除できませんでした: …」、失敗した実行なら元のエラーに「。音声の一時ファイルを削除できませんでした: …」を続けて報告します。`recordingPCM` の compact は generation status・sealed/checkpoint frame 数と sample rate・segmentation/ASR completion・全 ASR 成功数の一致が確認できた録音だけです。open generation の権威 PCM は残します。一時停止・保留・失敗では録音 PCM を削除せず、変換と一時ファイルの削除は完了通知（完了状態の更新、保存済み一覧の更新、自動書き出し）より前に終えます。
 
 ### 起動時の保存整理
 

@@ -322,6 +322,44 @@ func recoveryMaintainsAndFiltersBeforeEnqueuingRecoveries() async throws {
 }
 
 @MainActor
+@Test(arguments: [false, true])
+func launchExportsOnlySessionsWhoseStorageMaintenanceCompleted(pausesProcessing: Bool) async {
+    let compacted = UUID(), compactionFailed = UUID(), transientsOnly = UUID()
+    // A paused engine (for example Windows setup not ready) still exports: export needs no models.
+    let effects = RecoveryCoordinatorEffects(
+        pausesProcessing: pausesProcessing,
+        recordingSessionID: nil,
+        recoveryStatusSnapshot: SessionRecoveryStatusSnapshot(processing: nil, transcript: "idle")
+    )
+    let coordinator = makeRecoveryCoordinator(
+        effects: effects, executor: RecoveryTestExecutor(finalizationIDs: [], retryIDs: [])
+    )
+    func candidate(_ id: UUID, _ maintenance: SessionStorageMaintenance) -> SessionMaintenanceCandidate {
+        SessionMaintenanceCandidate(
+            sessionID: id, sessionURL: URL(fileURLWithPath: "/maintenance/\(id.uuidString)"), maintenance: maintenance
+        )
+    }
+
+    await coordinator.recoverPendingSessions(
+        effects: effects,
+        scan: {
+            SessionRecoveryScan(
+                candidates: [],
+                maintenance: [
+                    candidate(compacted, .compactRecording),
+                    candidate(compactionFailed, .compactRecording),
+                    candidate(transientsOnly, .removeTransients)
+                ],
+                failures: []
+            )
+        },
+        maintain: { _, _ in [compactionFailed: .failed("compaction failed")] }
+    )
+
+    #expect(effects.exportedSessionIDs == [compacted])
+}
+
+@MainActor
 @Test
 func failedRecoveryScanClearsMaintenanceAndDrainsPendingWork() async {
     let pendingID = UUID()
