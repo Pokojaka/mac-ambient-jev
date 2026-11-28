@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import MacAmbientJevEngineHost
+@testable import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
 import MacAmbientJevTestSupport
 
@@ -248,7 +248,8 @@ private final class ControllerShutdownWaitPasses: @unchecked Sendable {
         let reliableAppendGate = EngineApplicationTestGate()
         let waitPasses = ControllerShutdownWaitPasses()
         let h = EngineHarness(
-            limits: testLimits(), admission: .production, sink: ScriptedSink(), onReliableWait: {},
+            limits: testLimits(), admission: .production, sink: ScriptedSink(),
+            deadlineClock: ManualWriteDeadlineClock(), onReliableWait: {},
             beforeReliableAppend: { requestID in
                 guard requestID?.value == 2 else { return }
                 await reliableAppendGate.suspendIfArmed()
@@ -287,7 +288,8 @@ private final class ControllerShutdownWaitPasses: @unchecked Sendable {
         let reliableAppendGate = EngineApplicationTestGate()
         let waitPasses = ControllerShutdownWaitPasses()
         let h = EngineHarness(
-            limits: testLimits(), admission: .production, sink: ScriptedSink(), onReliableWait: {},
+            limits: testLimits(), admission: .production, sink: ScriptedSink(),
+            deadlineClock: ManualWriteDeadlineClock(), onReliableWait: {},
             beforeReliableAppend: { requestID in
                 guard requestID?.value == 3 else { return }
                 await reliableAppendGate.suspendIfArmed()
@@ -624,7 +626,10 @@ private final class ControllerShutdownWaitPasses: @unchecked Sendable {
     }
 
     @Test func aWriteFailureShutsDownWithoutWriting() async throws {
-        let h = EngineHarness(limits: testLimits(deadline: 0.2), sink: ScriptedSink(blocked: true))
+        let h = EngineHarness(
+            limits: testLimits(deadline: 0.2), sink: ScriptedSink(blocked: true),
+            deadlineClock: LiveEngineWriteDeadlineClock()
+        )
         h.start()
         h.send(1, "hello")
         let exit = await h.exit()

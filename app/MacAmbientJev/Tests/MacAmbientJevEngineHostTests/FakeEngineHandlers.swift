@@ -301,11 +301,12 @@ final class EngineHarness {
         limits: EngineTransportLimits = testLimits(),
         admission: EngineAdmissionLimits = .production,
         sink: ScriptedSink = ScriptedSink(),
+        deadlineClock: any EngineWriteDeadlineClock = ManualWriteDeadlineClock(),
         onReliableWait: @escaping @Sendable () -> Void = {}
     ) {
         self.init(
-            limits: limits, admission: admission, sink: sink, onReliableWait: onReliableWait,
-            beforeReliableAppend: { _ in }, onShutdownWaitPass: { _ in }
+            limits: limits, admission: admission, sink: sink, deadlineClock: deadlineClock,
+            onReliableWait: onReliableWait, beforeReliableAppend: { _ in }, onShutdownWaitPass: { _ in }
         )
     }
 
@@ -313,6 +314,7 @@ final class EngineHarness {
         limits: EngineTransportLimits,
         admission: EngineAdmissionLimits,
         sink: ScriptedSink,
+        deadlineClock: any EngineWriteDeadlineClock,
         onReliableWait: @escaping @Sendable () -> Void,
         beforeReliableAppend: @escaping @Sendable (EngineID?) async -> Void,
         onShutdownWaitPass: @escaping @Sendable ([EngineID]) async -> Void
@@ -320,7 +322,7 @@ final class EngineHarness {
         self.sink = sink
         transport = EngineTransport(
             source: source, sink: sink, limits: limits,
-            deadlineClock: LiveEngineWriteDeadlineClock(), onReliableWait: onReliableWait,
+            deadlineClock: deadlineClock, onReliableWait: onReliableWait,
             beforeReliableAppend: beforeReliableAppend
         )
         controller = EngineController(
