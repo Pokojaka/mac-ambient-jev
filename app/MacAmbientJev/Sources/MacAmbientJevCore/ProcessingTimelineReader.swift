@@ -29,12 +29,20 @@ public struct ProcessingTimelineReader: TimelineAudioReading {
     private let sessionURL: URL
     public let checkpoint: AudioCheckpoint
     public let info: TimelineAudioInfo
+    private let chunkStarts: [Int64]
 
     public init(directory: URL, checkpoint: AudioCheckpoint, sessionURL: URL) throws {
         self.directory = directory
         self.sessionURL = sessionURL
         self.checkpoint = checkpoint
         self.info = try checkpoint.info
+        try Self.validateIndex(checkpoint)
+        var starts: [Int64] = [0]
+        starts.reserveCapacity(checkpoint.chunkFrameCounts.count + 1)
+        for count in checkpoint.chunkFrameCounts {
+            starts.append(starts[starts.count - 1] + Int64(count))
+        }
+        self.chunkStarts = starts
     }
 
     private var bytesPerFrame: Int {
@@ -48,21 +56,26 @@ public struct ProcessingTimelineReader: TimelineAudioReading {
             throw ProcessingTimelineReaderError.invalidFrameRange
         }
         guard !frameRange.isEmpty else { return [] }
-        try validateIndex()
+        var low = 0
+        var high = checkpoint.chunkFiles.count
+        while low < high {
+            let middle = low + (high - low) / 2
+            if chunkStarts[middle + 1] <= frameRange.lowerBound {
+                low = middle + 1
+            } else {
+                high = middle
+            }
+        }
 
         let channels = checkpoint.channelCount
         var output = [Float](repeating: 0, count: Int(frameRange.count) * channels)
         var written = 0
-        var chunkStartFrame: Int64 = 0
-        for (index, filename) in checkpoint.chunkFiles.enumerated() {
-            let chunkEndFrame = chunkStartFrame + Int64(checkpoint.chunkFrameCounts[index])
-            defer { chunkStartFrame = chunkEndFrame }
+        for index in low..<checkpoint.chunkFiles.count {
+            let chunkStartFrame = chunkStarts[index]
+            if chunkStartFrame >= frameRange.upperBound { break }
+            let filename = checkpoint.chunkFiles[index]
             let start = max(frameRange.lowerBound, chunkStartFrame)
-            let end = min(frameRange.upperBound, chunkEndFrame)
-            guard start < end else {
-                if chunkStartFrame >= frameRange.upperBound { break }
-                continue
-            }
+            let end = min(frameRange.upperBound, chunkStarts[index + 1])
             let byteCount = Int(end - start) * bytesPerFrame
             try output.withUnsafeMutableBytes { destination in
                 try readChunk(
@@ -83,7 +96,6 @@ public struct ProcessingTimelineReader: TimelineAudioReading {
     }
 
     public func validateAudio() throws {
-        try validateIndex()
         for (index, filename) in checkpoint.chunkFiles.enumerated() {
             let size = try chunkFileSize(filename)
             guard size == checkpoint.chunkFrameCounts[index] * bytesPerFrame else {
@@ -92,7 +104,7 @@ public struct ProcessingTimelineReader: TimelineAudioReading {
         }
     }
 
-    private func validateIndex() throws {
+    private static func validateIndex(_ checkpoint: AudioCheckpoint) throws {
         guard checkpoint.sampleFormat == CanonicalAudio.sampleFormat,
               checkpoint.channelCount == CanonicalAudio.channelCount,
               checkpoint.sampleRate == CanonicalAudio.sampleRate else {

@@ -57,7 +57,7 @@ func audioCheckpointRejectsWindowsPathEscapes(filename: String) {
     )
     #expect(!checkpoint.hasPlainUniqueChunkFiles)
     #expect(throws: ProcessingTimelineReaderError.invalidChunkIndex) {
-        _ = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root).readSamples(frameRange: 0..<2)
+        _ = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root)
     }
 }
 

@@ -10,17 +10,21 @@ enum ReplayError: LocalizedError {
     case usage
     case invalidOption(String)
     case invalidFormat
+    case processingFailed(String)
+    case debugBuild
 
     var errorDescription: String? {
         switch self {
         case .usage:
             """
-            usage: MacAmbientJevMeasureLiveLatency --sessions-root DIRECTORY [--sample-rate HZ] [--channels COUNT] [--match-default-input] <existing-audio-file>
+            usage: MacAmbientJevMeasureLiveLatency --sessions-root DIRECTORY --memory-output PATH [--sample-rate HZ] [--channels COUNT] [--match-default-input] <existing-audio-file>
               Default: preserve the file's processing sample rate and channel count.
               --match-default-input: read the default input device's activeFormat only; no capture starts.
             """
         case .invalidOption(let option): "Invalid option: \(option)"
         case .invalidFormat: "Audio input or output format is not supported."
+        case .processingFailed(let message): "Final processing failed: \(message)"
+        case .debugBuild: "Measure a Release build: run scripts/measure_live_latency.sh."
         }
     }
 }
@@ -28,14 +32,16 @@ enum ReplayError: LocalizedError {
 struct Options {
     let sourceURL: URL
     let sessionsRoot: URL
+    let memoryOutput: URL
     var sampleRate: Double?
     var channelCount: Int?
     var matchDefaultInput = false
     static func parse(_ arguments: [String]) throws -> Options {
         var result = Options(sourceURL: URL(fileURLWithPath: "/"),
-                             sessionsRoot: URL(fileURLWithPath: "/"))
+                             sessionsRoot: URL(fileURLWithPath: "/"), memoryOutput: URL(fileURLWithPath: "/"))
         var positional: [String] = []
         var root: String?
+        var memoryOutput: String?
         var index = 0
         while index < arguments.count {
             let argument = arguments[index]
@@ -46,6 +52,13 @@ struct Options {
                     throw ReplayError.usage
                 }
                 root = arguments[index + 1]
+                index += 1
+            case "--memory-output":
+                guard memoryOutput == nil, index + 1 < arguments.count,
+                      !arguments[index + 1].isEmpty, !arguments[index + 1].hasPrefix("-") else {
+                    throw ReplayError.usage
+                }
+                memoryOutput = arguments[index + 1]
                 index += 1
             case "--sample-rate":
                 index += 1
@@ -71,12 +84,13 @@ struct Options {
             }
             index += 1
         }
-        guard let root, positional.count == 1,
+        guard let root, let memoryOutput, positional.count == 1,
               !(result.matchDefaultInput && (result.sampleRate != nil || result.channelCount != nil)) else {
             throw ReplayError.usage
         }
         result = Options(sourceURL: URL(fileURLWithPath: positional[0]).standardizedFileURL,
                          sessionsRoot: URL(fileURLWithPath: root, isDirectory: true).standardizedFileURL,
+                         memoryOutput: URL(fileURLWithPath: memoryOutput).standardizedFileURL,
                          sampleRate: result.sampleRate, channelCount: result.channelCount,
                          matchDefaultInput: result.matchDefaultInput)
         return result
@@ -92,6 +106,7 @@ private struct FormatDescription {
 struct ReplayFeedResult: Sendable {
     let checkpoint: AudioCheckpoint
     let maxFeedLagSeconds: Double
+    let stopped: ContinuousClock.Instant
 }
 
 private struct LatencyRecord: Sendable {
@@ -107,9 +122,10 @@ private actor MeasurementCollector {
     private var latestTexts: [String: String] = [:]
     private var finalSegmentsByID: [String: MaterializedTranscriptSegment] = [:]
     private var finalProcessingState: String?
-    private let origin: ContinuousClock.Instant
+    private var origin: ContinuousClock.Instant
 
     init(origin: ContinuousClock.Instant) { self.origin = origin }
+    func setOrigin(_ origin: ContinuousClock.Instant) { self.origin = origin }
 
     func register(_ segments: [SegmentReference]) {
         for segment in segments {
@@ -180,7 +196,11 @@ struct MeasureLiveLatencyCommand {
 
     @MainActor
     private static func run() async throws {
+        #if DEBUG
+        throw ReplayError.debugBuild
+        #endif
         let options = try Options.parse(Array(CommandLine.arguments.dropFirst()))
+        let memory = try MemorySampler(url: options.memoryOutput)
         let paths = try AppPaths.systemDefault(fileManager: .default)
         let sessionsRoot = try SessionsRootPolicy.validated(
             options.sessionsRoot, protectedRoots: paths.protectedSessionsRoots,
@@ -228,92 +248,53 @@ struct MeasureLiveLatencyCommand {
         try await processor.prepareASR { progress, message in
             FileHandle.standardError.write(Data("ASR model \(Int(progress * 100))%: \(message)\n".utf8))
         }
-        let segmentationRunID = try await processor.startLiveTranscription(
-            sessionID: sessionID,
-            sampleRate: CanonicalAudio.sampleRate,
-            onGenerationOpened: { _ in }
+        let collectorOrigin = ContinuousClock.now
+        let collector = MeasurementCollector(origin: collectorOrigin)
+        let effects = ReplayLiveEffects(sessionID: sessionID, writer: writer, collector: collector)
+        let liveState = LiveTranscriptionState()
+        liveState.begin(sessionID: sessionID)
+        let coordinator = LiveTranscriptionCoordinator(
+            state: liveState, effects: effects, processor: processor,
+            thermalMonitor: MacThermalMonitor(), resourceMonitor: nil,
+            sleep: { try await Task.sleep(for: $0) }
         )
-        let vadSession = try await MacLiveVADSessionFactory.make(
-            models: models,
-            processingDirectory: processingDirectory,
-            sessionURL: sessionDirectory,
-            initialCheckpoint: checkpoint,
-            measureMicInputLevels: false,
-            segmentationRunID: segmentationRunID
-        )
-
-        let started = ContinuousClock.now
-        let collector = MeasurementCollector(origin: started)
-        let state = ReplayInputState()
-        let producer = Task {
-            do {
-                let replayResult = try await feedAudio(
-                    options.sourceURL,
-                    sourceFormat: sourceFormat,
-                    targetFormat: target,
-                    into: writer,
-                    origin: started
-                )
-                await state.finish()
-                return replayResult
-            } catch {
-                await state.finish()
-                throw error
-            }
-        }
-
-        var pollCount = 0
-        var processedFrames: Int64 = 0
-        while !(await state.hasFinished()) {
-            try await Task.sleep(for: .milliseconds(LiveTranscriptionCadence.checkpointPollIntervalMilliseconds))
-            pollCount += 1
-            let committed = await writer.committedSnapshot()
-            if committed.committedFrames > processedFrames {
-                checkpoint = committed
-                let progress = try await vadSession.processAvailable(checkpoint: checkpoint)
-                if !progress.emittedSegments.isEmpty {
-                    await collector.register(progress.emittedSegments)
-                    _ = try await processor.processLiveSegments(
-                        sessionID: sessionID,
-                        segments: progress.emittedSegments,
-                        checkpoint: checkpoint,
-                        shouldPause: { _ in nil },
-                        onStatus: nil,
-                        onUpdate: { segments, _ in await collector.update(segments) }
-                    )
-                }
-                processedFrames = checkpoint.committedFrames
-            }
-        }
-
-        let replayResult = try await producer.value
-        checkpoint = replayResult.checkpoint
-        if checkpoint.committedFrames > processedFrames {
-            let progress = try await vadSession.processAvailable(checkpoint: checkpoint)
-            if !progress.emittedSegments.isEmpty {
-                await collector.register(progress.emittedSegments)
-                _ = try await processor.processLiveSegments(
-                    sessionID: sessionID,
-                    segments: progress.emittedSegments,
-                    checkpoint: checkpoint,
-                    shouldPause: { _ in nil },
-                    onStatus: nil,
-                    onUpdate: { segments, _ in await collector.update(segments) }
-                )
-            }
-        }
-        let finalVAD = try await vadSession.finish(checkpoint: checkpoint)
-        if !finalVAD.emittedSegments.isEmpty {
-            await collector.register(finalVAD.emittedSegments)
-            _ = try await processor.processLiveSegments(
-                sessionID: sessionID,
-                segments: finalVAD.emittedSegments,
-                checkpoint: checkpoint,
-                shouldPause: { _ in nil },
-                onStatus: nil,
-                onUpdate: { segments, _ in await collector.update(segments) }
+        try await coordinator.startVAD(sessionID: sessionID, checkpoint: checkpoint) { segmentationRunID in
+            try await MacLiveVADSessionFactory.make(
+                models: models, processingDirectory: processingDirectory, sessionURL: sessionDirectory,
+                initialCheckpoint: checkpoint, measureMicInputLevels: false, segmentationRunID: segmentationRunID
             )
         }
+        if let failure = liveState.failure(sessionID: sessionID) {
+            throw ReplayError.processingFailed("Live transcription could not start: \(failure)")
+        }
+
+        let started = ContinuousClock.now
+        await collector.setOrigin(started)
+        memory.start(at: started)
+        let sampler = Task.detached {
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(5)) } catch { break }
+                if !Task.isCancelled { memory.sample() }
+            }
+        }
+        defer { sampler.cancel() }
+        let replayResult = try await feedAudio(
+            options.sourceURL, sourceFormat: sourceFormat, targetFormat: target,
+            into: writer, origin: started, onStop: { memory.stop() }
+        )
+        let stopped = replayResult.stopped
+        checkpoint = replayResult.checkpoint
+        await coordinator.stopVADPolling()
+        await coordinator.finishVAD(sessionID: sessionID, checkpoint: checkpoint)
+        guard await coordinator.waitForDrain(sessionID: sessionID) == .drained else {
+            throw ReplayError.processingFailed("Live ASR suspended for cooling")
+        }
+        guard let finalLog = try ProcessingLogState(
+            eventsURL: SessionLayout(sessionURL: sessionDirectory).eventsURL, sessionID: sessionID
+        ), finalLog.segmentationCompleted else {
+            throw ReplayError.processingFailed("Live segmentation did not complete: \(liveState.vadFailureText ?? liveState.failure(sessionID: sessionID) ?? "missing completion")")
+        }
+        await collector.register(finalLog.segments)
         let finalResult = await processor.processSession(
             sessionID: sessionID,
             pacingMode: .normal,
@@ -327,6 +308,15 @@ struct MeasureLiveLatencyCommand {
             },
             onGenerationOpened: { _ in }
         )
+        let completed = ContinuousClock.now
+        sampler.cancel()
+        await sampler.value
+        let memorySamples = try memory.finish()
+        guard finalResult.disposition == .completed else {
+            let detail = finalResult.message.map { ": \($0)" } ?? ""
+            throw ReplayError.processingFailed("\(finalResult.disposition.rawValue)\(detail)")
+        }
+        let summary = MemorySummary(samples: memorySamples, stopSeconds: started.duration(to: stopped) / .seconds(1))
         let collected = await collector.results(sampleRate: CanonicalAudio.sampleRate)
         let latencies = collected.records.map { $0.firstUpdateSeconds - $0.endSpeechSeconds }.sorted()
         let finalSegmentByID = Dictionary(uniqueKeysWithValues: collected.finalSegments.map { ($0.segmentID, $0) })
@@ -360,6 +350,12 @@ struct MeasureLiveLatencyCommand {
             ]
         }
         let output: [String: Any] = [
+            "stop_to_complete_seconds": stopped.duration(to: completed) / .seconds(1),
+            "final_result_state": finalResult.disposition.rawValue,
+            "memory_first_5min_median_bytes": summary.firstMedian,
+            "memory_last_5min_median_bytes": summary.lastMedian,
+            "memory_peak_bytes": summary.peak,
+            "memory_sample_count": summary.count,
             "measurement_scope": "end_of_vad_speech_to_first_nonempty_view_model_update",
             "source": options.sourceURL.path,
             "source_bytes": sourceInfo.fileSize as Any? ?? NSNull(),
@@ -375,7 +371,7 @@ struct MeasureLiveLatencyCommand {
             "microphone_capture_started": false,
             "frame_count": checkpoint.committedFrames,
             "timeline_duration_seconds": Double(checkpoint.committedFrames) / checkpoint.sampleRate,
-            "checkpoint_poll_count": pollCount,
+            "checkpoint_poll_count": effects.pollCount,
             "segment_count": collected.records.count + collected.missing.count,
             "updated_count": collected.records.count,
             "missing_count": collected.missing.count,
@@ -440,7 +436,8 @@ struct MeasureLiveLatencyCommand {
         sourceFormat: AVAudioFormat,
         targetFormat: AVAudioFormat,
         into writer: DurableAudioWriter,
-        origin: ContinuousClock.Instant
+        origin: ContinuousClock.Instant,
+        onStop: @Sendable () -> ContinuousClock.Instant
     ) async throws -> ReplayFeedResult {
         let audioFile = try AVAudioFile(forReading: sourceURL, commonFormat: .pcmFormatFloat32, interleaved: false)
         let ingress = try CanonicalAudioResampler(sampleRate: targetFormat.sampleRate)
@@ -530,7 +527,8 @@ struct MeasureLiveLatencyCommand {
         let finalFeedLagSeconds = origin.duration(to: .now) / .seconds(1) - cumulativeInputSeconds
         maxFeedLagSeconds = max(maxFeedLagSeconds, finalFeedLagSeconds)
         let checkpoint = try await writer.finish()
-        return ReplayFeedResult(checkpoint: checkpoint, maxFeedLagSeconds: maxFeedLagSeconds)
+        let stopped = onStop()
+        return ReplayFeedResult(checkpoint: checkpoint, maxFeedLagSeconds: maxFeedLagSeconds, stopped: stopped)
     }
 
     private static func appendPaced(
@@ -565,8 +563,31 @@ struct MeasureLiveLatencyCommand {
     }
 }
 
-private actor ReplayInputState {
-    private var finished = false
-    func finish() { finished = true }
-    func hasFinished() -> Bool { finished }
+@MainActor
+private final class ReplayLiveEffects: LiveTranscriptionEffects {
+    let recordingSessionID: UUID?
+    let writer: DurableAudioWriter
+    let collector: MeasurementCollector
+    var pollCount = 0
+    var modelPhase: ModelPreparationStatus.Phase { .ready }
+
+    init(sessionID: UUID, writer: DurableAudioWriter, collector: MeasurementCollector) {
+        self.recordingSessionID = sessionID
+        self.writer = writer
+        self.collector = collector
+    }
+
+    func isCurrentRecording(_ sessionID: UUID) -> Bool { recordingSessionID == sessionID }
+    func committedLiveCheckpoint() async throws -> AudioCheckpoint {
+        pollCount += 1
+        return await writer.committedSnapshot()
+    }
+    func awaitIdleRelease() async {}
+    func awaitModelPreparation() async {}
+    func liveStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler { { _ in } }
+    func liveUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler {
+        { [collector] segments, _ in await collector.update(segments) }
+    }
+    func liveGenerationDidOpen(sessionID: UUID, generationID: UUID) {}
+    func liveDidChange(_ event: LiveTranscriptionEvent) {}
 }
