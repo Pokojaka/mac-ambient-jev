@@ -155,8 +155,60 @@ private final class TranscriptGenerationTestProvider: EngineInferenceProviding, 
     func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity { try await base.inspectClauseTagger() }
 }
 
+private struct SilentTranscriptVAD: SessionVADSegmenter {
+    let provenance = RunProvenance(engine: "silent-test-vad", model: nil, version: "test", configuration: [:])
+    func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] { [] }
+}
+
+private struct SilentTranscriptTimeline: ImportedAudioTimelineBuilding {
+    func build(from sourceURL: URL, into processingDirectory: URL, sessionURL: URL) async throws -> AudioCheckpoint {
+        let writer = try DurableAudioWriter(directory: processingDirectory, chunkDurationSeconds: 0.5, sessionURL: sessionURL)
+        try await writer.append(samples: [Float](repeating: 0, count: 32_000))
+        return try await writer.finish()
+    }
+}
+
+private final class SilentTranscriptProvider: EngineInferenceProviding, @unchecked Sendable {
+    let base = FakeInferenceProvider()
+    func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
+        try await base.prepare(settings: settings, onProgress: onProgress)
+    }
+    func makeInference(settings: EngineSettings) throws -> EngineInference {
+        EngineInference(
+            engines: SessionProcessingEngines(asr: FakeASR(calls: base.calls), sessionVAD: SilentTranscriptVAD()),
+            contentPriority: .disabled, timelineBuilder: SilentTranscriptTimeline(),
+            makeLiveVADSession: { _, _, _, runID in FakeLiveVAD(segmentationRunID: runID) }
+        )
+    }
+    func decisionUsage() async throws -> DecisionUsageSnapshot { try await base.decisionUsage() }
+    func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity { try await base.inspectClauseTagger() }
+}
+
 @MainActor
 @Suite(.timeLimit(.minutes(10))) struct EngineApplicationTranscriptTests {
+    @Test func rewatchFinalizedSilenceKeepsFinalScreen() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = ApplicationHarness(root: root, provider: SilentTranscriptProvider())
+        h.start()
+        try await h.hello()
+        try await h.replaceSettings(engineTestSettings(), expectedRevision: nil)
+        await h.awaitModels()
+        let audio = root.appending(path: "silence.wav")
+        try Data("silence fixture".utf8).write(to: audio)
+        guard case let .sessionImport(imported) = try await h.call(
+            "session.import", payload: String(decoding: try JSONEncoder().encode(EngineImportPayload(inputPath: audio.path)), as: UTF8.self)
+        ) else { Issue.record("session.import did not return a session"); return }
+        _ = try await h.waitForSession(status: .finalized)
+        await h.app.core.processingCoordinator.waitUntilIdle()
+        guard case let .transcriptWatch(page) = try await h.call(
+            "transcript.watch", payload: "{\"session_id\":\"\(imported.sessionID)\"}"
+        ) else { Issue.record("transcript.watch did not return a page"); return }
+        #expect(page.rows.isEmpty)
+        #expect(try await h.state().screen == .finalized)
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
     @Test func watchedAndReadCachesRemainIndependentAndInvalidWatchIsTransactional() async throws {
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

@@ -722,7 +722,7 @@ extension EngineApplicationCore: EngineTranscriptHandling {
             isFinal = false
         } else {
             switch session.processingStatus {
-            case .complete, .classificationPending: isFinal = !cache.rows.isEmpty
+            case .complete, .classificationPending: isFinal = true
             case .notProcessed, .running, .paused, .failed, .corrupted: isFinal = false
             }
         }
