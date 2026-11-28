@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 import MacAmbientJevCore
 import MacAmbientJevPipeline
@@ -103,7 +102,7 @@ actor RunMonitor {
         var memory: [String: Any] = [
             "run_id": runID, "timestamp": timestamp, "phase": phase.rawValue
         ]
-        switch Self.footprint() {
+        switch processFootprint() {
         case .success(let bytes):
             memory["footprint_bytes"] = bytes
         case .failure(let error):
@@ -140,20 +139,6 @@ actor RunMonitor {
     private func recordSamplingFailure(_ error: Error, to url: URL) {
         guard samplingFailure == nil else { return }
         samplingFailure = .samplingFailed(path: url.path, reason: error.localizedDescription)
-    }
-
-    private static func footprint() -> Result<UInt64, TaskInfoError> {
-        var info = task_vm_info_data_t()
-        var count = mach_msg_type_number_t(
-            MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size
-        )
-        let result = withUnsafeMutablePointer(to: &info) { pointer in
-            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
-            }
-        }
-        guard result == KERN_SUCCESS else { return .failure(TaskInfoError(code: result)) }
-        return .success(info.phys_footprint)
     }
 
     internal static func thermalLine(
@@ -194,11 +179,3 @@ actor RunMonitor {
     }
 }
 
-/// A failed `task_info` call, described by its `kern_return_t`.
-struct TaskInfoError: Error, CustomStringConvertible {
-    let code: kern_return_t
-
-    var description: String {
-        "task_info kern_return_t \(code): \(String(cString: mach_error_string(code)))"
-    }
-}

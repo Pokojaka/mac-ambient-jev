@@ -190,9 +190,8 @@ import Testing
         chunkFrameCounts: [1, 1],
         gapEvents: []
     )
-    let reader = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root)
     #expect(throws: ProcessingTimelineReaderError.invalidChunkIndex) {
-        _ = try reader.readSamples(frameRange: 0..<2)
+        _ = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root)
     }
 }
 
@@ -203,7 +202,7 @@ import Testing
     try Data(count: 8).write(to: root.appending(path: "chunk-000000.f32le"))
     let checkpoint = AudioCheckpoint(committedFrames: 2, sampleRate: 10, channelCount: 0, sampleFormat: .float32LE, chunkFiles: ["chunk-000000.f32le"], chunkFrameCounts: [2], gapEvents: [])
     #expect(throws: ProcessingTimelineReaderError.invalidFormat) {
-        _ = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root).readSamples(frameRange: 0..<1)
+        _ = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root)
     }
 }
 
@@ -223,7 +222,7 @@ import Testing
         gapEvents: []
     )
     #expect(throws: ProcessingTimelineReaderError.invalidChunkIndex) {
-        _ = try ProcessingTimelineReader(directory: processing, checkpoint: checkpoint, sessionURL: root).readSamples(frameRange: 0..<1)
+        _ = try ProcessingTimelineReader(directory: processing, checkpoint: checkpoint, sessionURL: root)
     }
 }
 
@@ -796,7 +795,7 @@ private actor GatedCaptureWriter: AudioCaptureWriting {
     let reader = try ProcessingTimelineReader(directory: root, checkpoint: checkpoint, sessionURL: root)
     let full = try reader.readSamples(frameRange: 0..<13)
     #expect(full == samples)
-    for range: Range<Int64> in [0..<1, 3..<5, 1..<12, 4..<8, 11..<13, 12..<13, 6..<6] {
+    for range: Range<Int64> in [0..<1, 3..<5, 1..<12, 4..<8, 5..<13, 11..<13, 12..<13, 6..<6] {
         #expect(try reader.readSamples(frameRange: range)
             == Array(full[Int(range.lowerBound)..<Int(range.upperBound)]))
     }
