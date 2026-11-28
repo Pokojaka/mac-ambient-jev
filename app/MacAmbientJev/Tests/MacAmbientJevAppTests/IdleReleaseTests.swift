@@ -28,7 +28,7 @@ private actor CountingASR: ASREngine {
     }
 }
 
-private struct NoopVAD: FinalTranscriptVADSegmenter {
+private struct NoopVAD: SessionVADSegmenter {
     let provenance = RunProvenance(engine: "fake-vad", model: nil, version: "test", configuration: [:])
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] { [] }
 }
@@ -47,7 +47,7 @@ private func makeState(
     return AppState(
         paths: paths, captureEngine: AudioCaptureEngine(paths: paths), microphoneAccess: { false },
         pausesProcessing: false, userDefaults: defaults,
-        engines: SessionProcessingEngines(asr: asr, finalTranscriptVAD: NoopVAD()),
+        engines: SessionProcessingEngines(asr: asr, sessionVAD: NoopVAD()),
         modelProvisioning: provisioning,
         makeLiveVADSession: idleLiveVADFactory(),
         thermalMonitor: thermalMonitor,
@@ -131,7 +131,7 @@ func stopFailureReleasesIdleModelsAfterDroppingStopClaim() async throws {
     let state = AppState(
         paths: paths, captureEngine: capture, microphoneAccess: { true }, pausesProcessing: false,
         userDefaults: defaults,
-        engines: SessionProcessingEngines(asr: asr, finalTranscriptVAD: NoopVAD()),
+        engines: SessionProcessingEngines(asr: asr, sessionVAD: NoopVAD()),
         modelProvisioning: ReadyModelProvisioning(), makeLiveVADSession: idleLiveVADFactory(),
         thermalMonitor: TestThermalMonitor(.nominal), liveTranscriptionSleep: { try await Task.sleep(for: $0) }
     )

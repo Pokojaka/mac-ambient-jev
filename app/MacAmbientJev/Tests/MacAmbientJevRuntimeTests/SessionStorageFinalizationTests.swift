@@ -34,7 +34,7 @@ private final class CallCounter: @unchecked Sendable {
     var count: Int { lock.withLock { value } }
 }
 
-private struct ProbeVAD: FinalTranscriptVADSegmenter {
+private struct ProbeVAD: SessionVADSegmenter {
     let provenance = RunProvenance(engine: "probe-vad", model: nil, version: "test", configuration: [:])
     let fails: Bool
     let calls = CallCounter()
@@ -70,7 +70,7 @@ private struct ProbeASR: ASREngine {
 private func engines(for outcome: Outcome) -> SessionProcessingEngines {
     SessionProcessingEngines(
         asr: ProbeASR(fails: outcome == .asrFails),
-        finalTranscriptVAD: ProbeVAD(fails: outcome == .vadFails)
+        sessionVAD: ProbeVAD(fails: outcome == .vadFails)
     )
 }
 
@@ -506,7 +506,7 @@ private func recoveryAfterRecognitionCompletionRunsOnlyStorageWork(
         #expect(scan.maintenance.count == 1 && failures.isEmpty)
     case .queuedFinalize:
         let reopenedEngines = engines(for: .success)
-        let vad = try #require(reopenedEngines.finalTranscriptVAD as? ProbeVAD)
+        let vad = try #require(reopenedEngines.sessionVAD as? ProbeVAD)
         let asr = try #require(reopenedEngines.asr as? ProbeASR)
         let (result, _) = try await fixture.process(fixture.processor(reopenedEngines))
         #expect(result.disposition == .completed)

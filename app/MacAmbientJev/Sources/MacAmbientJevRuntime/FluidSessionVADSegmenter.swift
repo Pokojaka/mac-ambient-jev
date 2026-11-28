@@ -2,7 +2,7 @@ import FluidAudio
 import MacAmbientJevCore
 import MacAmbientJevPipeline
 
-struct FluidFinalTranscriptVADSegmenter: FinalTranscriptVADSegmenter {
+struct FluidSessionVADSegmenter: SessionVADSegmenter {
     static let version = "FluidAudio@0.15.8"
 
     let models: MacModelStore

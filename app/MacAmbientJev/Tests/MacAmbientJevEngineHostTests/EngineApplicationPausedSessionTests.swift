@@ -112,7 +112,7 @@ private final class PausedSessionInferenceProvider: EngineInferenceProviding, @u
         EngineInference(
             engines: SessionProcessingEngines(
                 asr: PausedSessionGatedASR(gate: gate, calls: calls),
-                finalTranscriptVAD: FakeFinalVAD()
+                sessionVAD: FakeFinalVAD()
             ),
             contentPriority: .disabled,
             timelineBuilder: FakeTimelineBuilder(),

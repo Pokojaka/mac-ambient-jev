@@ -193,7 +193,7 @@ internal enum TranscribeFileCommand {
             let audio = try await PortableAudioFileImporter.open(inputURL: options.inputURL, sessionURL: scratchURL)
             audioSeconds = audio.info.durationSeconds
             let environment = try ONNXEnvironment.shared()
-            let vad = SileroFinalTranscriptVADSegmenter(
+            let vad = SileroSessionVADSegmenter(
                 environment: environment,
                 modelURL: options.sileroModelURL,
                 intraOpThreads: options.threads

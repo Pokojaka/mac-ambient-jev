@@ -19,7 +19,7 @@ private actor RecordingASR: ASREngine {
     }
 }
 
-private struct RecordingFinalVAD: FinalTranscriptVADSegmenter {
+private struct RecordingFinalVAD: SessionVADSegmenter {
     let provenance = RunProvenance(engine: "recording-test-vad", model: nil, version: "test", configuration: [:])
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] { [] }
 }
@@ -152,7 +152,7 @@ private func withLiveDecisionRecording(
         paths: paths, captureEngine: capture, microphoneAccess: { true }, pausesProcessing: false,
         userDefaults: defaults,
         engines: SessionProcessingEngines(asr: RecordingASR(),
-            finalTranscriptVAD: RecordingFinalVAD()),
+            sessionVAD: RecordingFinalVAD()),
         modelProvisioning: ReadyModelProvisioning(),
         makeLiveVADSession: { _, _, _, _, _ in RecordingVAD() },
         thermalMonitor: TestThermalMonitor(.nominal),

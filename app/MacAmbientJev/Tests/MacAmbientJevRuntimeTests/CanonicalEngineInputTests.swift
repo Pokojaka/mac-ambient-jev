@@ -28,7 +28,7 @@ private final class EngineInputLog: Sendable {
 
 private let engineInputProvenance = RunProvenance(engine: "engine-input-probe", model: nil, version: "1", configuration: [:])
 
-private struct ObservingVAD: FinalTranscriptVADSegmenter {
+private struct ObservingVAD: SessionVADSegmenter {
     let log: EngineInputLog
     let provenance = engineInputProvenance
 
@@ -77,7 +77,7 @@ func finalizationEnginesReceiveCanonicalAudioForRecordedAndImportedSessions() as
     let log = EngineInputLog()
     let processor = NativeSessionProcessor(
         paths: paths,
-        engines: SessionProcessingEngines(asr: ObservingASR(log: log), finalTranscriptVAD: ObservingVAD(log: log)),
+        engines: SessionProcessingEngines(asr: ObservingASR(log: log), sessionVAD: ObservingVAD(log: log)),
         audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
         contentPriority: .disabled,
         sleep: { _ in }

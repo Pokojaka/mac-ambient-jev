@@ -381,7 +381,7 @@ Production Swift code に hard-coded な temporary root はなく、temporary I/
 
 ```bash
 swift build --package-path app/MacAmbientJev
-swift test --package-path app/MacAmbientJev --filter 'DecisionTests|DecisionContractTests|BoundaryAssessmentTests|ClauseAssemblyTests|MaterializerTests|LiveContentPriorityGatingTests|LiveDecisionRecordingTests|FinalTranscriptPipelineTests'
+swift test --package-path app/MacAmbientJev --filter 'DecisionTests|DecisionContractTests|BoundaryAssessmentTests|ClauseAssemblyTests|MaterializerTests|LiveContentPriorityGatingTests|LiveDecisionRecordingTests|SessionProcessingTests'
 ```
 
 [DecisionContractTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/DecisionContractTests.swift) は共有判定型の JSON 形、境界の厳密な `> 0.5`、確率の有限 0..1 検証、優先度判定の和（tagger と同じ `1e-5`）・confidence の完全一致と同率の扱い、不正な優先度判定を保存済み優先度の保留にすることを検証します。[DecisionTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevCoreTests/DecisionTests.swift) は回答の不足・余分でリクエスト全体が失敗し、失敗理由が保留の message になることを検証します。
@@ -515,7 +515,7 @@ correctness test は読み取れないイベントログ、検証済み VAD の�
 
 ライブ ASR drain の完了は、独立して動く判定キューの完了を保証しません。AppState はライブ処理の sleep を必須引数で受け取り、本番は Task.sleep、[LiveDecisionRecordingTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppTests/LiveDecisionRecordingTests.swift) と [MicInputStatusTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppTests/MicInputStatusTests.swift) は手動で進める poll gate を渡します。ライブ判定の regression は起動時の保存整理 task を await し、VAD poll を一回進めて区間登録を確認した後、fake tagger の request 通知と画面用 rows・エラー状態の publisher 通知を待ちます。保存済み LOW 判定の反映も rows の通知で確認します。
 
-`NativeSessionProcessor` の確定 ASR pacing sleep は必須注入で、保存 segmentation の検証・補完は `StoredSegmentation` が担当します。本番 composition は Task.sleep を渡し、[FluidFinalTranscriptIntegrationTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/FluidFinalTranscriptIntegrationTests.swift) の `finalTranscriptPipelineForwardsPacingAndPauseToASR` は fake sleep recorder で正確な `.seconds(2)` と pause 判定の順序を確認します。sleep closure は実時間待機せず記録するため、この pacing test は時間経過に依存しません。
+`NativeSessionProcessor` の確定 ASR pacing sleep は必須注入で、保存 segmentation の検証・補完は `StoredSegmentation` が担当します。本番 composition は Task.sleep を渡し、[FluidSessionVADIntegrationTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/FluidSessionVADIntegrationTests.swift) の `sessionProcessingForwardsPacingAndPauseToASR` は fake sleep recorder で正確な `.seconds(2)` と pause 判定の順序を確認します。sleep closure は実時間待機せず記録するため、この pacing test は時間経過に依存しません。
 
 [MicInputStatusTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevAppTests/MicInputStatusTests.swift) の fake VAD は指定した batch 数の到達を continuation で通知します。各 poll の次の sleep gate まで待つことで、AppState が音声レベルを取り込んだ後に状態を検証します。入力音量の書込みは fake volume の通知、poll 中の VAD 障害は状態表示の通知を待ち、開始時の VAD 障害は `startRecording` の完了で確認します。これらの待機は中断時に条件名を含むエラーを投げ、`timeLimit` は hang guard としてのみ使います。実時間の待機間隔や期限は同期条件にしません。
 
@@ -838,7 +838,7 @@ Haas ASR と FluidAudio VAD の取得済みモデルが必要。共有の `VADSe
 
 ### 保存整理のテスト
 
-Runtime の [SessionStorageFinalizationTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/SessionStorageFinalizationTests.swift) は録音・import の finalization で success / no-speech / VAD failure / ASR failure / pause を検証します。成功した録音は FLAC 化して processing timeline を除去し、失敗・pause の録音は PCM と timeline を保持します。import は処理 timeline を除去します。開始失敗を含む一時 partial の cleanup、削除・compaction failure、再処理時の transcript / FLAC 保持も確認します。[FinalTranscriptPipelineTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/FinalTranscriptPipelineTests.swift) は VAD / ASR / pacing / compaction 中の cancellation が finalization を durable な pause にし、再開で完了することを検証します。AppleSupport の起動時整理テストは、全 session の整理が収束し、失敗した session を folder 名付きで返し、録音中の session に触れないことを確認します。App test は起動時整理中に `recordingPCM` の export を書き出し先に触れる前に止めます。
+Runtime の [SessionStorageFinalizationTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevRuntimeTests/SessionStorageFinalizationTests.swift) は録音・import の finalization で success / no-speech / VAD failure / ASR failure / pause を検証します。成功した録音は FLAC 化して processing timeline を除去し、失敗・pause の録音は PCM と timeline を保持します。import は処理 timeline を除去します。開始失敗を含む一時 partial の cleanup、削除・compaction failure、再処理時の transcript / FLAC 保持も確認します。[SessionProcessingTests.swift](../app/MacAmbientJev/Tests/MacAmbientJevPipelineTests/SessionProcessingTests.swift) は VAD / ASR / pacing / compaction 中の cancellation が finalization を durable な pause にし、再開で完了することを検証します。AppleSupport の起動時整理テストは、全 session の整理が収束し、失敗した session を folder 名付きで返し、録音中の session に触れないことを確認します。App test は起動時整理中に `recordingPCM` の export を書き出し先に触れる前に止めます。
 
 ## ポータブル ONNX の書き出しと受入
 

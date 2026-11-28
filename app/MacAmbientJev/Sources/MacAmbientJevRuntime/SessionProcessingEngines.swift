@@ -10,7 +10,7 @@ public extension SessionProcessingEngines {
             asr: HaasASREngine(intraOpThreads: HaasASREngine.macIntraOpThreads) {
                 HaasASRModelFiles(verifiedDirectory: try await models.verifiedDirectory(.asr))
             },
-            finalTranscriptVAD: FluidFinalTranscriptVADSegmenter(models: models)
+            sessionVAD: FluidSessionVADSegmenter(models: models)
         )
     }
 }

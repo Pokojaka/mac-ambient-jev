@@ -10,7 +10,7 @@ public enum ThermalPressure: Sendable, Equatable {
 public enum LiveASRThermalDecision: Sendable, Equatable {
     case processNow
     case wait(Duration)
-    /// Live recognition stops; recording and segment registration continue, and finalization recognizes everything.
+    /// Live recognition stops; recording and segment registration continue, and stop processes the remaining segments.
     case suspendUntilCooled
 }
 

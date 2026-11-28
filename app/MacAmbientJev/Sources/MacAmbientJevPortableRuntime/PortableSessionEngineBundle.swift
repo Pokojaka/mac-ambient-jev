@@ -23,7 +23,7 @@ public struct PortableSessionEngineBundle: Sendable {
                 size: configuration.qwen3Size,
                 intraOpThreads: configuration.threads
             ),
-            finalTranscriptVAD: SileroFinalTranscriptVADSegmenter(
+            sessionVAD: SileroSessionVADSegmenter(
                 environment: vadEnvironment,
                 modelURL: configuration.sileroModelURL,
                 intraOpThreads: 1

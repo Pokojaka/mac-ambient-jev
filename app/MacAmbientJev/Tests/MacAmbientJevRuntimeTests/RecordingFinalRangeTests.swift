@@ -9,10 +9,10 @@ private let tailProbeProvenance = RunProvenance(engine: "tail-probe", model: nil
 private let speechStart: Int64 = 90 * 16_000
 
 @Test
-func finalTranscriptVADProvenanceRecordsSegmentationConfiguration() throws {
+func sessionVADProvenanceRecordsSegmentationConfiguration() throws {
     let paths = AppPaths(applicationSupportURL: URL(fileURLWithPath: "/tmp/unused-support"),
         cacheURL: URL(fileURLWithPath: "/tmp/unused-cache"), sessionsRootOverride: nil)
-    let provenance = FluidFinalTranscriptVADSegmenter(models: try MacModelStore(paths: paths)).provenance
+    let provenance = FluidSessionVADSegmenter(models: try MacModelStore(paths: paths)).provenance
     #expect(provenance.engine == "fluidaudio-silero-vad")
     #expect(provenance.version == "FluidAudio@0.15.8")
     #expect(provenance.configuration == [
@@ -46,7 +46,7 @@ private func recordingSegments(runID: String, frameCount: Int64) -> [SegmentRefe
     ]
 }
 
-private struct TailVAD: FinalTranscriptVADSegmenter {
+private struct TailVAD: SessionVADSegmenter {
     let provenance = tailProbeProvenance
 
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
@@ -84,7 +84,7 @@ func recordingStopFinalizesTailAtNon16kHzDeviceRate(sampleRate: Double) async th
     let layout = SessionLayout(sessionURL: url)
     let asr = TailASR()
     let processor = NativeSessionProcessor(paths: paths,
-        engines: SessionProcessingEngines(asr: asr, finalTranscriptVAD: TailVAD()),
+        engines: SessionProcessingEngines(asr: asr, sessionVAD: TailVAD()),
         audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
         contentPriority: .disabled, sleep: { _ in })
     let segmentationRunID = try await processor.startLiveTranscription(

@@ -38,7 +38,7 @@ public struct DeterministicInferenceProvider: EngineInferenceProviding {
         return EngineInference(
             engines: SessionProcessingEngines(
                 asr: DeterministicASR(),
-                finalTranscriptVAD: DeterministicFinalTranscriptVAD()
+                sessionVAD: DeterministicSessionVAD()
             ),
             contentPriority: .disabled,
             timelineBuilder: UnsupportedImportedAudioTimelineBuilder(),
@@ -89,7 +89,7 @@ private struct DeterministicASR: ASREngine {
     func unload() async {}
 }
 
-private struct DeterministicFinalTranscriptVAD: FinalTranscriptVADSegmenter {
+private struct DeterministicSessionVAD: SessionVADSegmenter {
     let provenance = RunProvenance(
         engine: "engine-e2e-vad", model: nil, version: "1", configuration: [:]
     )

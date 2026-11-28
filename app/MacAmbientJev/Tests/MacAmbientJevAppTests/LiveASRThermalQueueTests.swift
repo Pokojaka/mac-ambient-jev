@@ -41,7 +41,7 @@ func coolingDrainsLiveBacklogWithLatestCheckpointAndStopReleasesState() async th
         pausesProcessing: false, userDefaults: defaults,
         engines: SessionProcessingEngines(
             asr: asr,
-            finalTranscriptVAD: EmptyThermalQueueFinalVAD()
+            sessionVAD: EmptyThermalQueueFinalVAD()
         ),
         modelProvisioning: ReadyModelProvisioning(),
         makeLiveVADSession: { _, _, _, _, _ in liveVAD },
@@ -131,7 +131,7 @@ func coolingResumesThermallyHeldFinalization() async throws {
         pausesProcessing: false, userDefaults: defaults,
         engines: SessionProcessingEngines(
             asr: asr,
-            finalTranscriptVAD: EmptyThermalQueueFinalVAD()
+            sessionVAD: EmptyThermalQueueFinalVAD()
         ),
         modelProvisioning: ReadyModelProvisioning(),
         makeLiveVADSession: idleLiveVADFactory(),
@@ -231,7 +231,7 @@ private actor ThermalQueueASR: ASREngine {
     func inputs() -> [ASRAudioInput] { recordedInputs }
 }
 
-private struct EmptyThermalQueueFinalVAD: FinalTranscriptVADSegmenter {
+private struct EmptyThermalQueueFinalVAD: SessionVADSegmenter {
     let provenance = RunProvenance(
         engine: "thermal-queue-vad", model: nil, version: "test", configuration: [:]
     )

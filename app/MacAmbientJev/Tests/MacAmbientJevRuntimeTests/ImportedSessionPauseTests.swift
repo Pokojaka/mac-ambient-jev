@@ -6,7 +6,7 @@ import Testing
 @testable import MacAmbientJevCore
 @testable import MacAmbientJevRuntime
 
-private actor PausedImportVAD: FinalTranscriptVADSegmenter {
+private actor PausedImportVAD: SessionVADSegmenter {
     nonisolated let provenance = RunProvenance(engine: "fake-vad", model: nil, version: "test", configuration: [:])
     private(set) var calls = 0
 
@@ -82,7 +82,7 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
         paths: paths,
         engines: SessionProcessingEngines(
             asr: asr,
-            finalTranscriptVAD: vad
+            sessionVAD: vad
         ),
         audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
         contentPriority: .disabled,

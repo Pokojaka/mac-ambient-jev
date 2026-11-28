@@ -111,7 +111,7 @@ private struct ResourceGatedASR: ASREngine {
     }
 }
 
-private struct ResourceFinalVAD: FinalTranscriptVADSegmenter {
+private struct ResourceFinalVAD: SessionVADSegmenter {
     let provenance = RunProvenance(engine: "resource-final-vad", model: nil, version: "test", configuration: [:])
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
         [SegmentReference(segmentationRunID: runID, segmentID: "first", speechRanges: [0..<16_000]),
@@ -137,7 +137,7 @@ private final class ResourceGatedProvider: EngineInferenceProviding, @unchecked 
         return EngineInference(engines: SessionProcessingEngines(
             asr: ResourceGatedASR(
                 gate: gate, calls: base.calls, holdCall: holdCall, unloadGate: unloadGate
-            ), finalTranscriptVAD: ResourceFinalVAD()),
+            ), sessionVAD: ResourceFinalVAD()),
             contentPriority: standard.contentPriority, timelineBuilder: standard.timelineBuilder,
             makeLiveVADSession: standard.makeLiveVADSession)
     }

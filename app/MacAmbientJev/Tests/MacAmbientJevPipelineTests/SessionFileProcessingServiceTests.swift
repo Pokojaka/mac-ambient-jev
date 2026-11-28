@@ -80,7 +80,7 @@ private actor FakeServiceASR: ASREngine {
     func unload() async {}
 }
 
-private struct FakeServiceVAD: FinalTranscriptVADSegmenter {
+private struct FakeServiceVAD: SessionVADSegmenter {
     let provenance = RunProvenance(engine: "service-test-vad", model: nil, version: "test", configuration: [:])
     let calls: EngineCallCounter
     let producesSpeech: Bool
@@ -264,7 +264,7 @@ private struct ServiceTestHarness {
         let asr = FakeServiceASR(calls: engineCalls, shouldFail: asrFails)
         let engines = SessionProcessingEngines(
             asr: asr,
-            finalTranscriptVAD: FakeServiceVAD(calls: engineCalls, producesSpeech: producesSpeech)
+            sessionVAD: FakeServiceVAD(calls: engineCalls, producesSpeech: producesSpeech)
         )
         let timelineBuilder = FakeServiceTimelineBuilder(samples: Array(repeating: 0.1, count: 16_000))
         self.engineCalls = engineCalls
@@ -305,7 +305,7 @@ private struct ServiceTestHarness {
         let asr = FakeServiceASR(calls: engineCalls, shouldFail: asrFails)
         let engines = SessionProcessingEngines(
             asr: asr,
-            finalTranscriptVAD: FakeServiceVAD(calls: engineCalls, producesSpeech: producesSpeech)
+            sessionVAD: FakeServiceVAD(calls: engineCalls, producesSpeech: producesSpeech)
         )
         let timelineBuilder = FakeServiceTimelineBuilder(samples: Array(repeating: 0.1, count: 16_000))
         self.engineCalls = engineCalls

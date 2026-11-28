@@ -181,7 +181,7 @@ private final class GatedASRInferenceProvider: EngineInferenceProviding, @unchec
         return EngineInference(
             engines: SessionProcessingEngines(
                 asr: GatedASREngine(gate: gate, calls: calls),
-                finalTranscriptVAD: FakeFinalVAD(segmentCount: 2)
+                sessionVAD: FakeFinalVAD(segmentCount: 2)
             ),
             contentPriority: .disabled,
             timelineBuilder: FakeTimelineBuilder(),

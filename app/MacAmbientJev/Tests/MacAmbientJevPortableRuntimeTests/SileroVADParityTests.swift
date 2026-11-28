@@ -61,7 +61,7 @@ struct SileroVADParityTests {
     @Test(arguments: VADParityCase.all)
     func speechRangesMatchFluidAudioExactly(parityCase: VADParityCase) async throws {
         let expectation = try fixture.expectation(named: parityCase.name)
-        let segmenter = SileroFinalTranscriptVADSegmenter(
+        let segmenter = SileroSessionVADSegmenter(
             environment: environment, modelURL: modelURL, intraOpThreads: 1
         )
         let segments = try await segmenter.segment(

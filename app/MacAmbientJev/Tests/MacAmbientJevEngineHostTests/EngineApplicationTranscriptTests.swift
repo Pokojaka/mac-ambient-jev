@@ -113,7 +113,7 @@ private final class TranscriptMutableTextProvider: EngineInferenceProviding, @un
         _ = try base.makeInference(settings: settings)
         return EngineInference(
             engines: SessionProcessingEngines(
-                asr: TranscriptMutableASR(text: text), finalTranscriptVAD: FakeFinalVAD(segmentCount: 2)
+                asr: TranscriptMutableASR(text: text), sessionVAD: FakeFinalVAD(segmentCount: 2)
             ),
             contentPriority: .disabled,
             timelineBuilder: FakeTimelineBuilder(),
@@ -143,7 +143,7 @@ private final class TranscriptGenerationTestProvider: EngineInferenceProviding, 
         return EngineInference(
             engines: SessionProcessingEngines(
                 asr: TranscriptGatedASR(calls: base.calls, gate: gate, text: transcriptText),
-                finalTranscriptVAD: FakeFinalVAD(segmentCount: 2)
+                sessionVAD: FakeFinalVAD(segmentCount: 2)
             ),
             contentPriority: .disabled,
             timelineBuilder: FakeTimelineBuilder(),
