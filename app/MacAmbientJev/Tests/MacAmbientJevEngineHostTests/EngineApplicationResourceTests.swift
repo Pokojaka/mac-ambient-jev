@@ -249,7 +249,7 @@ private final class ResourceGatedProvider: EngineInferenceProviding, @unchecked 
         registry.finished(
             heldItem,
             result: .paused(
-                metrics: nil, retained: .nothing, message: "held", reason: .resourcePressure,
+                metrics: nil, message: "held", reason: .resourcePressure,
                 replacementGeneration: .notOpened
             ),
             isShutdownCancellation: false
@@ -262,7 +262,7 @@ private final class ResourceGatedProvider: EngineInferenceProviding, @unchecked 
         registry.finished(
             pausedItem,
             result: .paused(
-                metrics: nil, retained: .nothing, message: "paused", replacementGeneration: .notOpened
+                metrics: nil, message: "paused", replacementGeneration: .notOpened
             ),
             isShutdownCancellation: false
         )
@@ -324,7 +324,7 @@ private final class ResourceGatedProvider: EngineInferenceProviding, @unchecked 
                 requestID: reported.requestID, sessionID: reported.sessionID, kind: .finalization, holdReason: nil
             ),
             result: .failed(
-                message: "durable failure", metrics: nil, retained: nil, replacementGeneration: .notOpened
+                message: "durable failure", metrics: nil, replacementGeneration: .notOpened
             ),
             isShutdownCancellation: false
         )

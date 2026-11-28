@@ -1,18 +1,6 @@
 import SwiftUI
 import MacAmbientJevCore
 
-extension TranscriptDisplayState {
-    /// Whole-screen badge; rows themselves carry no live/final marker.
-    var badge: (text: String, systemImage: String)? {
-        switch self {
-        case .empty: nil
-        case .live: ("ライブ（暫定）", "dot.radiowaves.left.and.right")
-        case .finalizing: ("確定処理中", "hourglass")
-        case .finalized: ("確定済み", "checkmark.seal")
-        }
-    }
-}
-
 struct LiveTranscriptView: View {
     @ObservedObject var viewModel: LiveTranscriptViewModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -40,8 +28,8 @@ struct LiveTranscriptView: View {
 
     private func transcriptHeader(proxy: ScrollViewProxy) -> some View {
         HStack(spacing: AppSpacing.sm) {
-            if let badge = viewModel.displayState.badge {
-                Label(badge.text, systemImage: badge.systemImage)
+            if viewModel.isProcessingRemaining {
+                Label("残りを処理中", systemImage: "hourglass")
                     .font(.caption.weight(.semibold))
             }
 

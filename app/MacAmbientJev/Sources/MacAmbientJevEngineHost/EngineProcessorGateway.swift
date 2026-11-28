@@ -76,8 +76,7 @@ final class EngineProcessorGateway: SessionProcessingExecuting, LiveTranscriptio
             current = try self.current()
         } catch {
             return .failed(
-                message: error.localizedDescription, metrics: nil, retained: nil,
-                replacementGeneration: metadataPolicy.replacementGeneration
+                message: error.localizedDescription, metrics: nil, replacementGeneration: metadataPolicy.replacementGeneration
             )
         }
         return await current.processor.processSession(
@@ -106,7 +105,7 @@ final class EngineProcessorGateway: SessionProcessingExecuting, LiveTranscriptio
             let message = "発話文の判定を再試行できませんでした: \(error.localizedDescription)"
             await onStatus(.message(message))
             return .failed(
-                message: message, metrics: nil, retained: nil, replacementGeneration: .notOpened
+                message: message, metrics: nil, replacementGeneration: .notOpened
             )
         }
         return await processor.retryContentPrioritySession(

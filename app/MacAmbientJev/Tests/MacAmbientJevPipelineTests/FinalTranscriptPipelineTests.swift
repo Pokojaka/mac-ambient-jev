@@ -395,7 +395,7 @@ func nativeProcessorCancellationDuringASRPausesDurablyAndRecoversOnRelaunch() as
     let cancelled = await cancelProcessingWhenGateStarts(processor, sessionID: sessionID, gate: gate)
 
     #expect(cancelled.disposition == .paused)
-    #expect(cancelled.message == "確定処理が中断されたため、一時停止しました")
+    #expect(cancelled.message == "文字起こし処理が中断されたため、一時停止しました")
     #expect(cancelled.metrics?.initialPendingCount == 1)
     #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.state == .paused)
     #expect(try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).inspect(sessionID: sessionID).recovery?.action == .finalize)
@@ -432,7 +432,7 @@ func nativeProcessorCancellationDuringVADPausesDurablyAndRecoversOnRelaunch() as
     let cancelled = await cancelProcessingWhenGateStarts(processor, sessionID: sessionID, gate: gate)
 
     #expect(cancelled.disposition == .paused)
-    #expect(cancelled.message == "確定処理が中断されたため、一時停止しました")
+    #expect(cancelled.message == "文字起こし処理が中断されたため、一時停止しました")
     #expect(cancelled.metrics == nil)
     #expect(await log.snapshot().isEmpty)
     #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.state == .paused)
@@ -478,7 +478,7 @@ func nativeProcessorCancellationDuringPacingPausesDurablyAndRecoversOnRelaunch()
     )
 
     #expect(cancelled.disposition == .paused)
-    #expect(cancelled.message == "確定処理が中断されたため、一時停止しました")
+    #expect(cancelled.message == "文字起こし処理が中断されたため、一時停止しました")
     #expect(cancelled.metrics?.initialPendingCount == 2)
     #expect(cancelled.metrics?.pacingWaitCount == 1)
     #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.state == .paused)
@@ -512,7 +512,7 @@ func nativeProcessorCancellationDuringCompactionKeepsTheCompleteTranscriptForMai
 
     #expect(cancelled.disposition == .paused)
     #expect(cancelled.message == "文字起こしは完了しましたが、音声の保存整理が中断されました")
-    #expect(cancelled.retainedTranscript == .finalized)
+
     let metadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())
     #expect(metadata.state == .complete)
     #expect(try storedFinal(sessionURL: sessionURL).state.recognitionCompleted)
@@ -656,8 +656,8 @@ func failedASRMarksTheGenerationFailedAndKeepsTheRecognizedRows() async throws {
 
     #expect(result.disposition == .failed)
     #expect(result.metrics?.initialPendingCount == 2)
-    #expect(result.retainedTranscript == .finalized)
-    #expect(await statuses.snapshot().last?.contains("確定処理に失敗") == true)
+
+    #expect(await statuses.snapshot().last?.contains("文字起こし処理に失敗") == true)
     let last = try #require(await states.snapshot().last)
     #expect(last.texts == ["最初の確定"])
     guard case .partialFailure = last.state else {
@@ -1310,7 +1310,7 @@ func failedVADDoesNotCompleteSegmentationOrReportNoSpeech() async throws {
     #expect(state.generation.id == metadata.generationID)
     #expect(!state.segmentationCompleted)
     #expect(state.runCompletions.isEmpty)
-    #expect(await statuses.snapshot().last?.contains("確定処理に失敗") == true)
+    #expect(await statuses.snapshot().last?.contains("文字起こし処理に失敗") == true)
 }
 
 @Test func processorLookupFailuresDoNotPublishEmptyTranscriptsOrRunEngines() async throws {

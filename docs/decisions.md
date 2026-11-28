@@ -3,7 +3,7 @@
 Windows の共通 Core / Pipeline、評価 CLI、ProcessRecording CLI、保存先とファイルアクセスの規則は [windows.md](windows.md) に記載します。Windows には WASAPI shared-mode の microphone / system-audio capture adapters と Windows 専用 `MacAmbientJevEngine` executable product があります。Linux engine product はなく、Windows GUI は WinUI shell が提供します。
 
 - Dock と Finder には、暗い角丸タイルに白い紙のしおりと橙色の波形・文字の行を組み合わせたアプリアイコンを表示する。[アプリのウィンドウ](export.md#アプリのウィンドウ)
-- 画面全体で「ライブ（暫定）」「確定処理中」「確定済み」を区別し、行ごとの確定印は付けない。[ライブ](live.md)
+- 残りの区間を処理中は画面に「残りを処理中」を表示し、ライブや最終結果のマーカーは付けない。[ライブ](live.md)
 - 画面とテキスト書き出しは同じ表示本文を使う。ASR 保存直後はフィラー・相槌や LOW を除かず、表示用の数字表記変換を適用する。区間ごとの境界 assessment が保存された後に、その raw UTF-16 `filler_ranges` に記録されたフィラー・相槌の表示本文除去範囲を除く。D / O は残し、除去範囲の直後に連続して接する句読点だけを除き、空白は変更しない。assessment がない・保留・失敗、または CLI で判定無効の場合も、フィラー・相槌や LOW の除去は行わず数字表記変換を適用する。保存済み LOW 発話文 slice は優先度保存後に別途除き、RAW ASR とイベントは変更しない。空白・改行だけになった行は表示も書き出しもしない。[書き出し](export.md)・[ライブ](live.md)
 - 漢数字の表示変換は `MaterializedTranscriptSegment.displayText` の最終段階だけで行い、漢字、ASCII／全角数字、`.`／`．` のいずれにも隣接しない漢数字を算用数字にする。`分の` の分数表現は漢数字のままとし、慣用句・固有名詞等の固定全文一致対象は一致した句全体の数字を保持する（部分一致では除外しない）。RAW ASR とイベントは変更せず、発話文の分割・判定にも使わない。[発話文判定](decision-engine.md)・[書き出し](export.md)
 - 認識不能は ASR の構造化状態で扱い、特定の文字列を理由に本文を隠さない。空白・改行・句読点だけの ASR 原文は認識不能と同じ空の結果とする。イベントには空本文を含む全区間を残し、公開 JSON は空本文を除く。[保存形式](storage.md)

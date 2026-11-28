@@ -160,7 +160,7 @@ struct SavedSessionsView: View {
             Label("保存済みの文字起こしを表示中", systemImage: "text.alignleft")
                 .foregroundStyle(.secondary)
         } else {
-            Text("この録音には表示できる確定文字起こしがありません。")
+            Text("この録音には表示できる文字起こしがありません。")
                 .foregroundStyle(.secondary)
         }
         exportControls(for: session)
@@ -238,7 +238,7 @@ struct SavedSessionsView: View {
 
     private func exportUnavailableReason(_ session: SavedSession) -> String? {
         if case .corrupted = session.processingStatus { return "文字起こしデータが破損しているため書き出せません" }
-        if !session.hasActiveTranscript { return "確定文字起こしがないため書き出せません" }
+        if !session.hasActiveTranscript { return "文字起こしがないため書き出せません" }
         if session.audioSource == nil { return "保存済み音声を使えないため書き出せません" }
         return nil
     }

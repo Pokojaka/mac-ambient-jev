@@ -7,7 +7,7 @@ public enum SessionAudioReadersError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .importNeedsTimelineBuild:
-            "取り込んだ音声は確定処理で作る処理用タイムライン経由でのみ読み込めます"
+            "取り込んだ音声は文字起こし処理で作る処理用タイムライン経由でのみ読み込めます"
         }
     }
 }

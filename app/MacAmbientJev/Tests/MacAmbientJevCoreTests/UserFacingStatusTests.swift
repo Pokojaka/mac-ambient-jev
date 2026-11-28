@@ -21,7 +21,7 @@ func userFacingStatusStringsRemainJapanese() {
 func pausedAndSuspendedStatusesNameTheirCause() {
     #expect(
         UserFacingStatus.finalizationPausedForHeat.text
-            == "発熱のため確定処理を一時停止中"
+            == "発熱のため残りの処理を一時停止中"
     )
     #expect(
         UserFacingStatus.liveTranscriptionThermalSuspended.text

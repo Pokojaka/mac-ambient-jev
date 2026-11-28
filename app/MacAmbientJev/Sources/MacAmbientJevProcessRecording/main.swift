@@ -90,8 +90,7 @@ struct ProcessRecordingCommand {
             await monitorTask?.value
             if let monitor {
                 try await monitor.write(.failed(
-                    message: error.localizedDescription, metrics: nil, retained: nil,
-                    replacementGeneration: .notOpened
+                    message: error.localizedDescription, metrics: nil, replacementGeneration: .notOpened
                 ))
             }
             throw error

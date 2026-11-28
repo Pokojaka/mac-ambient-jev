@@ -249,21 +249,20 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
 
     func processingGenerationDidOpen(sessionID: UUID, generationID: UUID) {
         _ = generationID
-        if displayedSessionID == sessionID {
-            transcriptViewModel.setDisplayState(.finalizing)
-        }
+        processingSessionID = sessionID
     }
 
     func processingUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler {
         { [weak self] segments, state in
             await MainActor.run {
-                guard let self, self.displayedSessionID == sessionID else { return }
+                guard let self else { return }
+                if state == .complete {
+                    self.clearProcessingSession(sessionID)
+                }
+                guard self.displayedSessionID == sessionID else { return }
                 do {
                     try self.transcriptViewModel.update(segments: segments)
                     self.processingState = state
-                    if state == .complete {
-                        self.transcriptViewModel.setDisplayState(.finalized)
-                    }
                 } catch {
                     let message = "文字起こし表示を更新できませんでした: \(error.localizedDescription)"
                     self.processingState = .partialFailure(message)
@@ -281,33 +280,28 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
             processingStatusText = "文字起こし処理が待機中です"
             transcriptViewModel.setStatus("文字起こし処理が待機中です")
         case .held(let item):
+            clearProcessingSession(item.sessionID)
             processingState = .backlogged
             processingStatusText = UserFacingStatus.finalizationPausedForHeat.text
             if displayedSessionID == item.sessionID {
                 transcriptViewModel.setStatus(UserFacingStatus.finalizationPausedForHeat.text)
             }
         case .heldForModels(let item):
+            clearProcessingSession(item.sessionID)
             showWaitingForModels(sessionID: item.sessionID)
         case .began(let item):
             processingState = .running
-            if displayedSessionID == item.sessionID, item.kind != .decisionRetry {
-                transcriptViewModel.setDisplayState(.finalizing)
+            if item.kind != .decisionRetry {
+                processingSessionID = item.sessionID
             }
         case .liveFailed(let failure):
             processingStatusText =
-                "ライブ文字起こしは停止しました。録音全体を確定処理します: \(failure)"
+                "ライブ文字起こしは停止しました: \(failure)"
         case .finished(let item, let result):
             if let result {
                 reportFailedFinalization(result)
             }
-            if let retained = result?.retainedTranscript,
-               displayedSessionID == item.sessionID {
-                switch retained {
-                case .finalized: transcriptViewModel.setDisplayState(.finalized)
-                case .provisional: transcriptViewModel.setDisplayState(.live)
-                case .nothing: transcriptViewModel.setDisplayState(.empty)
-                }
-            }
+            clearProcessingSession(item.sessionID)
         case .next:
             processingState = .backlogged
             processingStatusText = "次の文字起こし処理を開始します"

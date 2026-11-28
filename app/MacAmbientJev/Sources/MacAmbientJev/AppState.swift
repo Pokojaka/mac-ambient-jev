@@ -137,7 +137,20 @@ final class AppState: ObservableObject {
     var micInputSessionID: UUID?
     /// The automatic-adjustment preference read for the recording that is starting.
     var micInputVolumeAutomaticForStart: Bool?
-    var displayedSessionID: UUID?
+    var displayedSessionID: UUID? { didSet { updateProcessingRemaining() } }
+    var processingSessionID: UUID? { didSet { updateProcessingRemaining() } }
+
+    private func updateProcessingRemaining() {
+        transcriptViewModel.setProcessingRemaining(
+            processingSessionID != nil && processingSessionID == displayedSessionID
+        )
+    }
+
+    func clearProcessingSession(_ sessionID: UUID) {
+        if processingSessionID == sessionID {
+            processingSessionID = nil
+        }
+    }
     lazy var processingCoordinator = SessionProcessingCoordinator(
         effects: self,
         processor: sessionProcessor,

@@ -151,7 +151,7 @@ private struct ContentView: View {
     }
 
     private var recordingHelp: String {
-        if appState.isRecording || appState.recordingPhase == .starting { return "録音を終えて文字起こしを確定" }
+        if appState.isRecording || appState.recordingPhase == .starting { return "録音を終えて残りの区間を処理" }
         if appState.isBusy { return "録音操作の処理が終わると開始可能" }
         return switch appState.captureSource {
         case .microphone: "マイクの音声を録音し、その場で文字起こし"

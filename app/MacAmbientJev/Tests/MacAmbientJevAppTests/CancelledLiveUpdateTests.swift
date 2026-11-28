@@ -112,14 +112,24 @@ func aStaleLiveUpdateCannotReplaceFinalRowsWhileTheSameSessionIsBeingProcessed()
     #expect(state.transcriptViewModel.rows.map(\.text) == ["ライブ原文"])
 
     state.recording.finish()
+    state.processingGenerationDidOpen(sessionID: sessionID, generationID: UUID())
+    #expect(state.transcriptViewModel.isProcessingRemaining)
+    await state.processingUpdateHandler(sessionID: sessionID)([], .complete)
+    #expect(!state.transcriptViewModel.isProcessingRemaining)
+    let item = ProcessingQueueItemSummary(
+        requestID: UUID(), sessionID: sessionID, kind: .finalization, holdReason: nil
+    )
+    state.processingDidChange(.began(item))
+    #expect(state.transcriptViewModel.isProcessingRemaining)
+    state.processingDidChange(.heldForModels(item))
+    #expect(!state.transcriptViewModel.isProcessingRemaining)
     let final = try MaterializedTranscriptSegment.fixture(
         segmentID: "final", startMilliseconds: 0, endMilliseconds: 1_000,
         text: "確定本文", fillerRanges: []
     )
     try state.transcriptViewModel.update(segments: [final])
-    state.transcriptViewModel.setDisplayState(.finalized)
     let finalizedRows = state.transcriptViewModel.rows
     await liveHandler([live], .running)
     #expect(state.transcriptViewModel.rows == finalizedRows)
-    #expect(state.transcriptViewModel.displayState == .finalized)
+    #expect(!state.transcriptViewModel.isProcessingRemaining)
 }

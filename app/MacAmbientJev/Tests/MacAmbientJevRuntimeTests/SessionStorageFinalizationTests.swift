@@ -234,7 +234,7 @@ func aFinalizationThatFailsToStartStillRemovesStaleTransients() async throws {
     )
 
     #expect(result.disposition == .failed)
-    #expect(result.message?.hasPrefix("確定処理を開始できませんでした") == true)
+    #expect(result.message?.hasPrefix("文字起こし処理を開始できませんでした") == true)
     expectNoTransients(fixture)
     guard case .recordingPCM = try SessionAudioStorageStore(layout: fixture.layout).load() else {
         Issue.record("a start failure leaves the recording as PCM")
@@ -306,7 +306,7 @@ func aCleanupFailureAfterACompletedRunKeepsTheTranscriptAndSaysSo() async throws
     )
 
     #expect(result.disposition == .failed)
-    #expect(result.retainedTranscript == .finalized)
+
     #expect(result.message?.hasPrefix("文字起こしは保存しましたが、音声の一時ファイルを削除できませんでした: ") == true)
     #expect(await recorder.statuses.last == result.message)
     #expect(try ProcessingLogState(eventsURL: fixture.layout.eventsURL, sessionID: fixture.sessionID)?.recognitionCompleted == true)
@@ -343,7 +343,7 @@ func aCompactionFailureKeepsTheTranscriptAndPCMAndLaunchMaintenanceFinishesIt() 
     )
 
     #expect(result.disposition == .failed)
-    #expect(result.retainedTranscript == .finalized)
+
     #expect(result.message?.hasPrefix("文字起こしは保存しましたが、録音を FLAC にできませんでした: ") == true)
     #expect(try ProcessingLogState(eventsURL: fixture.layout.eventsURL, sessionID: fixture.sessionID)?.recognitionCompleted == true)
     guard case .recordingPCM = try SessionAudioStorageStore(layout: fixture.layout).load() else {

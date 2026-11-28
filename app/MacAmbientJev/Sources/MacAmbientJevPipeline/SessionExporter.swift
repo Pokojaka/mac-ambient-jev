@@ -38,11 +38,11 @@ public enum SessionExportError: Error, LocalizedError, Equatable {
         case .audioUnavailable:
             "保存済み音声を使えないため書き出せません"
         case .recordingNotCompacted:
-            "録音の FLAC 化が終わっていないため書き出せません。確定処理をやり直してください"
+            "録音の FLAC 化が終わっていないため書き出せません。文字起こし処理をやり直してください"
         case .transcriptCorrupted(let reason):
             "文字起こしデータが破損しているため書き出せません: \(reason)"
         case .noTranscript:
-            "確定文字起こしがないため書き出せません"
+            "文字起こしがないため書き出せません"
         case .stagingNotRemoved(let path, let exportFailure, let cleanupFailure):
             "書き出せませんでした: \(exportFailure)。作業用フォルダー \(path) も削除できませんでした: \(cleanupFailure)"
         case .windowsStagingPublicationAccessDenied(let staging, let destination, let originalError):

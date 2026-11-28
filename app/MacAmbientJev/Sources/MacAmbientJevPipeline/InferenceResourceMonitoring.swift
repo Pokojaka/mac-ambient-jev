@@ -12,8 +12,8 @@ public extension InferenceHoldReason {
     var finalizationExplanation: String {
         switch self {
         case .thermal: UserFacingStatus.finalizationPausedForHeat.text
-        case .resourcePressure: "メモリ不足のため確定処理を一時停止中"
-        case .monitorFailed: "リソース監視に失敗したため確定処理を一時停止中"
+        case .resourcePressure: "メモリ不足のため文字起こし処理を一時停止中"
+        case .monitorFailed: "リソース監視に失敗したため文字起こし処理を一時停止中"
         }
     }
 }
