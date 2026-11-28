@@ -127,7 +127,8 @@ private struct Fixture {
             onPhase: { _ in },
             metadataPolicy: .reject,
             onStatus: { await recorder.record(status: $0.text) },
-            onUpdate: { segments, _ in await recorder.record(segments) }
+            onUpdate: { segments, _ in await recorder.record(segments) },
+            onGenerationOpened: { _ in }
         )
         return (result, recorder)
     }
@@ -253,7 +254,8 @@ func finishingALiveRecordingCompactsItToFLAC() async throws {
     let result = await fixture.processor(engines(for: .success))
         .processSession(
             sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil },
-            onPhase: { _ in }, metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+            onPhase: { _ in }, metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in },
+            onGenerationOpened: { _ in }
         )
 
     #expect(result.disposition == .completed)
@@ -272,7 +274,9 @@ func openGenerationDoesNotPermitPCMCompaction() async throws {
     }
 
     let processor = fixture.processor(engines(for: .success))
-    let segmentationRunID = try await processor.startLiveTranscription(sessionID: fixture.sessionID, sampleRate: checkpoint.sampleRate)
+    let segmentationRunID = try await processor.startLiveTranscription(
+        sessionID: fixture.sessionID, sampleRate: checkpoint.sampleRate, onGenerationOpened: { _ in }
+    )
     let segments = [SegmentReference(segmentationRunID: segmentationRunID, segmentID: "fixture_speech", speechRanges: [0..<checkpoint.committedFrames])]
     _ = try await processor.registerLiveSegments(sessionID: fixture.sessionID, segments: segments)
     let progress = try await processor.processLiveSegments(sessionID: fixture.sessionID, segments: segments, checkpoint: checkpoint, shouldPause: { _ in nil }, onStatus: nil, onUpdate: nil)
@@ -453,7 +457,8 @@ func completionCallbacksSeeTheFinishedFLAC() async throws {
         sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil },
         onPhase: { if $0 == .complete { await observations.record(exists(flac)) } },
         metadataPolicy: .reject, onStatus: { _ in },
-        onUpdate: { _, state in if state == .complete { await observations.record(exists(flac)) } }
+        onUpdate: { _, state in if state == .complete { await observations.record(exists(flac)) } },
+        onGenerationOpened: { _ in }
     )
 
     #expect(result.disposition == .completed)

@@ -6,7 +6,7 @@ import MacAmbientJevPipeline
 import MacAmbientJevRuntime
 
 @MainActor
-@Test func unreadableFoldersRemainIndividuallySelectableAndIDsAreAmbiguous() throws {
+@Test func unreadableFoldersRemainIndividuallySelectableAndIDsAreAmbiguous() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let paths = AppPaths(applicationSupportURL: root, cacheURL: root, sessionsRootOverride: root)
@@ -51,14 +51,36 @@ import MacAmbientJevRuntime
     state.selectSavedSession(sessionID: id)
     #expect(state.selectedSavedSessionURL == secondBroken)
     #expect(state.readableSavedSession(id) == nil)
-    state.reprocess(sessionID: id)
-    #expect(state.processingQueue.pending.isEmpty)
+    await state.reprocess(sessionID: id)
+    #expect(state.processingQueue.summaries.isEmpty)
+    #expect(state.processingStatusText?.contains("読み取れない") == true)
     state.selectSavedSession(sessionURL: second)
     #expect(state.selectedSavedSessionURL == second)
     #expect(state.displayedSessionID == id)
-    let sessionID = UUID()
-    state.recording.start(sessionID: sessionID)
-    state.markRecordingStarted(sessionID: sessionID)
+    state.recording.start(sessionID: id)
+    state.markRecordingStarted(sessionID: id)
+    await state.reprocess(sessionID: id)
+    #expect(state.processingStatusText == "録音中または録音・読み込み処理中は再処理できません")
     state.selectSavedSession(sessionURL: firstBroken)
+    #expect(state.selectedSavedSessionURL == second)
+    state.recording.finish()
+    let busySessionID = UUID()
+    let source = root.appending(path: "busy.wav")
+    try Data([0, 1, 2, 3]).write(to: source)
+    let busySessionURL = try SessionBootstrapper(fileManager: .default).createSession(
+        paths: paths, sessionID: busySessionID,
+        source: .imported(originalFilename: source.lastPathComponent),
+        createdAt: Date(timeIntervalSince1970: 1_700_000_002), timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+    _ = try AudioImporter().importFile(source, into: busySessionURL)
+    state.refreshSavedSessions()
+    let existing = PendingProcessing.finalize(sessionID: busySessionID, metadataPolicy: .reject)
+    state.processingCoordinator.enqueue(existing)
+    await state.reprocess(sessionID: busySessionID)
+    #expect(state.processingQueue.summaries.contains {
+        $0.sessionID == busySessionID && $0.kind == .finalization && $0.holdReason == .pending
+    })
+    #expect(state.processingQueue.claimedSessionIDs.isEmpty)
+    #expect(state.processingStatusText == "このセッションは処理待ち・保留中または実行中のため再処理できません")
     #expect(state.selectedSavedSessionURL == second)
 }

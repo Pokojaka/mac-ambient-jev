@@ -247,7 +247,7 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
             capture: FakeCapture(), inference: GatedInferenceProvider(gate: gate),
             events: EngineEventEmitter(transport: transport)
         )
-        let context = EngineRequestContext(requestID: try EngineID(1), events: EngineEventEmitter(transport: transport))
+        let context = EngineRequestContext(requestID: try EngineID(1), events: EngineEventEmitter(transport: transport), terminalReplyClaim: {})
         return Fixture(root: root, app: app, gate: gate, context: context)
     }
 
@@ -268,7 +268,7 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
             inference: GatedASRInferenceProvider(gate: gate, calls: calls),
             events: events
         )
-        let context = EngineRequestContext(requestID: try EngineID(1), events: events)
+        let context = EngineRequestContext(requestID: try EngineID(1), events: events, terminalReplyClaim: {})
         return ASRShutdownFixture(root: root, app: app, capture: capture, gate: gate, calls: calls, context: context)
     }
 
@@ -464,7 +464,9 @@ private final class GatedInferenceProvider: EngineInferenceProviding, @unchecked
         await fixture.app.core.stopTask?.value
 
         #expect(fixture.app.core.recording.phase == .idle)
-        #expect(fixture.app.core.processingQueue.pending.contains { $0.sessionID == sessionID })
+        #expect(fixture.app.core.processingQueue.summaries.contains {
+            $0.sessionID == sessionID && $0.holdReason == .pending
+        })
         #expect(fixture.calls.count("asr") == 1)
 
         var shutdownReturned = false

@@ -79,7 +79,7 @@ func unwritableSampleFailsTheMeasuredRun() async throws {
     await monitor.setPhase(.postprocessing)
 
     do {
-        try await monitor.write(SessionProcessingResult.completed(metrics: nil, noSpeech: false))
+        try await monitor.write(SessionProcessingResult.completed(metrics: nil, noSpeech: false, replacementGeneration: .notOpened))
         Issue.record("a failed sample must fail the measured run")
     } catch RunMonitorError.samplingFailed(let path, _) {
         #expect(path == thermal.path)

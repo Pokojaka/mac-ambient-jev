@@ -231,7 +231,8 @@ struct CaptureSystemAudioCommand {
                 onPhase: { _ in },
                 metadataPolicy: .reject,
                 onStatus: { _ in },
-                onUpdate: { _, _ in }
+                onUpdate: { _, _ in },
+                onGenerationOpened: { _ in }
             )
             if processing.disposition == .completed {
                 do {

@@ -320,6 +320,8 @@ extension EngineApplicationCore: RecordingStartEffects {
             tone = .error
         }
         setRecordingStatus(error.message, tone: tone)
+        precondition(recording.phase == .idle, "failed recording start resets lifecycle before model-held work resumes")
+        processingCoordinator.resumeModelHeldProcessing()
         stateDidChange()
     }
 
@@ -341,6 +343,7 @@ extension EngineApplicationCore: RecordingStartEffects {
 
     func refreshSavedSessions() {
         savedSessionsAreStale = true
+        savedSessionsVersion += 1
     }
 
     private static func startError(_ error: any Error, sessionID: UUID) -> EngineCommandError {
@@ -458,6 +461,10 @@ extension EngineApplicationCore: RecordingFinishEffects {
 
 extension EngineApplicationCore: LiveTranscriptionEffects {
     var recordingSessionID: UUID? { recording.sessionID }
+
+    func liveGenerationDidOpen(sessionID: UUID, generationID: UUID) {
+        transcriptDidSelectGeneration(sessionID: sessionID, generationID: generationID)
+    }
 
     var modelPhase: ModelPreparationStatus.Phase {
         if modelsPrepared { return .ready }

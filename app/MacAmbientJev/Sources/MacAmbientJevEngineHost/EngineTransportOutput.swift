@@ -67,6 +67,7 @@ final class EngineOutputChannel: @unchecked Sendable {
     private let limits: EngineTransportLimits
     private let clock: any EngineWriteDeadlineClock
     private let onReliableWait: @Sendable () -> Void
+    private let beforeReliableAppend: @Sendable (EngineID?) async -> Void
     private let onFailure: @Sendable (EngineWriteFailure) -> Void
     private let condition = NSCondition()
 
@@ -86,12 +87,14 @@ final class EngineOutputChannel: @unchecked Sendable {
         limits: EngineTransportLimits,
         clock: any EngineWriteDeadlineClock,
         onReliableWait: @escaping @Sendable () -> Void,
+        beforeReliableAppend: @escaping @Sendable (EngineID?) async -> Void,
         onFailure: @escaping @Sendable (EngineWriteFailure) -> Void
     ) {
         self.sink = sink
         self.limits = limits
         self.clock = clock
         self.onReliableWait = onReliableWait
+        self.beforeReliableAppend = beforeReliableAppend
         self.onFailure = onFailure
     }
 
@@ -115,6 +118,7 @@ final class EngineOutputChannel: @unchecked Sendable {
     // MARK: Sending
 
     func sendReliable(_ event: EngineEvent, requestID: EngineID?) async throws {
+        await beforeReliableAppend(requestID)
         while true {
             let appended = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
                 appendOrWait(event, requestID: requestID, continuation: continuation)

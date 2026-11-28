@@ -32,7 +32,8 @@ public final class EngineTransport: @unchecked Sendable {
             sink: sink,
             limits: limits,
             deadlineClock: LiveEngineWriteDeadlineClock(),
-            onReliableWait: {}
+            onReliableWait: {},
+            beforeReliableAppend: { _ in }
         )
     }
 
@@ -41,7 +42,8 @@ public final class EngineTransport: @unchecked Sendable {
         sink: EngineByteSink,
         limits: EngineTransportLimits,
         deadlineClock: any EngineWriteDeadlineClock,
-        onReliableWait: @escaping @Sendable () -> Void
+        onReliableWait: @escaping @Sendable () -> Void,
+        beforeReliableAppend: @escaping @Sendable (EngineID?) async -> Void
     ) {
         let (events, continuation) = AsyncStream<EngineTransportEvent>.makeStream(bufferingPolicy: .unbounded)
         self.events = events
@@ -52,7 +54,8 @@ public final class EngineTransport: @unchecked Sendable {
             sink: sink,
             limits: limits,
             clock: deadlineClock,
-            onReliableWait: onReliableWait
+            onReliableWait: onReliableWait,
+            beforeReliableAppend: beforeReliableAppend
         ) { failure in
             EngineLog.write("output failed: \(failure)")
             continuation.yield(.writeFailed(failure))

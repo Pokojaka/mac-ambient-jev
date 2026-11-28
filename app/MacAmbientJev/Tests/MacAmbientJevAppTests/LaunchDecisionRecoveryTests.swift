@@ -76,12 +76,10 @@ private func pausedState(paths: AppPaths, defaults: UserDefaults) -> AppState {
 }
 
 @MainActor
-private func queuedRetry(_ state: AppState) -> (sessionID: UUID, boundarySegments: [SegmentTextReference], clauses: [ClauseReference])? {
-    guard state.processingQueue.pending.count == 1,
-          case .retryContentPriority(let sessionID, let boundarySegments, let clauses) = state.processingQueue.pending[0] else {
-        return nil
-    }
-    return (sessionID, boundarySegments, clauses)
+private func queuedRetry(_ state: AppState) -> ProcessingQueueItemSummary? {
+    let retries = state.processingQueue.summaries.filter { $0.kind == .decisionRetry }
+    guard retries.count == 1 else { return nil }
+    return retries[0]
 }
 
 @MainActor
@@ -104,7 +102,7 @@ func launchRecoveryLeavesPublishedDecisionPendingsToTheUser() async throws {
         }
     )
 
-    #expect(launched.processingQueue.pending.isEmpty)
+    #expect(launched.processingQueue.summaries.isEmpty)
     #expect(launched.processingStatusText == nil)
 
     await launched.processingCoordinator.retryDeferredDecisions(
@@ -116,8 +114,7 @@ func launchRecoveryLeavesPublishedDecisionPendingsToTheUser() async throws {
 
     let retry = try #require(queuedRetry(launched))
     #expect(retry.sessionID == saved.sessionID)
-    #expect(retry.boundarySegments == [saved.source])
-    #expect(retry.clauses == [])
+    #expect(retry.kind == .decisionRetry)
 }
 
 @MainActor
@@ -148,7 +145,6 @@ func launchRecoveryFinishesAnUnpublishedDecisionRun() async throws {
 
     let retry = try #require(queuedRetry(launched))
     #expect(retry.sessionID == saved.sessionID)
-    #expect(retry.boundarySegments == [saved.source])
-    #expect(retry.clauses == [])
+    #expect(retry.kind == .decisionRetry)
     #expect(launched.processingStatusText == "未完了の文字起こしを復旧しています（1件）")
 }

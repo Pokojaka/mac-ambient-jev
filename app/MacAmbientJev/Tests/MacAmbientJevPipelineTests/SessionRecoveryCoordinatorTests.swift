@@ -32,7 +32,7 @@ private struct RecoveryTestThermalMonitor: ThermalMonitoring {
 
 @MainActor
 private final class RecoveryCoordinatorEffects: SessionProcessingEffects, SessionRecoveryEffects {
-    var processingQueue = SessionProcessingQueue()
+    private(set) var processingQueue: ProcessingQueueSnapshot!
     let pausesProcessing: Bool
     var recordingSessionID: UUID?
     let recoveryStatusSnapshot: SessionRecoveryStatusSnapshot
@@ -77,6 +77,9 @@ private final class RecoveryCoordinatorEffects: SessionProcessingEffects, Sessio
         { _, _ in }
     }
 
+    func processingGenerationDidOpen(sessionID: UUID, generationID: UUID) {}
+    func hasLiveProcessingWorker(sessionID: UUID) -> Bool { false }
+
     func waitForLiveASRDrain(sessionID: UUID) async -> LiveASRDrainOutcome { .drained }
 
     func liveASRFailure(sessionID: UUID) -> String? { nil }
@@ -87,6 +90,10 @@ private final class RecoveryCoordinatorEffects: SessionProcessingEffects, Sessio
 
     func autoExportIfEnabled(sessionID: UUID) async {
         exportedSessionIDs.append(sessionID)
+    }
+
+    func processingQueueDidChange(_ snapshot: ProcessingQueueSnapshot) {
+        processingQueue = snapshot
     }
 
     func processingDidChange(_ event: SessionProcessingEvent) {
@@ -113,15 +120,16 @@ private actor RecoveryTestExecutor: SessionProcessingExecuting {
         pacingMode: ASRPacingMode,
         shouldPause: @escaping NativeSessionProcessor.PauseCheck,
         onPhase: @escaping NativeSessionProcessor.PhaseHandler,
-        metadataPolicy: UnreadableMetadataPolicy,
+        metadataPolicy: SessionFinalizationPolicy,
         onStatus: @escaping NativeSessionProcessor.StatusHandler,
-        onUpdate: @escaping NativeSessionProcessor.UpdateHandler
+        onUpdate: @escaping NativeSessionProcessor.UpdateHandler,
+        onGenerationOpened: @escaping NativeSessionProcessor.GenerationOpenedHandler
     ) async -> SessionProcessingResult {
         guard finalizationIDs.contains(sessionID) else {
             preconditionFailure("unexpected finalization for \(sessionID)")
         }
         recordedCalls.append("finalize:\(sessionID.uuidString)")
-        return .completed(metrics: nil, noSpeech: false)
+        return .completed(metrics: nil, noSpeech: false, replacementGeneration: .notOpened)
     }
 
     func retryContentPrioritySession(
@@ -135,7 +143,7 @@ private actor RecoveryTestExecutor: SessionProcessingExecuting {
             preconditionFailure("unexpected decision retry for \(sessionID)")
         }
         recordedCalls.append("retry:\(sessionID.uuidString)")
-        return .completed(metrics: nil, noSpeech: false)
+        return .completed(metrics: nil, noSpeech: false, replacementGeneration: .notOpened)
     }
 
     func cancelLiveTranscription(sessionID: UUID) async {
@@ -155,6 +163,7 @@ private enum RecoveryScanTestError: LocalizedError {
 
 private func recoveryCandidate(
     _ sessionID: UUID,
+    generationID: UUID? = nil,
     action: RecoverableProcessingAction
 ) -> RecoverableSession {
     let manifest = SessionManifest(
@@ -165,6 +174,7 @@ private func recoveryCandidate(
     return RecoverableSession(
         manifest: manifest,
         sessionURL: URL(fileURLWithPath: "/recovery/\(sessionID.uuidString)"),
+        generationID: generationID,
         action: action
     )
 }
@@ -197,7 +207,7 @@ private struct RetrySnapshot: Equatable {
 }
 
 private func retrySnapshot(_ request: PendingProcessing) -> RetrySnapshot? {
-    guard case .retryContentPriority(let sessionID, let boundarySegments, let clauses) = request else {
+    guard case .retryContentPriority(_, let sessionID, let boundarySegments, let clauses) = request else {
         return nil
     }
     return RetrySnapshot(sessionID: sessionID, boundarySegments: boundarySegments, clauses: clauses)
@@ -232,11 +242,6 @@ func recoveryMaintainsAndFiltersBeforeEnqueuingRecoveries() async throws {
         recordingSessionID: recordingID,
         recoveryStatusSnapshot: previous
     )
-    effects.processingQueue.enqueue(.retryContentPriority(
-        sessionID: alreadyPendingID,
-        boundarySegments: [],
-        clauses: []
-    ))
     let segments = [try SegmentTextReference(
         segmentationRunID: "seg",
         segmentID: "s01",
@@ -266,6 +271,7 @@ func recoveryMaintainsAndFiltersBeforeEnqueuingRecoveries() async throws {
         retryIDs: [alreadyPendingID, decisionID]
     )
     let coordinator = makeRecoveryCoordinator(effects: effects, executor: executor)
+    coordinator.enqueue(.retryContentPriority(sessionID: alreadyPendingID, boundarySegments: [], clauses: []))
     let maintenanceLog = RecoveryTestLog()
 
     await coordinator.recoverPendingSessions(
@@ -296,8 +302,8 @@ func recoveryMaintainsAndFiltersBeforeEnqueuingRecoveries() async throws {
     ])
     #expect(effects.recoveryEvents == [
         .maintenanceStarted(2),
-        .maintenanceFinished(count: 2, previous: previous),
         .recovering(2),
+        .maintenanceFinished(count: 2, previous: previous),
         .reportedFailures(
             scanFailures: [scanFailure],
             maintenanceFailures: maintenanceIssues,
@@ -361,16 +367,16 @@ func launchExportsOnlySessionsWhoseStorageMaintenanceCompleted(pausesProcessing:
 
 @MainActor
 @Test
-func failedRecoveryScanClearsMaintenanceAndDrainsPendingWork() async {
+func failedRecoveryScanClearsMaintenanceAndDrainsPendingWork() async throws {
     let pendingID = UUID()
     let effects = RecoveryCoordinatorEffects(
         pausesProcessing: false,
         recordingSessionID: nil,
         recoveryStatusSnapshot: SessionRecoveryStatusSnapshot(processing: nil, transcript: "idle")
     )
-    effects.processingQueue.enqueue(.retryContentPriority(sessionID: pendingID, boundarySegments: [], clauses: []))
     let executor = RecoveryTestExecutor(finalizationIDs: [], retryIDs: [pendingID])
     let coordinator = makeRecoveryCoordinator(effects: effects, executor: executor)
+    coordinator.enqueue(.retryContentPriority(sessionID: pendingID, boundarySegments: [], clauses: []))
 
     await coordinator.recoverPendingSessions(
         effects: effects,
@@ -416,6 +422,42 @@ func emptyRecoveryHasNoMaintenanceStatusOrDrain() async {
 
 @MainActor
 @Test
+func recoveryRejectsAChangedGenerationPlanBeforeEnqueue() async {
+    let sessionID = UUID(), scannedGeneration = UUID(), currentGeneration = UUID()
+    let effects = RecoveryCoordinatorEffects(
+        pausesProcessing: false,
+        recordingSessionID: nil,
+        recoveryStatusSnapshot: SessionRecoveryStatusSnapshot(processing: nil, transcript: "idle")
+    )
+    let executor = RecoveryTestExecutor(finalizationIDs: [sessionID], retryIDs: [])
+    let coordinator = makeRecoveryCoordinator(effects: effects, executor: executor)
+    var scans = 0
+
+    await coordinator.recoverPendingSessions(
+        effects: effects,
+        scan: {
+            scans += 1
+            return SessionRecoveryScan(
+                candidates: [recoveryCandidate(
+                    sessionID, generationID: scans == 1 ? scannedGeneration : currentGeneration, action: .finalize
+                )],
+                maintenance: [], failures: []
+            )
+        },
+        maintain: { _, _ in [:] }
+    )
+
+    #expect(scans == 2)
+    #expect(effects.processingQueue.pending.isEmpty)
+    #expect(effects.processingQueue.recoveryClaimedSessionIDs.isEmpty)
+    #expect(!effects.processingQueue.isMaintainingStorage)
+    #expect(effects.recoveryEvents.isEmpty)
+    #expect(!coordinator.isDraining)
+    #expect(await executor.calls().isEmpty)
+}
+
+@MainActor
+@Test
 func recoveryUsesRecordingAndPendingValuesUpdatedDuringMaintenance() async {
     let oldRecordingID = UUID()
     let updatedRecordingID = UUID()
@@ -449,7 +491,7 @@ func recoveryUsesRecordingAndPendingValuesUpdatedDuringMaintenance() async {
         maintain: { items, willMaintain in
             await MainActor.run {
                 effects.recordingSessionID = updatedRecordingID
-                effects.processingQueue.enqueue(.retryContentPriority(
+                coordinator.enqueue(.retryContentPriority(
                     sessionID: duplicateID,
                     boundarySegments: [],
                     clauses: []
@@ -508,9 +550,9 @@ func manualRetryPreservesBothDecisionActionsAndDoesNotFilterAttempts() async thr
         recordingSessionID: recoveryID,
         recoveryStatusSnapshot: SessionRecoveryStatusSnapshot(processing: nil, transcript: "idle")
     )
-    effects.processingQueue.enqueue(.finalize(sessionID: recoveryID, metadataPolicy: .reject))
     let executor = RecoveryTestExecutor(finalizationIDs: [], retryIDs: [])
     let coordinator = makeRecoveryCoordinator(effects: effects, executor: executor)
+    coordinator.enqueue(.finalize(sessionID: recoveryID, metadataPolicy: .reject))
 
     await coordinator.retryDeferredDecisions(
         effects: effects,
@@ -520,9 +562,9 @@ func manualRetryPreservesBothDecisionActionsAndDoesNotFilterAttempts() async thr
     #expect(effects.processingQueue.pending.count == 4)
     #expect(effects.processingQueue.pending.map(\.sessionID) == [recoveryID, recoveryID, publishedID, publishedID])
     if effects.processingQueue.pending.count == 4 {
-        expectRetry(effects.processingQueue.pending[1], sessionID: recoveryID, boundarySegments: recoverySegments, clauses: recoveryClauses)
-        expectRetry(effects.processingQueue.pending[2], sessionID: publishedID, boundarySegments: publishedSegments, clauses: publishedClauses)
-        expectRetry(effects.processingQueue.pending[3], sessionID: publishedID, boundarySegments: repeatedSegments, clauses: repeatedClauses)
+        #expect(effects.processingQueue.pending[1].kind == .decisionRetry)
+        #expect(effects.processingQueue.pending[2].kind == .decisionRetry)
+        #expect(effects.processingQueue.pending[3].kind == .decisionRetry)
     }
     #expect(effects.recoveryEvents.isEmpty)
     #expect(!coordinator.isDraining)
@@ -531,11 +573,11 @@ func manualRetryPreservesBothDecisionActionsAndDoesNotFilterAttempts() async thr
         candidates: candidates,
         recordingSessionID: nil,
         maintenanceFailures: [:],
-        pending: []
+        occupiedSessionIDs: []
     )
     #expect(sharedRecoveryRequests.count == 2)
     if sharedRecoveryRequests.count == 2, effects.processingQueue.pending.count == 4 {
-        if case .finalize(let sessionID, let metadataPolicy) = sharedRecoveryRequests[0] {
+        if case .finalize(_, let sessionID, let metadataPolicy) = sharedRecoveryRequests[0] {
             #expect(sessionID == finalizeID)
             #expect(metadataPolicy == .reject)
         } else {
@@ -547,7 +589,8 @@ func manualRetryPreservesBothDecisionActionsAndDoesNotFilterAttempts() async thr
             boundarySegments: recoverySegments,
             clauses: recoveryClauses
         )
-        #expect(retrySnapshot(effects.processingQueue.pending[1]) == retrySnapshot(sharedRecoveryRequests[1]))
+        #expect(effects.processingQueue.pending[1].sessionID == sharedRecoveryRequests[1].sessionID)
+        #expect(effects.processingQueue.pending[1].kind == .decisionRetry)
     }
 }
 

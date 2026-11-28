@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import MacAmbientJevCore
 import MacAmbientJevEngineProtocol
-import MacAmbientJevPipeline
+@testable import MacAmbientJevPipeline
 
 @testable import MacAmbientJevEngineHost
 
@@ -12,6 +12,7 @@ import MacAmbientJevPipeline
         let root: URL
         let app: EngineApplication
         let inference: FakeInferenceProvider
+        let resources: FakeResourceMonitor
         let context: EngineRequestContext
     }
 
@@ -40,6 +41,7 @@ import MacAmbientJevPipeline
         let pendingIDs: [UUID]
         let currentID: UUID?
         let heldIDs: [UUID]
+        let modelHeldIDs: [UUID]
         let claimedIDs: Set<UUID>
     }
 
@@ -48,14 +50,15 @@ import MacAmbientJevPipeline
         let transport = EngineTransport(source: ScriptedSource(), sink: ScriptedSink(), limits: testLimits())
         let events = EngineEventEmitter(transport: transport)
         let inference = FakeInferenceProvider()
+        let resources = FakeResourceMonitor()
         let app = EngineApplication(
             configuration: EngineApplicationConfiguration(
-                paths: engineTestPaths(root: root), logicalCPUCount: 4, resourceMonitor: FakeResourceMonitor(),
+                paths: engineTestPaths(root: root), logicalCPUCount: 4, resourceMonitor: resources,
                 sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(20), timeZone: TimeZone(identifier: "Asia/Tokyo")!),
             capture: FakeCapture(), inference: inference, events: events
         )
-        let context = EngineRequestContext(requestID: try EngineID(1), events: events)
-        return Fixture(root: root, app: app, inference: inference, context: context)
+        let context = EngineRequestContext(requestID: try EngineID(1), events: events, terminalReplyClaim: {})
+        return Fixture(root: root, app: app, inference: inference, resources: resources, context: context)
     }
 
     private func start(_ fixture: Fixture) async {
@@ -70,33 +73,158 @@ import MacAmbientJevPipeline
         )
     }
 
-    private func seedQueue(in fixture: Fixture) -> QueueSnapshot {
-        let pendingID = UUID()
-        let currentID = UUID()
-        let heldID = UUID()
-        var queue = SessionProcessingQueue()
-        queue.enqueue(.finalize(sessionID: pendingID, metadataPolicy: .reject))
-        queue.begin(.finalize(sessionID: currentID, metadataPolicy: .reject))
-        queue.hold(.retryContentPriority(sessionID: heldID, boundarySegments: [], clauses: []), reason: .inference(.thermal))
-        fixture.app.core.processingQueue = queue
-        return QueueSnapshot(
-            pendingIDs: queue.pending.map(\.sessionID), currentID: queue.currentSessionID,
-            heldIDs: queue.held.map { $0.request.sessionID }, claimedIDs: queue.claimedSessionIDs
-        )
+    private func seedQueue(in fixture: Fixture) async throws -> QueueSnapshot {
+        let pendingIDs = [UUID(), UUID(), UUID()]
+        for sessionID in pendingIDs {
+            fixture.app.core.processingCoordinator.enqueue(.finalize(sessionID: sessionID, metadataPolicy: .reject))
+        }
+        await fixture.app.core.processingCoordinator.waitUntilIdle()
+        return queueSnapshot(in: fixture)
     }
 
     private func queueSnapshot(in fixture: Fixture) -> QueueSnapshot {
         let queue = fixture.app.core.processingQueue
         return QueueSnapshot(
             pendingIDs: queue.pending.map(\.sessionID), currentID: queue.currentSessionID,
-            heldIDs: queue.held.map { $0.request.sessionID }, claimedIDs: queue.claimedSessionIDs
+            heldIDs: queue.held.map(\.sessionID), modelHeldIDs: queue.modelHeld.map(\.sessionID),
+            claimedIDs: queue.claimedSessionIDs
         )
     }
 
     private func completionWaiterCount(in fixture: Fixture) -> Int? {
-        guard let waiters = Mirror(reflecting: fixture.app.core.completions).children
-            .first(where: { $0.label == "waiters" })?.value else { return nil }
-        return Mirror(reflecting: waiters).children.count
+        guard let requests = Mirror(reflecting: fixture.app.core.completions).children
+            .first(where: { $0.label == "requests" })?.value else { return nil }
+        return Mirror(reflecting: requests).children.count
+    }
+
+    @Test func reprocessRechecksRecordingPhaseAfterCatalogWait() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = ApplicationHarness(root: root)
+        h.start()
+        try await h.hello()
+        try await h.replaceSettings(engineTestSettings(), expectedRevision: nil)
+        await h.awaitModels()
+
+        let audio = root.appending(path: "admission-recheck.wav")
+        try Data("fake wav".utf8).write(to: audio)
+        guard case let .sessionImport(imported) = try await h.call(
+            "session.import",
+            payload: String(decoding: try JSONEncoder().encode(EngineImportPayload(inputPath: audio.path)), as: UTF8.self)
+        ) else {
+            Issue.record("session.import did not return a session")
+            return
+        }
+        _ = try await h.waitForSession(status: .finalized)
+        let sessionUUID = try #require(UUID(uuidString: imported.sessionID))
+        let gate = h.sessionCatalogLookupGate
+        h.app.core.savedSessionsAreStale = true
+        await gate.arm()
+        let context = EngineRequestContext(
+            requestID: try EngineID(900), events: EngineEventEmitter(transport: h.transport), terminalReplyClaim: {}
+        )
+        let reprocess = Task { @MainActor in
+            try await h.app.core.reprocess(EngineSessionPayload(sessionID: imported.sessionID), context: context)
+        }
+        await gate.waitUntilSuspended()
+        guard case let .recordingStart(recording) = try await h.call(
+            "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}"
+        ) else {
+            Issue.record("recording.start did not return a session")
+            await gate.release()
+            return
+        }
+        await gate.release()
+        do {
+            _ = try await reprocess.value
+            Issue.record("reprocess must refuse while recording began during catalog lookup")
+        } catch let error as EngineCommandError {
+            #expect(error.code == .busy)
+        } catch {
+            Issue.record("expected busy, got \(error)")
+        }
+        #expect(!h.app.core.processingQueue.containsProcessing(sessionUUID))
+        try await h.call("recording.stop", payload: "{\"session_id\":\"\(recording.sessionID)\"}")
+        _ = try await h.waitForSession(status: .finalized)
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test(.timeLimit(.minutes(10)))
+    func reprocessRechecksAdmissionBeforePreparationFailureAfterCatalogWait() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = ApplicationHarness(root: root)
+        h.start()
+        try await h.hello()
+        try await h.replaceSettings(engineTestSettings(), expectedRevision: nil)
+        await h.awaitModels()
+
+        let audio = root.appending(path: "catalog-recheck.wav")
+        try Data("fake wav".utf8).write(to: audio)
+        guard case let .sessionImport(imported) = try await h.call(
+            "session.import",
+            payload: String(decoding: try JSONEncoder().encode(EngineImportPayload(inputPath: audio.path)), as: UTF8.self)
+        ) else {
+            Issue.record("session.import did not return a session")
+            return
+        }
+        _ = try await h.waitForSession(status: .finalized)
+        await h.app.core.processingCoordinator.waitUntilIdle()
+
+        let preparationFailure = EngineAdapterError(
+            code: .modelMissing, message: "再処理用モデルを準備できません", recoveryAction: .prepareModels, details: []
+        )
+        h.inference.holdPrepare()
+        h.inference.failPrepare(with: preparationFailure)
+        defer { h.inference.releasePrepare() }
+        let larger = try EngineSettings(
+            schemaVersion: 1, source: .microphone, device: .default, asrSize: .large, executionProvider: .cpu,
+            threads: 1, lowHeat: false, decisionsEnabled: false, automaticExport: false, exportDestinationPath: nil
+        )
+        try await h.replaceSettings(larger, expectedRevision: 1)
+        try await h.sink.changes.wait("model profile preparation starts") {
+            h.inference.calls.count("prepare") == 2
+        }
+
+        let gate = h.sessionCatalogLookupGate
+        defer { Task { await gate.release() } }
+        h.app.core.savedSessionsAreStale = true
+        await gate.arm()
+        let payload = "{\"session_id\":\"\(imported.sessionID)\"}"
+        let first = Task { try await h.call("session.reprocess", payload: payload) }
+        await gate.waitUntilSuspended()
+
+        let second = Task { try await h.call("session.reprocess", payload: payload) }
+        let sessionID = try #require(UUID(uuidString: imported.sessionID))
+        try await h.sink.changes.wait("second reprocess enters model hold") {
+            h.app.core.processingQueue.summaries.contains {
+                $0.sessionID == sessionID && $0.holdReason == .models
+            }
+        }
+
+        h.inference.releasePrepare()
+        await h.awaitModels()
+        do {
+            _ = try await second.value
+            Issue.record("second reprocess must fail when model preparation fails")
+        } catch let error as CommandFailure {
+            #expect(error.failure.code == .modelMissing)
+            #expect(error.failure.message == preparationFailure.message)
+        } catch {
+            Issue.record("expected model preparation failure, got \(error)")
+        }
+
+        await gate.release()
+        do {
+            _ = try await first.value
+            Issue.record("first reprocess must fail busy after the session becomes occupied")
+        } catch let error as CommandFailure {
+            #expect(error.failure.code == .busy)
+        } catch {
+            Issue.record("expected busy, got \(error)")
+        }
+        #expect(h.app.core.processingQueue.containsProcessing(sessionID))
+        #expect(try await h.shutdown() == .shutdownRequested)
     }
 
     @Test func fullQueueRejectsImportBeforeCreatingSession() async throws {
@@ -105,7 +233,7 @@ import MacAmbientJevPipeline
         await start(fixture)
 
         for _ in 0..<EngineApplicationCore.queueLimit {
-            fixture.app.core.processingQueue.enqueue(.finalize(sessionID: UUID(), metadataPolicy: .reject))
+            fixture.app.core.processingCoordinator.enqueue(.finalize(sessionID: UUID(), metadataPolicy: .reject))
         }
         let input = fixture.root.appending(path: "invalid-audio.wav")
         try Data("not audio".utf8).write(to: input)
@@ -120,7 +248,7 @@ import MacAmbientJevPipeline
         }
 
         #expect(fixture.app.core.processingQueue.pending.count == EngineApplicationCore.queueLimit)
-        #expect(try fixture.app.core.currentSessions().isEmpty)
+        #expect(try await fixture.app.core.currentSessions().isEmpty)
     }
 
     @Test func fifteenthQueuedRequestAllowsImportButSixteenthRejectsAnother() async throws {
@@ -129,7 +257,7 @@ import MacAmbientJevPipeline
         await start(fixture)
 
         for _ in 0..<(EngineApplicationCore.queueLimit - 1) {
-            fixture.app.core.processingQueue.enqueue(.finalize(sessionID: UUID(), metadataPolicy: .reject))
+            fixture.app.core.processingCoordinator.enqueue(.finalize(sessionID: UUID(), metadataPolicy: .reject))
         }
         let input = fixture.root.appending(path: "retained-audio.wav")
         try Data("retained audio".utf8).write(to: input)
@@ -137,7 +265,7 @@ import MacAmbientJevPipeline
         let imported = try await fixture.app.core.importSession(payload, context: fixture.context)
 
         #expect(fixture.app.core.processingQueue.pending.count == EngineApplicationCore.queueLimit)
-        #expect(try fixture.app.core.currentSessions().count == 1)
+        #expect(try await fixture.app.core.currentSessions().count == 1)
 
         do {
             _ = try await fixture.app.core.importSession(payload, context: fixture.context)
@@ -147,7 +275,7 @@ import MacAmbientJevPipeline
         }
 
         #expect(fixture.app.core.processingQueue.pending.count == EngineApplicationCore.queueLimit)
-        #expect(try fixture.app.core.currentSessions().count == 1)
+        #expect(try await fixture.app.core.currentSessions().count == 1)
         #expect(fixture.app.core.processingQueue.pending.last?.sessionID == UUID(uuidString: imported.sessionID))
     }
 
@@ -162,7 +290,7 @@ import MacAmbientJevPipeline
         await fixture.app.core.awaitModelPreparation()
         #expect(!fixture.app.core.modelsPrepared)
 
-        let queueBefore = seedQueue(in: fixture)
+        let queueBefore = try await seedQueue(in: fixture)
         let sessionID = UUID()
         let payload = try EngineSessionPayload(sessionID: sessionID.uuidString.lowercased())
         #expect(completionWaiterCount(in: fixture) == 0)
@@ -226,7 +354,7 @@ import MacAmbientJevPipeline
         }
     }
 
-    @Test func retryDecisionsIsBusyDuringRecordingEvenWhenDecisionsAreEnabled() async throws {
+    @Test func reprocessAndDecisionRetryAreBusyForTheRecordingSession() async throws {
         let fixture = try fixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         await start(fixture)
@@ -246,19 +374,68 @@ import MacAmbientJevPipeline
             #expect(error.code == .busy)
             #expect(error.stage == .decisions)
         }
+        do {
+            _ = try await fixture.app.core.reprocess(payload, context: fixture.context)
+            Issue.record("reprocess should be busy for the recording session's own ID")
+        } catch let error as EngineCommandError {
+            #expect(error.code == .busy)
+            #expect(error.stage == .finalization)
+        }
+        #expect(fixture.app.core.processingQueue.pending.isEmpty)
+    }
+
+    @Test func reprocessReturnsBusyWithoutChangingExistingQueuedWork() async throws {
+        let fixture = try fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        await start(fixture)
+        try await setDecisionsEnabled(fixture)
+        await fixture.app.core.awaitModelPreparation()
+        let input = fixture.root.appending(path: "busy-target.wav")
+        try Data("fake wav".utf8).write(to: input)
+        let imported = try await fixture.app.core.importSession(
+            try EngineImportPayload(inputPath: input.path), context: fixture.context
+        )
+        await fixture.app.core.processingCoordinator.waitUntilIdle()
+        let sessionID = try #require(UUID(uuidString: imported.sessionID))
+        let existing = PendingProcessing.finalize(sessionID: sessionID, metadataPolicy: .reject)
+        fixture.resources.setSignal(.pressure)
+        fixture.app.core.processingCoordinator.enqueue(existing)
+        await fixture.app.core.processingCoordinator.waitUntilIdle()
+        #expect(fixture.app.core.processingQueue.held.contains {
+            $0.sessionID == sessionID && $0.holdReason == .inference(.resourcePressure)
+        })
+        let payload = try EngineSessionPayload(sessionID: imported.sessionID)
+
+        do {
+            _ = try await fixture.app.core.reprocess(payload, context: fixture.context)
+            Issue.record("reprocess should reject its already queued session")
+        } catch let error as EngineCommandError {
+            #expect(error.code == .busy)
+            #expect(error.stage == .finalization)
+        }
+
+        #expect(fixture.app.core.processingQueue.summaries.contains { $0.requestID == existing.requestID })
+        #expect(fixture.app.core.processingQueue.claimedSessionIDs.isEmpty)
+        #expect(fixture.app.core.processingQueue.containsProcessing(sessionID))
     }
 
     @Test func retryDecisionsRejectsAlreadyQueuedSession() async throws {
         let fixture = try fixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         await start(fixture)
+        fixture.inference.failPrepare(with: EngineAdapterError(
+            code: .modelMissing, message: "モデルがありません", recoveryAction: .prepareModels, details: []
+        ))
         try await setDecisionsEnabled(fixture)
         await fixture.app.core.awaitModelPreparation()
 
         let sessionID = UUID()
-        fixture.app.core.processingQueue.enqueue(
-            .retryContentPriority(sessionID: sessionID, boundarySegments: [], clauses: [])
-        )
+        let existing = PendingProcessing.finalize(sessionID: sessionID, metadataPolicy: .reject)
+        fixture.app.core.processingCoordinator.enqueue(existing)
+        await fixture.app.core.processingCoordinator.waitUntilIdle()
+        #expect(fixture.app.core.processingQueue.modelHeld.contains {
+            $0.sessionID == sessionID && $0.requestID == existing.requestID
+        })
         let payload = try EngineSessionPayload(sessionID: sessionID.uuidString.lowercased())
 
         do {
@@ -268,6 +445,6 @@ import MacAmbientJevPipeline
             #expect(error.code == .busy)
         }
 
-        #expect(fixture.app.core.processingQueue.pending.count == 1)
+        #expect(fixture.app.core.processingQueue.modelHeld.map(\.requestID) == [existing.requestID])
     }
 }

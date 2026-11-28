@@ -41,14 +41,6 @@ public struct ProcessingMetadata: Codable, Sendable, Equatable {
     }
 }
 
-/// What an explicit reprocess does when `processing_metadata.json` is malformed.
-public enum UnreadableMetadataPolicy: Sendable, Equatable {
-    /// Fail and leave malformed metadata untouched.
-    case reject
-    /// Replace malformed metadata only; unsupported schema versions are never replaced.
-    case replace
-}
-
 public enum ProcessingMetadataStoreError: Error, LocalizedError, Equatable {
     case unsupportedSchemaVersion
     case unreadable(String)
@@ -71,15 +63,13 @@ public struct ProcessingMetadataStore: Sendable {
     }
 
     public func load() throws -> ProcessingMetadata? {
-        guard let data = try SessionFileAccess.readIfPresent(url, relativeTo: url.deletingLastPathComponent()) else { return nil }
+        guard let data = try SessionFileAccess.readIfPresent(url, relativeTo: url.deletingLastPathComponent()) else {
+            return nil
+        }
         do {
             return try JSONDecoder().decode(ProcessingMetadata.self, from: data)
-        } catch let error as ProcessingMetadataStoreError {
-            throw error
         } catch let error as DecodingError {
             throw ProcessingMetadataStoreError.unreadable(String(describing: error))
-        } catch {
-            throw ProcessingMetadataStoreError.unreadable(error.localizedDescription)
         }
     }
 

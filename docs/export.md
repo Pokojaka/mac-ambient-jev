@@ -58,7 +58,7 @@ macOS の保存先は security-scoped bookmark とパスを `UserDefaults` に�
 
 macOS では書き出し中に進捗を表示し、同じセッションの重複書き出しを防ぐ。書き出し済みの判定は対象フォルダーに `transcript.txt` とそのセッションの音声ファイルが両方存在すること。書き出し済みのセッションには「書き出し先を Finder で表示」が出て、書き出したフォルダーを開ける。保存済み録音の詳細には、書き出しの有無にかかわらず読める録音と読めない録音の両方で「録音データを Finder で表示」が出て、アプリ内に保存しているそのセッションのフォルダー（カタログが持つ実際の URL）を選択して Finder で開く。設定の「保存先」にある「録音データ」の「Finderで表示」は、全セッションを入れた sessions フォルダーを開く。フォルダーが存在しなければ作らずにエラーを表示する。
 
-Windows では自動書き出しの既定値も `UserDefaults` の保存先もなく、**AutomaticExport** と **ExportDestinationPath** を WinUI の設定で明示選択・保存します。Windows の engine も、処理完了後の保存整理（FLAC 化・一時ファイルの削除）が成功した後と、起動時の保存整理が録音の FLAC 化を実際に完了した後に、この設定の書き出し先へ自動書き出しします。書き出しにモデルは要らないため、セットアップが未完了で処理が保留中でも起動時の保存整理の後に書き出し、engine の終了処理中だけ書き出しません。「設定 › 一般」の「フォルダを選択…」で選んだ path は draft に入り、「保存」で `settings.replace` して確定します。保存済み録音の「書き出す…」から未設定の保存先を選ぶ場合は「書き出し先フォルダを選択」picker の選択を同じ `settings.replace` で先に保存し、成功した場合に限り engine へ `session.export` を送ります。picker をキャンセルした場合や保存が失敗した場合、export は行いません。設定済み path なら「書き出す」でその destination を使います。成功後は実際の **ExportPath** を表示し、「書き出し先をエクスプローラーで表示」で書き出し bundle を開きます。保存済み session の原 folder は「録音データをエクスプローラーで表示」で開きます（[Windows shell の picker / export](windows.md#winui-shell)）。
+Windows では自動書き出しの既定値も `UserDefaults` の保存先もなく、**AutomaticExport** と **ExportDestinationPath** を WinUI の設定で明示選択・保存します。Windows の engine も、処理完了後の保存整理（FLAC 化・一時ファイルの削除）が成功した後と、起動時の保存整理が録音の FLAC 化を実際に完了した後に、この設定の書き出し先へ自動書き出しします。書き出しにモデルは要らないため、セットアップが未完了で処理が保留中でも起動時の保存整理の後に書き出し、engine の終了処理中だけ書き出しません。「設定 › 一般」の「フォルダを選択…」で選んだ path は draft に入り、「保存」で `settings.replace` して確定します。保存済み録音の「書き出す…」から未設定の保存先を選ぶ場合は「書き出し先フォルダを選択」picker の選択を `settings.replace` で先に保存します。成功 reply は選択中 session の inspection refresh を background に queue し、同じ reducer turn で選択 folder が一致し、recording がなく、recording start / stop・reprocess・decision retry・export が pending でない場合だけ、その refresh completion を待ってから `session.export` を送ります。pending の `session.inspect` は blocker ではなく、refresh と coalesce します。条件に合わない場合は明示的な書き出し拒否を表示して export を送らず、queued refresh は継続します。inspection failure の場合も export を送らず、inspection 自身の engine error を保持します。picker をキャンセルした場合や設定保存が失敗した場合、export は行いません。設定済み path なら「書き出す」でその destination を使います。成功後は実際の **ExportPath** を表示し、「書き出し先をエクスプローラーで表示」で書き出し bundle を開きます。保存済み session の原 folder は「録音データをエクスプローラーで表示」で開きます（[Windows shell の picker / export](windows.md#winui-shell)）。
 
 ## アプリのウィンドウ
 
@@ -89,7 +89,7 @@ Dock と Finder のアプリアイコンは、暗い角丸タイルに白い紙�
 
 音声がない場合は「保存済み音声がありません」、音声を読めない場合は「音声を読めません: 理由」を処理状態より優先して表示する。セッション情報の欠損・破損、フォルダー名と manifest の不整合、完全セッション ID の重複は項目全体を読み込みエラーとする。行の identity と選択は実フォルダー URL を使い、UUID を読めないフォルダーも個別に選べる。
 
-再処理には読めるセッション情報と利用できる原音声が必要。派生 metadata の一般的な破損だけなら原音声から再処理できるが、schema version の欠損・未対応は再処理でも拒否する。破損状態の書き出しは許可しない。書き出しにはさらに公開済み文字起こしが必要。録音中は保存済み録音の選択を無効にし、録音・読み込み中や同じセッションの処理待ち・処理中は再処理を重ねて開始しない。
+再処理には読めるセッション情報と利用できる原音声が必要。派生 metadata の一般的な破損だけなら原音声から再処理できるが、schema version の欠損・未対応は再処理でも拒否する。破損状態の書き出しは許可しない。書き出しにはさらに公開済み文字起こしが必要。録音中は保存済み録音の選択を無効にし、再処理要求も明示的な busy error で拒否する。同 session の pending / held / model-held / current processing、live worker、recovery claim がある場合や storage maintenance 中も再処理は busy で拒否し、既存処理を取消・待機・置換しない。admission と enqueue は coordinator 上で同期して行う。
 
 一覧は最新 `pipeline.started` 世代の選択 ASR run と transcript payload を読み取り専用で検証する。open な段階の保存済み部分行も表示し、新しい generation marker で reset した場合は前世代の行を再選択せず空から始める。ログが欠損・不正、または不完全な末尾を含む場合は破損状態となり、文字起こしを公開せず書き出しを無効にする。再処理は利用可能な原音声から行える。
 

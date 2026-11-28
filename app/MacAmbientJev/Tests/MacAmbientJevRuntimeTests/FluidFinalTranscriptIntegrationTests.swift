@@ -142,7 +142,8 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
         onPhase: { _ in },
         metadataPolicy: .reject,
         onStatus: { _ in },
-        onUpdate: { _, _ in }
+        onUpdate: { _, _ in },
+        onGenerationOpened: { _ in }
     )
 
     #expect(result.disposition == .completed)

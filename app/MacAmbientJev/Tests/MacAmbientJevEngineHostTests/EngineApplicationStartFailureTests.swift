@@ -3,7 +3,7 @@ import Testing
 import MacAmbientJevCore
 import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
-import MacAmbientJevPipeline
+@testable import MacAmbientJevPipeline
 
 @testable import MacAmbientJevEngineHost
 
@@ -124,6 +124,76 @@ import MacAmbientJevPipeline
         #expect(error.details.first?.message == error.message)
         #expect(error.sessionID == EngineFailures.wireID(sessionID))
     }
+    @Test(.timeLimit(.minutes(10)))
+    func failedRecordingStartResumesUnclaimedModelHeldFinalization() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let prepareGate = EngineApplicationTestGate()
+        await prepareGate.arm()
+        let provider = PreparationGatedProvider(gate: prepareGate)
+        let startGate = EngineApplicationTestGate()
+        await startGate.arm()
+        defer { Task { await prepareGate.release(); await startGate.release() } }
+        let capture = GatedFailingStartCapture(gate: startGate)
+        let resources = FakeResourceMonitor()
+        let transport = EngineTransport(source: ScriptedSource(), sink: ScriptedSink(), limits: testLimits())
+        let events = EngineEventEmitter(transport: transport)
+        let app = EngineApplication(
+            configuration: EngineApplicationConfiguration(
+                paths: engineTestPaths(root: root), logicalCPUCount: 4, resourceMonitor: resources,
+                sleep: { try await Task.sleep(for: $0) }, shutdownPauseTimeout: .seconds(20),
+                timeZone: TimeZone(identifier: "Asia/Tokyo")!
+            ),
+            capture: capture, inference: provider, events: events
+        )
+        app.start()
+        await app.waitForStartupRecovery()
+        let settingsContext = EngineRequestContext(requestID: try EngineID(1), events: events, terminalReplyClaim: {})
+        let importContext = EngineRequestContext(requestID: try EngineID(2), events: events, terminalReplyClaim: {})
+        let startContext = EngineRequestContext(requestID: try EngineID(3), events: events, terminalReplyClaim: {})
+        _ = try await app.core.replace(
+            .init(expectedRevision: nil, settings: engineTestSettings()), context: settingsContext
+        )
+        await prepareGate.waitUntilSuspended()
+
+        let input = root.appending(path: "model-held-finalization.wav")
+        try Data("fake wav".utf8).write(to: input)
+        let imported = try await app.core.importSession(
+            try EngineImportPayload(inputPath: input.path), context: importContext
+        )
+        await app.core.processingCoordinator.waitUntilIdle()
+        let sessionID = try #require(UUID(uuidString: imported.sessionID))
+        #expect(app.core.processingQueue.modelHeld.contains { $0.sessionID == sessionID })
+        #expect(!app.core.processingQueue.claimedSessionIDs.contains(sessionID))
+
+        let recordingStart = Task { @MainActor in
+            try await app.core.start(
+                EngineRecordingStartPayload(source: .microphone, device: .default), context: startContext
+            )
+        }
+        await startGate.waitUntilSuspended()
+        #expect(app.core.recording.phase == .starting)
+
+        await prepareGate.release()
+        await app.core.awaitModelPreparation()
+        #expect(app.core.modelsPrepared)
+        #expect(app.core.recording.phase == .starting)
+        #expect(app.core.processingQueue.modelHeld.contains { $0.sessionID == sessionID })
+
+        let completionEpoch = app.core.processingCompletionEpoch
+        await startGate.release()
+        do {
+            _ = try await recordingStart.value
+            Issue.record("capture startup should fail")
+        } catch let error as EngineCommandError {
+            #expect(error.code == .captureFailure)
+        }
+        #expect(app.core.recording.phase == .idle)
+        await app.core.processingCoordinator.waitUntilIdle()
+        #expect(app.core.processingCompletionEpoch == completionEpoch + 1)
+        #expect(!app.core.processingQueue.containsProcessing(sessionID))
+        try await app.core.shutdown(reason: .requested)
+    }
 }
 
 @MainActor
@@ -150,5 +220,59 @@ private final class FailingStartCapture: EngineCaptureProviding {
         callbacks: EngineCaptureCallbacks
     ) async throws -> any EngineCaptureSession {
         throw error
+    }
+}
+
+private final class PreparationGatedProvider: EngineInferenceProviding, @unchecked Sendable {
+    private let base = FakeInferenceProvider()
+    private let gate: EngineApplicationTestGate
+
+    init(gate: EngineApplicationTestGate) {
+        self.gate = gate
+    }
+
+    func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
+        await gate.suspendIfArmed()
+        try await base.prepare(settings: settings, onProgress: onProgress)
+    }
+
+    func decisionUsage() async throws -> DecisionUsageSnapshot {
+        try await base.decisionUsage()
+    }
+
+    func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity {
+        try await base.inspectClauseTagger()
+    }
+
+    func makeInference(settings: EngineSettings) throws -> EngineInference {
+        try base.makeInference(settings: settings)
+    }
+}
+
+@MainActor
+private final class GatedFailingStartCapture: EngineCaptureProviding {
+    private let gate: EngineApplicationTestGate
+
+    init(gate: EngineApplicationTestGate) {
+        self.gate = gate
+    }
+
+    func devices(source: EngineSource) throws -> EngineDevicesResult {
+        try EngineDevicesResult(
+            source: source,
+            devices: [try EngineDeviceInfo(id: "test-device", name: "Test device", isDefault: true)],
+            defaultDeviceID: "test-device"
+        )
+    }
+
+    func startCapture(
+        sessionID: UUID,
+        sessionURL: URL,
+        source: EngineSource,
+        device: EngineDevice,
+        callbacks: EngineCaptureCallbacks
+    ) async throws -> any EngineCaptureSession {
+        await gate.suspendIfArmed()
+        throw AudioCaptureEngineError.captureFailure("capture failed after start gate")
     }
 }

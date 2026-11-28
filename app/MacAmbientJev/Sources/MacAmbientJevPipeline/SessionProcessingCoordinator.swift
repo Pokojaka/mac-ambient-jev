@@ -7,9 +7,10 @@ public protocol SessionProcessingExecuting: Sendable {
         pacingMode: ASRPacingMode,
         shouldPause: @escaping NativeSessionProcessor.PauseCheck,
         onPhase: @escaping NativeSessionProcessor.PhaseHandler,
-        metadataPolicy: UnreadableMetadataPolicy,
+        metadataPolicy: SessionFinalizationPolicy,
         onStatus: @escaping NativeSessionProcessor.StatusHandler,
-        onUpdate: @escaping NativeSessionProcessor.UpdateHandler
+        onUpdate: @escaping NativeSessionProcessor.UpdateHandler,
+        onGenerationOpened: @escaping NativeSessionProcessor.GenerationOpenedHandler
     ) async -> SessionProcessingResult
 
     func retryContentPrioritySession(
@@ -30,11 +31,11 @@ extension NativeSessionProcessor: SessionProcessingExecuting {}
 
 public enum SessionProcessingEvent {
     case backlogged
-    case held(PendingProcessing)
-    case heldForModels(PendingProcessing)
-    case began(PendingProcessing)
+    case held(ProcessingQueueItemSummary)
+    case heldForModels(ProcessingQueueItemSummary)
+    case began(ProcessingQueueItemSummary)
     case liveFailed(String)
-    case finished(PendingProcessing, SessionProcessingResult?)
+    case finished(ProcessingQueueItemSummary, SessionProcessingResult?)
     case next
     case willFinishDrain
     case drained
@@ -42,7 +43,6 @@ public enum SessionProcessingEvent {
 
 @MainActor
 public protocol SessionProcessingEffects: AnyObject {
-    var processingQueue: SessionProcessingQueue { get set }
     var pausesProcessing: Bool { get }
 
     /// True once the models are fetched, verified and loaded.
@@ -52,18 +52,35 @@ public protocol SessionProcessingEffects: AnyObject {
     func awaitIdleRelease() async
     func processingStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler
     func processingUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler
+    func processingGenerationDidOpen(sessionID: UUID, generationID: UUID)
     func waitForLiveASRDrain(sessionID: UUID) async -> LiveASRDrainOutcome
     func liveASRFailure(sessionID: UUID) -> String?
     func cleanupLiveASRState(sessionID: UUID)
+    var recordingSessionID: UUID? { get }
+    func hasLiveProcessingWorker(sessionID: UUID) -> Bool
     func refreshSavedSessions()
     func autoExportIfEnabled(sessionID: UUID) async
+    func processingQueueDidChange(_ snapshot: ProcessingQueueSnapshot)
     func processingDidChange(_ event: SessionProcessingEvent)
+}
+
+public enum SessionProcessingAdmissionError: Error, LocalizedError, Equatable {
+    case busy(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .busy(let message): message
+        }
+    }
 }
 
 @MainActor
 public final class SessionProcessingCoordinator {
     private weak var effects: (any SessionProcessingEffects)?
     private let processor: any SessionProcessingExecuting
+    private var queue = SessionProcessingQueue() {
+        didSet { effects?.processingQueueDidChange(queue.snapshot) }
+    }
     private let thermalMonitor: any ThermalMonitoring
     private let resourceHolds: InferenceResourceHolds?
     private var resourceObservation: (any InferenceResourceObservation)?
@@ -93,13 +110,19 @@ public final class SessionProcessingCoordinator {
             }
             inferenceConditionsDidChange()
         }
+        effects.processingQueueDidChange(queue.snapshot)
     }
 
     public var isDraining: Bool { task != nil }
+    public var queueSnapshot: ProcessingQueueSnapshot { queue.snapshot }
 
     public func requestPause() {
         resourceRecoveryEnabled = false
         task?.cancel()
+    }
+
+    public func beginStorageMaintenance() {
+        queue.beginStorageMaintenance()
     }
 
     func waitUntilIdle() async {
@@ -108,27 +131,73 @@ public final class SessionProcessingCoordinator {
         }
     }
 
+    /// Claims the stopped session until finalization is synchronously enqueued.
+    func claimStopHandoff(sessionID: UUID) {
+        guard queue.claimReprocessing(sessionID) else {
+            preconditionFailure("stopping session already has a processing admission claim")
+        }
+    }
+
+    func releaseStopHandoff(sessionID: UUID) {
+        queue.releaseReprocessing(sessionID)
+    }
+
+    /// Admits and enqueues a replacement without an await between the busy check and queue insertion.
+    @discardableResult
+    public func enqueueReprocess(sessionID: UUID) throws -> UUID {
+        let effects = requiredEffects
+        if effects.recordingSessionID == sessionID {
+            throw SessionProcessingAdmissionError.busy("このセッションは録音中のため再処理できません")
+        }
+        if queue.isMaintainingStorage {
+            throw SessionProcessingAdmissionError.busy("起動時の保存データの整理中は再処理できません")
+        }
+        if queue.containsProcessing(sessionID) {
+            throw SessionProcessingAdmissionError.busy("このセッションは処理待ち・保留中または実行中のため再処理できません")
+        }
+        if effects.hasLiveProcessingWorker(sessionID: sessionID) {
+            throw SessionProcessingAdmissionError.busy("このセッションのライブ文字起こし処理中は再処理できません")
+        }
+        guard let requestID = queue.enqueueAdmittedReplacement(sessionID: sessionID) else {
+            throw SessionProcessingAdmissionError.busy("このセッションの再処理はすでに開始されています")
+        }
+        scheduleEnqueuedRequest(finalizesTranscript: true)
+        return requestID
+    }
+
     public func enqueue(_ request: SessionFinalizeRequest) {
         enqueue(request.pending)
     }
 
     public func enqueue(_ request: PendingProcessing) {
+        guard !request.isReplacement else {
+            preconditionFailure("replacement requests must enter through reprocess admission")
+        }
+        enqueueAdmittedRequest(request)
+    }
+
+    private func enqueueAdmittedRequest(_ request: PendingProcessing) {
+        guard !request.isReplacement else {
+            preconditionFailure("replacement requests must enter through reprocess admission")
+        }
+        queue.enqueueOrdinary(request)
+        scheduleEnqueuedRequest(finalizesTranscript: request.finalizesTranscript)
+    }
+
+    private func scheduleEnqueuedRequest(finalizesTranscript: Bool) {
         let effects = requiredEffects
         let holdReason = currentHoldReason
         if !effects.pausesProcessing,
-           request.finalizesTranscript,
+           finalizesTranscript,
            holdReason == nil || holdReason == .thermal {
             effects.prepareModels()
         }
 
-        effects.processingQueue.enqueue(request)
-        guard !effects.pausesProcessing, !effects.processingQueue.isMaintainingStorage else { return }
-
+        guard !effects.pausesProcessing, !queue.isMaintainingStorage else { return }
         if task != nil {
             effects.processingDidChange(.backlogged)
             return
         }
-
         startDrainIfIdle()
     }
 
@@ -136,7 +205,7 @@ public final class SessionProcessingCoordinator {
         let effects = requiredEffects
         guard task == nil,
               !effects.pausesProcessing,
-              !effects.processingQueue.isMaintainingStorage else {
+              !queue.isMaintainingStorage else {
             return
         }
         resourceRecoveryEnabled = true
@@ -149,8 +218,7 @@ public final class SessionProcessingCoordinator {
     /// that have ended move to the front of `pending` at once, even while a request runs, so older work is not
     /// left behind the backlog. A running drain picks them up next; paused work stays held.
     private func inferenceConditionsDidChange() {
-        let effects = requiredEffects
-        if effects.processingQueue.currentSessionID != nil {
+        if queue.currentSessionID != nil {
             _ = holdReasonForAttempt()
         }
         if resourceRecoveryEnabled {
@@ -177,17 +245,31 @@ public final class SessionProcessingCoordinator {
     /// The request must already have left `current`, so a queue count sees it once.
     private func hold(_ request: PendingProcessing, for inferenceReason: InferenceHoldReason?) {
         let effects = requiredEffects
+        let monitorFailed: Bool
+        if let resourceHolds, case .monitorFailed = resourceHolds.monitor.signal {
+            monitorFailed = true
+        } else {
+            monitorFailed = false
+        }
+        let publishedInferenceReason: InferenceHoldReason?
+        if monitorFailed && (inferenceReason == .resourcePressure || inferenceReason == .monitorFailed) {
+            publishedInferenceReason = .monitorFailed
+        } else {
+            publishedInferenceReason = inferenceReason
+        }
         let reason: ProcessingHoldReason = if Task.isCancelled || effects.pausesProcessing {
             .paused
         } else {
-            inferenceReason.map(ProcessingHoldReason.inference) ?? .paused
+            publishedInferenceReason.map(ProcessingHoldReason.inference) ?? .paused
         }
-        effects.processingQueue.hold(request, reason: reason)
-        effects.processingDidChange(.held(request))
+        queue.hold(request, reason: reason)
+        effects.processingDidChange(.held(queue.summary(
+            for: request, holdReason: queue.completionHold(for: request.requestID)
+        )))
         // A live failure reported while the request was decided would otherwise find it in no list.
         if liveFailureDuringAttempt == request.sessionID {
             liveFailureDuringAttempt = nil
-            effects.processingQueue.wakeHeldFinalization(sessionID: request.sessionID)
+            queue.wakeHeldFinalization(sessionID: request.sessionID)
         }
         // An inference hold can end while the request moves from current to held, before any observer
         // could see it held; then nothing would change again, so resume at once.
@@ -201,12 +283,12 @@ public final class SessionProcessingCoordinator {
     /// the report is latched and applied when it is held.
     public func liveWorkerDidFail(sessionID: UUID) {
         let effects = requiredEffects
-        if effects.processingQueue.currentSessionID == sessionID {
+        if queue.currentSessionID == sessionID {
             liveFailureDuringAttempt = sessionID
             return
         }
         guard !effects.pausesProcessing,
-              effects.processingQueue.wakeHeldFinalization(sessionID: sessionID) else { return }
+              queue.wakeHeldFinalization(sessionID: sessionID) else { return }
         startDrainIfIdle()
     }
 
@@ -222,7 +304,7 @@ public final class SessionProcessingCoordinator {
 
     private func resumeHeld(releasesPauses: Bool) {
         let effects = requiredEffects
-        guard effects.processingQueue.resumeHeld(
+        guard queue.resumeHeld(
             activeInferenceHold: currentHoldReason, releasesPauses: releasesPauses,
             pausesProcessing: effects.pausesProcessing
         ) else {
@@ -234,14 +316,16 @@ public final class SessionProcessingCoordinator {
 
     private func holdForModels(_ request: PendingProcessing) {
         let effects = requiredEffects
-        effects.processingQueue.holdForModels(request)
-        effects.processingDidChange(.heldForModels(request))
+        queue.holdForModels(request)
+        effects.processingDidChange(.heldForModels(queue.summary(
+            for: request, holdReason: .models
+        )))
     }
 
     /// Called when the models become ready. The held work runs in its original order.
     public func resumeModelHeldProcessing() {
         let effects = requiredEffects
-        guard effects.processingQueue.resumeModelHeld(
+        guard queue.resumeModelHeld(
             modelsReady: effects.modelsReady,
             pausesProcessing: effects.pausesProcessing
         ) else {
@@ -254,14 +338,12 @@ public final class SessionProcessingCoordinator {
         candidates: [RecoverableSession],
         recordingSessionID: UUID?,
         maintenanceFailures: [UUID: SessionMaintenanceIssue],
-        pending: [PendingProcessing]
+        occupiedSessionIDs: Set<UUID>
     ) -> [PendingProcessing] {
         candidates
             .filter { $0.manifest.sessionID != recordingSessionID }
             .filter { maintenanceFailures[$0.manifest.sessionID] == nil }
-            .filter { candidate in
-                !pending.contains { $0.sessionID == candidate.manifest.sessionID }
-            }
+            .filter { !occupiedSessionIDs.contains($0.manifest.sessionID) }
             .compactMap { candidate in
                 SessionRecoveryPlan(candidate.action)
                     .launchRecoveryRequest(sessionID: candidate.manifest.sessionID)
@@ -276,12 +358,17 @@ public final class SessionProcessingCoordinator {
             @Sendable (Int) async -> Void
         ) async -> [UUID: SessionMaintenanceIssue]
     ) async {
-        requiredEffects.processingQueue.beginStorageMaintenance()
+        queue.beginStorageMaintenance()
+        var recoveryClaims: Set<UUID> = []
         do {
             let recoveryScan = try scan()
             let maintenance = recoveryScan.maintenance.filter {
                 $0.sessionID != recoveryEffects.recordingSessionID
             }
+            recoveryClaims = Set(recoveryScan.candidates.map { $0.manifest.sessionID })
+                .union(maintenance.map(\.sessionID))
+            queue.claimRecovery(recoveryClaims)
+
             let previousStatus = recoveryEffects.recoveryStatusSnapshot
             let maintenanceCount = maintenance.count
             let effects = recoveryEffects
@@ -290,26 +377,30 @@ public final class SessionProcessingCoordinator {
                     effects.recoveryDidChange(.maintenanceStarted(maintenanceCount))
                 }
             }
-            requiredEffects.processingQueue.endStorageMaintenance()
-            if !maintenance.isEmpty {
-                recoveryEffects.recoveryDidChange(
-                    .maintenanceFinished(count: maintenance.count, previous: previousStatus)
-                )
-            }
-            // A recording whose storage converged only now has finished processing, so it exports like a run
-            // that converged in place.
-            for item in maintenance where item.maintenance == .compactRecording
-                && maintenanceFailures[item.sessionID] == nil {
-                // Export needs no models, so a paused or not-ready engine still exports; only shutdown stops it.
-                guard !Task.isCancelled else { break }
-                await requiredEffects.autoExportIfEnabled(sessionID: item.sessionID)
-            }
 
+            // Re-scan before admitting recovery: a generation changed since the initial scan invalidates its plan.
+            let reconciledScan = try scan()
+            let reconciledByID = Dictionary(
+                uniqueKeysWithValues: reconciledScan.candidates.map { ($0.manifest.sessionID, $0) }
+            )
+            let unchangedCandidates = recoveryScan.candidates.filter { scanned in
+                guard let current = reconciledByID[scanned.manifest.sessionID] else { return false }
+                return scanned.generationID == current.generationID && scanned.action == current.action
+            }
+            var occupiedSessionIDs = Set(unchangedCandidates.compactMap { candidate -> UUID? in
+                let sessionID = candidate.manifest.sessionID
+                return queue.containsQueuedWork(sessionID)
+                    || requiredEffects.hasLiveProcessingWorker(sessionID: sessionID)
+                    ? sessionID : nil
+            })
+            if let recordingSessionID = recoveryEffects.recordingSessionID {
+                occupiedSessionIDs.insert(recordingSessionID)
+            }
             let recoveries = Self.recoveryRequests(
-                candidates: recoveryScan.candidates,
+                candidates: unchangedCandidates,
                 recordingSessionID: recoveryEffects.recordingSessionID,
                 maintenanceFailures: maintenanceFailures,
-                pending: requiredEffects.processingQueue.pending
+                occupiedSessionIDs: occupiedSessionIDs
             )
             if !recoveries.isEmpty {
                 recoveryEffects.recoveryDidChange(.recovering(recoveries.count))
@@ -317,23 +408,46 @@ public final class SessionProcessingCoordinator {
             for recovery in recoveries {
                 enqueue(recovery)
             }
-            if !requiredEffects.processingQueue.pending.isEmpty {
+
+            if !maintenance.isEmpty {
+                recoveryEffects.recoveryDidChange(
+                    .maintenanceFinished(count: maintenance.count, previous: previousStatus)
+                )
+            }
+            // Recovery requests are already queued while the maintenance gate remains closed.
+            let compactedSessions = maintenance.filter {
+                $0.maintenance == .compactRecording && maintenanceFailures[$0.sessionID] == nil
+            }
+            if !compactedSessions.isEmpty {
+                // Auto-export re-reads the stale catalog before resolving each compacted source.
+                requiredEffects.refreshSavedSessions()
+            }
+            for item in compactedSessions {
+                guard !Task.isCancelled else { break }
+                await requiredEffects.autoExportIfEnabled(sessionID: item.sessionID)
+            }
+
+            queue.releaseRecovery(recoveryClaims)
+            recoveryClaims = []
+            queue.endStorageMaintenance()
+            if !queue.pending.isEmpty {
                 startDrainIfIdle()
             }
 
-            if !recoveryScan.failures.isEmpty || !maintenanceFailures.isEmpty {
+            if !reconciledScan.failures.isEmpty || !maintenanceFailures.isEmpty {
                 recoveryEffects.recoveryDidChange(
                     .reportedFailures(
-                        scanFailures: recoveryScan.failures,
+                        scanFailures: reconciledScan.failures,
                         maintenanceFailures: maintenanceFailures,
                         hasRecoveries: !recoveries.isEmpty
                     )
                 )
             }
         } catch {
-            requiredEffects.processingQueue.endStorageMaintenance()
+            queue.releaseRecovery(recoveryClaims)
+            queue.endStorageMaintenance()
             recoveryEffects.recoveryDidChange(.failed(error.localizedDescription))
-            if !requiredEffects.processingQueue.pending.isEmpty {
+            if !queue.pending.isEmpty {
                 startDrainIfIdle()
             }
         }
@@ -399,7 +513,7 @@ public final class SessionProcessingCoordinator {
         await effects.awaitIdleRelease()
         while !effects.pausesProcessing,
               !Task.isCancelled,
-              let request = effects.processingQueue.dequeue() {
+              let request = queue.dequeue() {
             activeResourceHoldReason = nil
             liveFailureDuringAttempt = nil
             let requestSessionID = request.sessionID
@@ -408,20 +522,21 @@ public final class SessionProcessingCoordinator {
             // A durable ASR failure is the exception: processing persists it as failed without inference. The request
             // is current while the probe awaits, so a queue count sees it once.
             if request.finalizesTranscript, currentHoldReason == .thermal {
-                effects.processingQueue.begin(request)
+                queue.begin(request)
                 begun = true
                 var knownFailure = false
-                if case .finalize(let sessionID, .reject) = request {
+                if case .finalize(_, let sessionID, let policy) = request,
+                   !policy.isReplacement || policy.replacementGeneration != .notOpened {
                     knownFailure = await hasUnresolvedASRFailure(sessionID: sessionID)
                 }
                 if !knownFailure, currentHoldReason == .thermal {
-                    effects.processingQueue.completeCurrent()
+                    queue.completeCurrent()
                     hold(request, for: .thermal)
                     continue
                 }
             }
-            if !begun { effects.processingQueue.begin(request) }
-            effects.processingDidChange(.began(request))
+            if !begun { queue.begin(request) }
+            effects.processingDidChange(.began(queue.summary(for: request, holdReason: nil)))
 
             let statusHandler = effects.processingStatusHandler(sessionID: requestSessionID)
             let updateHandler = effects.processingUpdateHandler(sessionID: requestSessionID)
@@ -432,7 +547,7 @@ public final class SessionProcessingCoordinator {
             var finalization: SessionProcessingResult?
             var isCurrent = true
             switch request {
-            case .finalize(let sessionID, let metadataPolicy):
+            case .finalize(_, let sessionID, let metadataPolicy):
                 // Stop is a drain: a recording's live worker is finished in place, any other input is reopened.
                 let drainOutcome = await effects.waitForLiveASRDrain(sessionID: sessionID)
                 if let failure = effects.liveASRFailure(sessionID: sessionID) {
@@ -441,7 +556,7 @@ public final class SessionProcessingCoordinator {
                 // Admission is decided once, here, after the drain. A durable ASR failure comes first:
                 // processing persists it and reports failed, so no hold hides it.
                 var knownFailure = false
-                if case .reject = metadataPolicy {
+                if !metadataPolicy.isReplacement || metadataPolicy.replacementGeneration != .notOpened {
                     knownFailure = await hasUnresolvedASRFailure(sessionID: sessionID)
                 }
                 // The hold inputs are read after the probe, so pressure that arrived during it counts.
@@ -454,21 +569,22 @@ public final class SessionProcessingCoordinator {
                 let keepsWorker = drainOutcome == .suspendedForCooling && resourceReason == nil && !stopped
                 if !knownFailure, resourceReason == nil, !stopped, !keepsWorker, !effects.modelsReady {
                     // Waiting for the models is not an outcome: the request finishes when it really runs.
-                    effects.processingQueue.completeCurrent()
+                    queue.completeCurrent()
                     holdForModels(request)
                     await discardLiveWorker(sessionID: sessionID)
                     effects.refreshSavedSessions()
                     continue
                 }
                 if !knownFailure, stopped || resourceReason != nil || keepsWorker {
-                    effects.processingQueue.completeCurrent()
+                    queue.completeCurrent()
                     isCurrent = false
                     // A pause wins: it waits for the explicit resume even while an inference hold applies too.
                     let reason = stopped ? nil : keepsWorker ? InferenceHoldReason.thermal : resourceReason
                     hold(request, for: reason)
                     finalization = SessionProcessingResult(
                         disposition: .paused, metrics: nil, message: reason?.finalizationExplanation,
-                        noSpeech: false, retainedTranscript: nil
+                        noSpeech: false, retainedTranscript: nil,
+                        replacementGeneration: metadataPolicy.replacementGeneration
                     )
                     if let reason { await statusHandler(.paused(reason)) }
                     if !keepsWorker { await discardLiveWorker(sessionID: sessionID) }
@@ -480,22 +596,27 @@ public final class SessionProcessingCoordinator {
                         onPhase: { _ in },
                         metadataPolicy: metadataPolicy,
                         onStatus: statusHandler,
-                        onUpdate: updateHandler
+                        onUpdate: updateHandler,
+                        onGenerationOpened: { generationID in
+                            effects.processingGenerationDidOpen(
+                                sessionID: sessionID, generationID: generationID
+                            )
+                        }
                     )
                     effects.cleanupLiveASRState(sessionID: sessionID)
                     if result.disposition == .paused {
-                        effects.processingQueue.completeCurrent()
+                        queue.completeCurrent()
                         isCurrent = false
                         hold(request, for: result.pauseReason)
                     } else {
-                        effects.processingQueue.releaseReprocessing(sessionID)
+                        queue.releaseReprocessing(sessionID)
                     }
                     finalization = result
                 }
                 effects.refreshSavedSessions()
-            case .retryContentPriority(let sessionID, let boundarySegments, let clauses):
+            case .retryContentPriority(_, let sessionID, let boundarySegments, let clauses):
                 if Task.isCancelled || effects.pausesProcessing {
-                    effects.processingQueue.completeCurrent()
+                    queue.completeCurrent()
                     isCurrent = false
                     hold(request, for: nil)
                     finalization = SessionProcessingResult(
@@ -503,7 +624,8 @@ public final class SessionProcessingCoordinator {
                         metrics: nil,
                         message: nil,
                         noSpeech: false,
-                        retainedTranscript: nil
+                        retainedTranscript: nil,
+                        replacementGeneration: .notOpened
                     )
                 } else {
                     let result = await processor.retryContentPrioritySession(
@@ -521,7 +643,7 @@ public final class SessionProcessingCoordinator {
                         // A successful retry has no finalization, so it cannot trigger auto-export.
                         finalization = nil
                     case .paused:
-                        effects.processingQueue.completeCurrent()
+                        queue.completeCurrent()
                         isCurrent = false
                         hold(request, for: result.pauseReason)
                         finalization = result
@@ -533,10 +655,13 @@ public final class SessionProcessingCoordinator {
             if request.finalizesTranscript, finalization?.disposition == .paused,
                let reason = holdReasonForAttempt(), reason != .thermal {
                 await releaseHeldResources()
+                queue.resourceCleanupDidFinish(requestID: request.requestID)
             }
 
-            effects.processingDidChange(.finished(request, finalization))
-            if !effects.processingQueue.pending.isEmpty {
+            effects.processingDidChange(.finished(queue.summary(
+                for: request, holdReason: queue.completionHold(for: request.requestID)
+            ), finalization))
+            if !queue.pending.isEmpty {
                 effects.processingDidChange(.next)
             }
             if finalization?.disposition == .completed,
@@ -544,7 +669,7 @@ public final class SessionProcessingCoordinator {
                !effects.pausesProcessing {
                 await effects.autoExportIfEnabled(sessionID: requestSessionID)
             }
-            if isCurrent { effects.processingQueue.completeCurrent() }
+            if isCurrent { queue.completeCurrent(terminal: true) }
         }
 
         effects.processingDidChange(.willFinishDrain)
@@ -553,7 +678,7 @@ public final class SessionProcessingCoordinator {
         if !Task.isCancelled,
            !effects.pausesProcessing,
            currentHoldReason == nil,
-           !effects.processingQueue.held.isEmpty {
+           !queue.held.isEmpty {
             resumeEndedInferenceHolds()
         }
     }

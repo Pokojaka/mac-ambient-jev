@@ -25,8 +25,8 @@ import MacAmbientJevTestSupport
         let expectedRow = try #require(read.rows.first)
         let core = h.app.core
         let uuid = try #require(UUID(uuidString: sessionID))
-        let savedSession = try core.readableSession(uuid)
-        guard case let .segments(savedSegments) = try SavedTranscriptLoader.load(sessionURL: savedSession.sessionURL) else { throw TestTimeout(description: "saved transcript was unavailable") }
+        let savedSession = try await core.readableSession(uuid)
+        guard case let .segments(_, savedSegments) = try SavedTranscriptLoader.load(sessionURL: savedSession.sessionURL) else { throw TestTimeout(description: "saved transcript was unavailable") }
         let cached = try #require(core.transcriptReadSnapshot)
         #expect(cached.materializedSegments == savedSegments)
         let segment = try #require(savedSegments.first { $0.segmentID == expectedRow.rowID })
@@ -238,8 +238,8 @@ import MacAmbientJevTestSupport
             EngineSessionPayload(sessionID: sessionID), context: requestContext(for: h)
         )
         let uuid = try #require(UUID(uuidString: sessionID))
-        let savedSession = try core.readableSession(uuid)
-        guard case let .segments(savedSegments) = try SavedTranscriptLoader.load(sessionURL: savedSession.sessionURL) else { throw TestTimeout(description: "saved transcript was unavailable") }
+        let savedSession = try await core.readableSession(uuid)
+        guard case let .segments(_, savedSegments) = try SavedTranscriptLoader.load(sessionURL: savedSession.sessionURL) else { throw TestTimeout(description: "saved transcript was unavailable") }
         let saved = try #require(savedSegments.first)
         let savedRow = try #require(watched.rows.first)
         let liveSegment = try explicitSegment(
@@ -256,7 +256,7 @@ import MacAmbientJevTestSupport
         )
         #expect(try EngineTranscriptProjection.rows(for: beforePublication.materializedSegments) == [savedRow])
 
-        core.transcriptDidPublish(sessionID: uuid)
+        await core.transcriptDidPublish(sessionID: uuid)
         let afterPublication = try #require(core.transcript)
         #expect(afterPublication.rows == beforePublication.rows)
         #expect(afterPublication.revision > beforePublication.revision)
@@ -349,7 +349,7 @@ import MacAmbientJevTestSupport
             #expect(catalog.contains { $0.sessionID == sessionID && $0.status == .finalized })
         }
         let corruptUUID = try #require(UUID(uuidString: corruptTargetID))
-        let corruptSession = try core.readableSession(corruptUUID)
+        let corruptSession = try await core.readableSession(corruptUUID)
         try Data("{broken\n".utf8).write(to: SessionLayout(sessionURL: corruptSession.sessionURL).eventsURL)
 
         guard case .transcriptWatch = try await h.call(
@@ -492,7 +492,7 @@ private func recordAndFinalize(in h: ApplicationHarness) async throws -> String 
 
 @MainActor
 private func requestContext(for h: ApplicationHarness) throws -> EngineRequestContext {
-    EngineRequestContext(requestID: try EngineID(10_000), events: EngineEventEmitter(transport: h.transport))
+    EngineRequestContext(requestID: try EngineID(10_000), events: EngineEventEmitter(transport: h.transport), terminalReplyClaim: {})
 }
 
 private func json<T: Encodable>(_ value: T) throws -> String {

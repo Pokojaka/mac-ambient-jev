@@ -141,7 +141,8 @@ func nativeSessionProcessorStreamsLiveSegmentsWithoutRealModel() async throws {
     )
     let segmentationRunID = try await processor.startLiveTranscription(
         sessionID: sessionID,
-        sampleRate: checkpoint.sampleRate
+        sampleRate: checkpoint.sampleRate,
+        onGenerationOpened: { _ in }
     )
 
     let segments = [
@@ -194,18 +195,36 @@ private actor ScriptedStopASR: ASREngine {
     nonisolated let provenance = RunProvenance(engine: "fake-asr", model: nil, version: "test", configuration: [:])
     private var failingCalls: Set<Int>
     private var calls = 0
+    private var onCall: (@Sendable (Int) -> Void)?
 
     init(failingCalls: Set<Int> = []) { self.failingCalls = failingCalls }
 
     func prepare() async throws {}
     func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
         calls += 1
+        onCall?(calls)
         if failingCalls.contains(calls) { throw UnexpectedLiveTestFinalization.called }
         return ASRResult(text: "認識\(calls)", detectedLanguage: "ja")
     }
     func unload() async {}
     func callCount() -> Int { calls }
     func stopFailing() { failingCalls = [] }
+    func setOnCall(_ callback: (@Sendable (Int) -> Void)?) { onCall = callback }
+}
+
+private actor CountingStopFinalVAD: FinalTranscriptVADSegmenter {
+    nonisolated let provenance = RunProvenance(engine: "counting-reprocess-vad", model: nil, version: "test", configuration: [:])
+    private var calls = 0
+
+    func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
+        calls += 1
+        return [
+            SegmentReference(segmentationRunID: runID, segmentID: "seg_000001", speechRanges: [0..<8_000]),
+            SegmentReference(segmentationRunID: runID, segmentID: "seg_000002", speechRanges: [8_000..<16_000])
+        ]
+    }
+
+    func callCount() -> Int { calls }
 }
 
 private struct StopFixture {
@@ -215,17 +234,18 @@ private struct StopFixture {
     let layout: SessionLayout
     let checkpoint: AudioCheckpoint
     let segments: [SegmentReference]
+    let finalVAD: CountingStopFinalVAD
 
     func stop(resume: Bool = false) async -> SessionProcessingResult {
         if resume {
             return await processor.resumeSession(
                 sessionID: sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
-                onStatus: { _ in }, onUpdate: { _, _ in }
+                onStatus: { _ in }, onUpdate: { _, _ in }, onGenerationOpened: { _ in }
             )
         }
         return await processor.processSession(
             sessionID: sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
-            metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+            metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }, onGenerationOpened: { _ in }
         )
     }
 }
@@ -248,9 +268,10 @@ private func makeStopFixture(asr: ScriptedStopASR) async throws -> StopFixture {
     )
     try await audioWriter.append(samples: Array(repeating: Float(0.1), count: 16_000))
     let checkpoint = await audioWriter.committedSnapshot()
+    let finalVAD = CountingStopFinalVAD()
     let processor = NativeSessionProcessor(
         paths: paths,
-        engines: SessionProcessingEngines(asr: asr, finalTranscriptVAD: UnusedLiveTestVAD()),
+        engines: SessionProcessingEngines(asr: asr, finalTranscriptVAD: finalVAD),
         audioHandling: RecordingTestAudioHandling(), contentPriority: .disabled, sleep: { _ in }
     )
     // The live side runs through the real coordinator: its stop seals and completes the segmentation.
@@ -279,7 +300,7 @@ private func makeStopFixture(asr: ScriptedStopASR) async throws -> StopFixture {
     await live.stopVADPolling()
     await live.finishVAD(sessionID: sessionID, checkpoint: checkpoint)
     return StopFixture(root: root, processor: processor, sessionID: sessionID, layout: layout,
-                       checkpoint: checkpoint, segments: [first, segmentFor(runID, 2)])
+                       checkpoint: checkpoint, segments: [first, segmentFor(runID, 2)], finalVAD: finalVAD)
 }
 
 private actor CountingStoredVAD: FinalTranscriptVADSegmenter {
@@ -364,7 +385,7 @@ func aVADThatFailedDoesNotCertifySegmentationAndStopReplaysTheStoredVAD() async 
 
     let result = await processor.processSession(
         sessionID: sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
-        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }, onGenerationOpened: { _ in }
     )
 
     #expect(result.disposition == .completed, "\(result.message ?? "no failure message")")
@@ -412,6 +433,7 @@ private final class StopTestEffects: LiveTranscriptionEffects {
     func awaitModelPreparation() async {}
     func liveStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler { { _ in } }
     func liveUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler { { _, _ in } }
+    func liveGenerationDidOpen(sessionID: UUID, generationID: UUID) { _ = (sessionID, generationID) }
     func liveDidChange(_ event: LiveTranscriptionEvent) {}
 }
 
@@ -519,20 +541,30 @@ private final class StopThermalMonitor: ThermalMonitoring, Sendable {
 /// The queue side of a stop: the live worker is already idle, so the drain wait has nothing to wait for.
 @MainActor
 private final class StopQueueEffects: SessionProcessingEffects {
-    var processingQueue = SessionProcessingQueue()
+    private(set) var processingQueue: ProcessingQueueSnapshot!
     var pausesProcessing = false
     var modelsReady = true
+    var recordingSessionID: UUID?
     private(set) var finished: [BatchDisposition?] = []
+    private(set) var openedGenerationIDs: [UUID] = []
 
     func prepareModels() {}
     func awaitIdleRelease() async {}
     func processingStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler { { _ in } }
     func processingUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler { { _, _ in } }
+    func processingGenerationDidOpen(sessionID: UUID, generationID: UUID) {
+        openedGenerationIDs.append(generationID)
+    }
+    func hasLiveProcessingWorker(sessionID: UUID) -> Bool { false }
     func waitForLiveASRDrain(sessionID: UUID) async -> LiveASRDrainOutcome { .drained }
     func liveASRFailure(sessionID: UUID) -> String? { nil }
     func cleanupLiveASRState(sessionID: UUID) {}
     func refreshSavedSessions() {}
     func autoExportIfEnabled(sessionID: UUID) async {}
+    func processingQueueDidChange(_ snapshot: ProcessingQueueSnapshot) {
+        processingQueue = snapshot
+    }
+
     func processingDidChange(_ event: SessionProcessingEvent) {
         if case .finished(_, let result) = event { finished.append(result?.disposition) }
     }
@@ -569,7 +601,7 @@ func coolingAfterStopContinuesTheSameGeneration() async throws {
 
     coordinator.enqueue(.finalize(sessionID: fixture.sessionID, metadataPolicy: .reject))
     await coordinator.waitUntilIdle()
-    #expect(effects.processingQueue.held.map(\.reason) == [.inference(.thermal)])
+    #expect(effects.processingQueue.held.map(\.holdReason) == [.inference(.thermal)])
     #expect(await asr.callCount() == 1)
 
     thermal.set(.nominal)
@@ -602,6 +634,100 @@ func aModelHoldAfterStopContinuesTheSameGeneration() async throws {
     await coordinator.waitUntilIdle()
     #expect(effects.finished == [.completed])
     try await expectStopContinuedTheSameGeneration(fixture, before: before, asr: asr)
+}
+
+@MainActor
+@Test(.timeLimit(.minutes(10)))
+func heldReprocessContinuesItsOwnGeneration() async throws {
+    let thermal = StopThermalMonitor(.nominal)
+    let asr = ScriptedStopASR()
+    let fixture = try await makeStopFixture(asr: asr)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    await fixture.processor.cancelLiveTranscription(sessionID: fixture.sessionID)
+    let previous = try #require(try ProcessingLogState(eventsURL: fixture.layout.eventsURL, sessionID: fixture.sessionID))
+    await asr.setOnCall { call in
+        if call == 2 { thermal.set(.critical) }
+    }
+    let effects = StopQueueEffects()
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects, processor: fixture.processor, thermalMonitor: thermal, resourceHolds: nil
+    )
+    let requestID = try coordinator.enqueueReprocess(sessionID: fixture.sessionID)
+    await coordinator.waitUntilIdle()
+    let held = try #require(effects.processingQueue.held.first)
+    #expect(held.requestID == requestID)
+    #expect(held.sessionID == fixture.sessionID)
+    #expect(held.kind == .replacement)
+    #expect(held.holdReason == .inference(.thermal))
+    let partial = try #require(try ProcessingLogState(eventsURL: fixture.layout.eventsURL, sessionID: fixture.sessionID))
+    let generationID = partial.generation.id
+    #expect(generationID != previous.generation.id)
+    #expect(partial.generation.id == generationID)
+    #expect(partial.runs.segmentation != previous.runs.segmentation)
+    #expect(partial.runs.asr != previous.runs.asr)
+    #expect(partial.segments.count == 2)
+    #expect(partial.events.filter { if case .asrCompleted = $0.kind { true } else { false } }.count == 1)
+    #expect(await asr.callCount() == 2)
+    #expect(await fixture.finalVAD.callCount() == 1)
+    #expect(effects.openedGenerationIDs == [generationID])
+
+    thermal.set(.nominal)
+    coordinator.resumeHeldProcessing()
+    await coordinator.waitUntilIdle()
+
+    let completed = try #require(try ProcessingLogState(eventsURL: fixture.layout.eventsURL, sessionID: fixture.sessionID))
+    #expect(effects.finished == [.paused, .completed])
+    #expect(effects.processingQueue.held.isEmpty)
+    #expect(completed.generation.id == generationID)
+    #expect(completed.runs == partial.runs)
+    #expect(completed.events.filter { if case .asrCompleted = $0.kind { true } else { false } }.count == 2)
+    #expect(await asr.callCount() == 3)
+    #expect(await fixture.finalVAD.callCount() == 1)
+    #expect(effects.openedGenerationIDs == [generationID])
+    #expect(completed.events.compactMap { event -> String? in
+        guard case .asrCompleted(let result) = event.kind else { return nil }
+        return result.text
+    } == ["認識2", "認識3"])
+}
+
+@MainActor
+@Test(.timeLimit(.minutes(10)))
+func reprocessHeldBeforeItsGenerationStillReplaces() async throws {
+    let asr = ScriptedStopASR()
+    let fixture = try await makeStopFixture(asr: asr)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+    await fixture.processor.cancelLiveTranscription(sessionID: fixture.sessionID)
+    let previous = try #require(try ProcessingLogState(eventsURL: fixture.layout.eventsURL, sessionID: fixture.sessionID))
+    let effects = StopQueueEffects()
+    effects.modelsReady = false
+    let coordinator = SessionProcessingCoordinator(
+        effects: effects, processor: fixture.processor, thermalMonitor: StopThermalMonitor(.nominal), resourceHolds: nil
+    )
+    let requestID = try coordinator.enqueueReprocess(sessionID: fixture.sessionID)
+    await coordinator.waitUntilIdle()
+    let held = try #require(effects.processingQueue.modelHeld.first)
+    #expect(held.requestID == requestID)
+    #expect(held.sessionID == fixture.sessionID)
+    #expect(held.kind == .replacement)
+    #expect(try ProcessingLogState(eventsURL: fixture.layout.eventsURL, sessionID: fixture.sessionID)?.generation.id
+        == previous.generation.id)
+    #expect(await fixture.finalVAD.callCount() == 0)
+    #expect(await asr.callCount() == 1)
+    #expect(effects.openedGenerationIDs.isEmpty)
+
+    effects.modelsReady = true
+    coordinator.resumeModelHeldProcessing()
+    await coordinator.waitUntilIdle()
+
+    let completed = try #require(try ProcessingLogState(eventsURL: fixture.layout.eventsURL, sessionID: fixture.sessionID))
+    #expect(effects.finished == [.completed])
+    #expect(completed.generation.id != previous.generation.id)
+    #expect(completed.runs.segmentation != previous.runs.segmentation)
+    #expect(completed.runs.asr != previous.runs.asr)
+    #expect(completed.events.filter { if case .asrCompleted = $0.kind { true } else { false } }.count == 2)
+    #expect(await fixture.finalVAD.callCount() == 1)
+    #expect(await asr.callCount() == 3)
+    #expect(effects.openedGenerationIDs == [completed.generation.id])
 }
 
 @MainActor
@@ -687,7 +813,9 @@ func aBatchStoppedByHeatResumesItsOwnSegmentsWhileALaterSegmentWaitsForItsBatch(
         engines: SessionProcessingEngines(asr: asr, finalTranscriptVAD: UnusedLiveTestVAD()),
         audioHandling: RecordingTestAudioHandling(), contentPriority: .disabled, sleep: { _ in }
     )
-    let runID = try await processor.startLiveTranscription(sessionID: sessionID, sampleRate: 16_000)
+    let runID = try await processor.startLiveTranscription(
+        sessionID: sessionID, sampleRate: 16_000, onGenerationOpened: { _ in }
+    )
     let segment: (Int) -> SegmentReference = { ordinal in
         SegmentReference(
             segmentationRunID: runID, segmentID: String(format: "seg_%06d", ordinal),
@@ -811,7 +939,8 @@ func cancelledLiveTranscriptionDoesNotPublishInFlightResult() async throws {
         sleep: { _ in }
     )
     let segmentationRunID = try await processor.startLiveTranscription(
-        sessionID: sessionID, sampleRate: checkpoint.sampleRate
+        sessionID: sessionID, sampleRate: checkpoint.sampleRate,
+        onGenerationOpened: { _ in }
     )
     let segment = SegmentReference(
         segmentationRunID: segmentationRunID, segmentID: "seg_000001",
@@ -1013,7 +1142,8 @@ func cancellingLiveDecisionsAfterAFailedTaggerLoadClearsItsPendingKeys() async t
     )
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let liveRunID = try await fixture.processor.startLiveTranscription(
-        sessionID: fixture.sessionID, sampleRate: 16_000
+        sessionID: fixture.sessionID, sampleRate: 16_000,
+        onGenerationOpened: { _ in }
     )
     let updates = LiveUpdateRecorder()
     _ = try await fixture.processor.processLiveSegments(
@@ -1041,7 +1171,7 @@ func aCancelledRetryWritesNoCompletionAndTheNextRetryRebuildsWithFreshRuns() asy
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     _ = await fixture.processor.processSession(
         sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
-        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }, onGenerationOpened: { _ in }
     )
     let before = try fixture.stored()
     let pending = before.pendingDecisions.clauses
@@ -1083,7 +1213,7 @@ func retryRejectsATargetThatIsNotPendingAndWritesNothing() async throws {
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     _ = await fixture.processor.processSession(
         sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
-        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }, onGenerationOpened: { _ in }
     )
     let eventsURL = SessionLayout(sessionURL: fixture.sessionURL).eventsURL
     let logBefore = try Data(contentsOf: eventsURL)
@@ -1113,7 +1243,7 @@ func aFirstDecisionPairMustCoverEveryRecognizedSource() async throws {
     )
     _ = await decisionsOff.processSession(
         sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
-        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }, onGenerationOpened: { _ in }
     )
     let before = try fixture.stored()
     #expect(before.state.runs.clauseBoundary == nil)
@@ -1168,7 +1298,7 @@ func aRetryCancelledBeforeItsDrainWritesNothing() async throws {
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     _ = await fixture.processor.processSession(
         sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
-        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }, onGenerationOpened: { _ in }
     )
     let pending = try fixture.stored().pendingDecisions.clauses
     let eventsURL = SessionLayout(sessionURL: fixture.sessionURL).eventsURL
@@ -1206,7 +1336,7 @@ func aSelectionWriteThatFailsAfterReachingTheLogIsReportedAsAnUnknownOutcomeNeve
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     _ = await fixture.processor.processSession(
         sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
-        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }, onGenerationOpened: { _ in }
     )
 
     let result = await fixture.processor.retryContentPrioritySession(
@@ -1259,7 +1389,7 @@ func aRetryCancelledAfterItsSelectionIsCompletedWithTheSelectedRows() async thro
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     _ = await fixture.processor.processSession(
         sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
-        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }, onGenerationOpened: { _ in }
     )
     let before = try fixture.stored()
     let updates = LiveUpdateRecorder()
@@ -1305,8 +1435,9 @@ private struct PublishedRetryFinishedEvent {
 
 @MainActor
 private final class PublishedRetryEffects: SessionProcessingEffects {
-    var processingQueue = SessionProcessingQueue()
+    private(set) var processingQueue: ProcessingQueueSnapshot!
     var pausesProcessing = false
+    var recordingSessionID: UUID?
     var onComplete: (@MainActor () -> Void)?
 
     private(set) var statusTexts: [String] = []
@@ -1329,6 +1460,9 @@ private final class PublishedRetryEffects: SessionProcessingEffects {
         { segments, state in await self.record(segments: segments, state: state) }
     }
 
+    func processingGenerationDidOpen(sessionID: UUID, generationID: UUID) {}
+    func hasLiveProcessingWorker(sessionID: UUID) -> Bool { false }
+
     func waitForLiveASRDrain(sessionID: UUID) async -> LiveASRDrainOutcome {
         preconditionFailure("published retry test does not finish live transcription")
     }
@@ -1345,6 +1479,10 @@ private final class PublishedRetryEffects: SessionProcessingEffects {
 
     func autoExportIfEnabled(sessionID: UUID) async {
         exportCount += 1
+    }
+
+    func processingQueueDidChange(_ snapshot: ProcessingQueueSnapshot) {
+        processingQueue = snapshot
     }
 
     func processingDidChange(_ event: SessionProcessingEvent) {
@@ -1388,7 +1526,7 @@ private func publishedRetryRemainsCompletedAfterLatePause(_ latePause: Published
 
     let initialResult = await fixture.processor.processSession(
         sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
-        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }, onGenerationOpened: { _ in }
     )
     #expect(initialResult.disposition == .completed)
 
@@ -1549,7 +1687,7 @@ func retryAfterAFailedSelectionAppendUsesANewPriorityRunAndKeepsThePublishedSnap
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     _ = await fixture.processor.processSession(
         sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
-        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }, onGenerationOpened: { _ in }
     )
     let before = try fixture.stored()
     let pending = before.pendingDecisions.clauses
@@ -1600,7 +1738,7 @@ func nativeRetryRejectsIncompleteLogBeforeSending() async throws {
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     _ = await fixture.processor.processSession(
         sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
-        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }, onGenerationOpened: { _ in }
     )
     let store = ProcessingMetadataStore(sessionURL: fixture.sessionURL)
     let metadata = try #require(try store.load())
@@ -1632,7 +1770,7 @@ func unpublishedRetryRebuildsACompleteSnapshotEvenWithoutPendingTargetsAndNeverU
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let result = await fixture.processor.processSession(
         sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
-        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }, onGenerationOpened: { _ in }
     )
     #expect(result.disposition == .completed)
     let store = ProcessingMetadataStore(sessionURL: fixture.sessionURL)
@@ -1694,7 +1832,7 @@ func nativeRetryWithoutTargetsOrUnpublishedRunFailsAndRetainsPublishedSnapshot()
 
     let finalized = await fixture.processor.processSession(
         sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
-        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }, onGenerationOpened: { _ in }
     )
     #expect(finalized.disposition == .completed)
     let store = ProcessingMetadataStore(sessionURL: fixture.sessionURL)
@@ -1739,7 +1877,7 @@ func nativeRetryWithoutContentPriorityFailsAndRetainsPublishedSnapshot() async t
 
     _ = await fixture.processor.processSession(
         sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
-        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }, onGenerationOpened: { _ in }
     )
     let store = ProcessingMetadataStore(sessionURL: fixture.sessionURL)
     let before = try #require(try store.load())
@@ -1788,7 +1926,7 @@ func nativeRetryCoordinatorInitializationFailurePreservesDeferredEngineStatusAnd
 
     _ = await fixture.processor.processSession(
         sessionID: fixture.sessionID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
-        metadataPolicy: .reject, onStatus: { await statuses.record($0) }, onUpdate: { _, _ in }
+        metadataPolicy: .reject, onStatus: { await statuses.record($0) }, onUpdate: { _, _ in }, onGenerationOpened: { _ in }
     )
     let store = ProcessingMetadataStore(sessionURL: fixture.sessionURL)
     let before = try #require(try store.load())

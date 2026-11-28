@@ -14,17 +14,21 @@ public sealed partial class ShellStore
     public Task SelectSessionAsync(string sessionID)
     {
         ArgumentException.ThrowIfNullOrEmpty(sessionID);
-        return Post(() => SelectSession(sessionID));
+        return Post(() => SelectSession(sessionID, clearCommandError: true));
     }
 
-    private void SelectSession(string? sessionID, string? displayName = null, string? unavailableReason = null,
+    private void SelectSession(string? sessionID, bool clearCommandError, string? displayName = null, string? unavailableReason = null,
         bool isImported = false, bool startWatch = true)
     {
         if (_importDisplayNameSessionID is { } importedSessionID && sessionID != importedSessionID)
             _importDisplayNameSessionID = null;
         var current = _working.Transcript;
         if (current.SessionID == sessionID && current.DisplayName == displayName && current.IsImported == isImported &&
-            current.UnavailableReason == unavailableReason && startWatch) return;
+            current.UnavailableReason == unavailableReason && startWatch)
+        {
+            if (clearCommandError) _working = _working with { CommandError = null };
+            return;
+        }
         if (_working.Phase != ShellPhase.Running) { _working = _working with { CommandError = "The engine is not running." }; return; }
         _selectionGeneration = checked(_selectionGeneration + 1);
         _historyEpoch = checked(_historyEpoch + 1);
@@ -32,7 +36,7 @@ public sealed partial class ShellStore
         {
             SessionID = sessionID, DisplayName = displayName, IsImported = isImported,
             UnavailableReason = unavailableReason, Follow = current.Follow
-        }, CommandError = null };
+        }, CommandError = clearCommandError ? null : _working.CommandError };
         _tailDirty = startWatch && sessionID is not null;
         if (_tailDirty) EnsureTailWorker();
     }
@@ -116,9 +120,12 @@ public sealed partial class ShellStore
         }, (command, result) =>
         {
             if (result is not EngineResult.SessionList list) throw new InvalidOperationException("session.list returned an unexpected result type.");
-            _working = _working with { Sessions = _working.Sessions.Apply(list.Result, move), CommandError = null };
+            _working = _working with { Sessions = _working.Sessions.Apply(list.Result, move) };
+            if (admit is null) _working = _working with { CommandError = null };
             ResolveImportedDisplayName(list.Result);
-        }, HandleRequestFailure);
+            if (move == ShellPageMove.Reload && admit is null && _working.SelectedFolderID is not null)
+                RefreshSelectedInspection();
+        }, HandleRequestFailure, clearCommandErrorOnAdmission: admit is null);
     }
 
     private static void ValidateMove(ShellPageMove move)
@@ -196,7 +203,7 @@ public sealed partial class ShellStore
                     if (exception is EngineRequestException && generation != _selectionGeneration)
                     { RemovePending(name); return; }
                     HandleRequestFailure(name, exception, admission);
-                }).ConfigureAwait(false);
+                }, clearCommandErrorOnAdmission: false).ConfigureAwait(false);
                 if (!admitted) continue;
             }
         }

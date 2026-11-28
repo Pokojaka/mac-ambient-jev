@@ -1,8 +1,50 @@
 import Foundation
 import Testing
-import MacAmbientJevEngineHost
+@testable import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
 import MacAmbientJevTestSupport
+
+private final class ControllerReliableWaits: @unchecked Sendable {
+    let changes = ChangeSignal()
+    private let lock = NSLock()
+    private var count = 0
+
+    func record() {
+        lock.lock()
+        count += 1
+        lock.unlock()
+        changes.signal()
+    }
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+}
+
+private final class ControllerShutdownWaitPasses: @unchecked Sendable {
+    let changes = ChangeSignal()
+    private let lock = NSLock()
+    private var passes: [[UInt64]] = []
+
+    func record(_ requestIDs: [EngineID]) {
+        lock.lock()
+        passes.append(requestIDs.map(\.value))
+        lock.unlock()
+        changes.signal()
+    }
+
+    func contains(_ expected: [UInt64]) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return passes.contains(expected)
+    }
+
+    func waitFor(_ requestIDs: [UInt64]) async throws {
+        try await changes.wait("shutdown wait pass \(requestIDs)") { contains(requestIDs) }
+    }
+}
 
 @MainActor
 @Suite(.timeLimit(.minutes(10))) struct EngineControllerTests {
@@ -125,6 +167,180 @@ import MacAmbientJevTestSupport
         #expect(try h.outputs.filter { output in
             if case .state = output.event { true } else { false }
         }.isEmpty)
+    }
+
+    @Test func shutdownPreservesAClaimedTerminalReplyOverGenericCancellation() async throws {
+        let h = EngineHarness()
+        h.fake.heldAfterTerminalClaimCommands = ["session.reprocess"]
+        h.start()
+        try await hello(h)
+        h.send(2, "session.reprocess", payload: "{\"session_id\":\"session-1\"}")
+        try await h.fake.changes.wait("recorded reprocess result before handler returns") {
+            h.fake.terminalReplyClaimCount == 1 && h.fake.heldCount == 1
+        }
+
+        h.send(3, "shutdown")
+        try await h.fake.changes.wait("shutdown handler to run") {
+            h.fake.shutdownReasons == [.requested]
+        }
+        #expect(try h.events(for: 2) == ["accepted"])
+
+        h.fake.heldCommands = []
+        h.fake.releaseAll()
+        try await h.waitForOutputs("claimed reprocess and shutdown terminals") { outputs in
+            let completed: (UInt64) -> Bool = { id in
+                outputs.contains { output in
+                    output.requestID?.value == id && { if case .completed = output.event { true } else { false } }()
+                }
+            }
+            return completed(2) && completed(3)
+        }
+        #expect(try h.events(for: 2) == ["accepted", "completed"])
+        #expect(try h.events(for: 3) == ["accepted", "completed"])
+        #expect(await h.exit() == .shutdownRequested)
+    }
+
+    @Test func shutdownWaitsForClaimedReplyWhileItsReliableSendIsSuspended() async throws {
+        let reliableWaits = ControllerReliableWaits()
+        let sink = ScriptedSink()
+        let h = EngineHarness(
+            limits: testLimits(maxRecords: 3, reservedRecords: 1), sink: sink,
+            onReliableWait: { reliableWaits.record() }
+        )
+        h.start()
+        try await hello(h)
+        sink.block()
+        h.fake.heldAfterTerminalClaimCommands = ["session.reprocess"]
+        h.fake.holdShutdownHandler = true
+        h.send(2, "session.reprocess", payload: "{\"session_id\":\"session-1\"}")
+        try await h.fake.changes.wait("reprocess result claimed") {
+            h.fake.terminalReplyClaimCount == 1 && h.fake.heldCount == 1
+        }
+
+        h.send(3, "shutdown")
+        try await h.fake.changes.wait("shutdown handler held") { h.fake.shutdownHandlerIsHeld }
+        try h.transport.sendReplaceable(.state(try sampleState(revision: 2)), requestID: nil)
+        try await h.transport.send(.ready(try sampleReady()), requestID: nil)
+        h.fake.releaseAll()
+        try await reliableWaits.changes.wait("claimed terminal reply waiting for output space") {
+            reliableWaits.value > 0
+        }
+
+        h.fake.releaseShutdownHandler()
+        sink.release()
+        #expect(await h.exit() == .shutdownRequested)
+        #expect(try h.events(for: 2) == ["accepted", "completed"])
+        #expect(try h.events(for: 3) == ["accepted", "completed"])
+        let outputs = try h.outputs
+        let reprocessReply = try #require(outputs.firstIndex { output in
+            output.requestID?.value == 2 && { if case .completed = output.event { true } else { false } }()
+        })
+        let shutdownReply = try #require(outputs.firstIndex { output in
+            output.requestID?.value == 3 && { if case .completed = output.event { true } else { false } }()
+        })
+        #expect(reprocessReply < shutdownReply)
+        #expect(outputs.filter { output in
+            output.requestID?.value == 2 && { if case .completed = output.event { true } else { false } }()
+        }.count == 1)
+    }
+
+    @Test func cancellationSweepDoesNotReplaceAClaimMadeDuringAnEarlierCancellationSend() async throws {
+        let reliableAppendGate = EngineApplicationTestGate()
+        let waitPasses = ControllerShutdownWaitPasses()
+        let h = EngineHarness(
+            limits: testLimits(), admission: .production, sink: ScriptedSink(),
+            deadlineClock: ManualWriteDeadlineClock(), onReliableWait: {},
+            beforeReliableAppend: { requestID in
+                guard requestID?.value == 2 else { return }
+                await reliableAppendGate.suspendIfArmed()
+            },
+            onShutdownWaitPass: { requestIDs in waitPasses.record(requestIDs) }
+        )
+        h.start()
+        try await hello(h)
+        h.fake.heldBeforeTerminalClaimRequestIDs = [2, 3]
+        h.fake.heldAfterTerminalClaimRequestIDs = [3]
+        h.send(2, "session.reprocess", payload: "{\"session_id\":\"session-1\"}")
+        h.send(3, "session.reprocess", payload: "{\"session_id\":\"session-1\"}")
+        try await h.fake.changes.wait("both handlers to wait before claiming") {
+            h.fake.heldBeforeTerminalClaimIDs == [2, 3]
+        }
+        await reliableAppendGate.arm()
+        h.send(4, "shutdown")
+        await reliableAppendGate.waitUntilSuspended()
+
+        h.fake.releaseBeforeTerminalClaim(requestID: 3)
+        try await h.fake.changes.wait("request 3 to claim during request 2 cancellation send") {
+            h.fake.terminalReplyClaimCount == 1 && h.fake.heldCount == 1
+        }
+        await reliableAppendGate.release()
+        h.fake.releaseBeforeTerminalClaim(requestID: 2)
+        try await waitPasses.waitFor([3])
+        h.fake.releaseAll()
+
+        #expect(await h.exit() == .shutdownRequested)
+        #expect(try h.events(for: 2) == ["accepted", "error:cancelled"])
+        #expect(try h.events(for: 3) == ["accepted", "completed"])
+        #expect(try h.events(for: 4) == ["accepted", "completed"])
+    }
+
+    @Test func shutdownWaitsForRepliesClaimedWhileAnEarlierReplyIsSending() async throws {
+        let reliableAppendGate = EngineApplicationTestGate()
+        let waitPasses = ControllerShutdownWaitPasses()
+        let h = EngineHarness(
+            limits: testLimits(), admission: .production, sink: ScriptedSink(),
+            deadlineClock: ManualWriteDeadlineClock(), onReliableWait: {},
+            beforeReliableAppend: { requestID in
+                guard requestID?.value == 3 else { return }
+                await reliableAppendGate.suspendIfArmed()
+            },
+            onShutdownWaitPass: { requestIDs in waitPasses.record(requestIDs) }
+        )
+        h.start()
+        try await hello(h)
+        h.fake.heldAfterTerminalClaimRequestIDs = [2]
+        h.fake.heldBeforeTerminalClaimRequestIDs = [3]
+        h.send(2, "session.reprocess", payload: "{\"session_id\":\"session-1\"}")
+        try await h.fake.changes.wait("request 2 to claim and hold") {
+            h.fake.terminalReplyClaimCount == 1 && h.fake.heldCount == 1
+        }
+        h.send(3, "session.reprocess", payload: "{\"session_id\":\"session-1\"}")
+        try await h.fake.changes.wait("request 3 to wait before claiming") {
+            h.fake.heldBeforeTerminalClaimIDs.contains(3)
+        }
+        h.send(4, "shutdown")
+        try await waitPasses.waitFor([2])
+
+        await reliableAppendGate.arm()
+        h.fake.releaseBeforeTerminalClaim(requestID: 3)
+        await reliableAppendGate.waitUntilSuspended()
+        h.fake.releaseAll()
+        try await waitPasses.waitFor([3])
+
+        let outputsWhileThirdReplyIsGated = try h.outputs
+        #expect(!outputsWhileThirdReplyIsGated.contains { output in
+            output.requestID?.value == 4 && { if case .completed(.shutdown) = output.event { true } else { false } }()
+        })
+        await reliableAppendGate.release()
+
+        #expect(await h.exit() == .shutdownRequested)
+        let outputs = try h.outputs
+        #expect(try h.events(for: 2) == ["accepted", "completed"])
+        #expect(try h.events(for: 3) == ["accepted", "completed"])
+        #expect(try h.events(for: 4) == ["accepted", "completed"])
+        let shutdownReply = try #require(outputs.firstIndex { output in
+            output.requestID?.value == 4 && { if case .completed(.shutdown) = output.event { true } else { false } }()
+        })
+        let request2Replies = outputs.enumerated().filter { _, output in
+            output.requestID?.value == 2 && { if case .completed = output.event { true } else { false } }()
+        }
+        let request3Replies = outputs.enumerated().filter { _, output in
+            output.requestID?.value == 3 && { if case .completed = output.event { true } else { false } }()
+        }
+        #expect(request2Replies.count == 1)
+        #expect(request3Replies.count == 1)
+        #expect(request2Replies[0].offset < shutdownReply)
+        #expect(request3Replies[0].offset < shutdownReply)
     }
 
     @Test func firstRequestIDMustBeOne() async throws {
@@ -410,7 +626,10 @@ import MacAmbientJevTestSupport
     }
 
     @Test func aWriteFailureShutsDownWithoutWriting() async throws {
-        let h = EngineHarness(limits: testLimits(deadline: 0.2), sink: ScriptedSink(blocked: true))
+        let h = EngineHarness(
+            limits: testLimits(deadline: 0.2), sink: ScriptedSink(blocked: true),
+            deadlineClock: LiveEngineWriteDeadlineClock()
+        )
         h.start()
         h.send(1, "hello")
         let exit = await h.exit()

@@ -73,23 +73,38 @@ public sealed partial class ShellStore : IAsyncDisposable
             if (recordingGeneration == _recordingGeneration)
             {
                 _working = _working with { SelectedFolderID = null, SessionInspection = null };
+                CancelSelectedInspectionRefresh();
                 _importDisplayNameSessionID = imported.Result.SessionID;
-                SelectSession(imported.Result.SessionID, isImported: true, startWatch: false);
+                SelectSession(imported.Result.SessionID, clearCommandError: true, isImported: true, startWatch: false);
             }
             _working = _working with { CommandError = null };
             InvalidateSessions();
         }, HandleRequestFailure);
     }
 
-    public Task<bool> SetExportDestinationAsync(string path)
+    public async Task<bool> SaveExportDestinationAndExportAsync(string folderID, string path)
     {
+        ArgumentException.ThrowIfNullOrEmpty(folderID);
         ArgumentException.ThrowIfNullOrEmpty(path);
-        return RunRequestAsync(() =>
+        string? sessionID = null;
+        var replaced = await RunRequestAsync(() =>
         {
             var confirmed = _working.ConfirmedSettings;
-            if (confirmed is null) { _working = _working with { CommandError = "設定を保存してから書き出してください。" }; return null; }
-            return new EngineCommand.SettingsReplace(new EngineSettingsReplacePayload(confirmed.Revision, confirmed.Settings with { ExportDestinationPath = path }));
-        });
+            var inspection = _working.SessionInspection;
+            var inspectedSessionID = inspection?.SessionID;
+            if (!CanUseSavedSelection(_working) || confirmed is null || _working.SelectedFolderID != folderID ||
+                inspection is null || inspection.FolderID != folderID || inspectedSessionID is null || !inspection.CanExport)
+            {
+                _working = _working with { CommandError = "この録音を書き出せません。" };
+                return null;
+            }
+            sessionID = inspectedSessionID;
+            return new EngineCommand.SettingsReplace(new EngineSettingsReplacePayload(
+                confirmed.Revision, confirmed.Settings with { ExportDestinationPath = path }));
+        }, ApplyResult, HandleRequestFailure).ConfigureAwait(false);
+        if (!replaced) return false;
+        var selectedSessionID = sessionID ?? throw new InvalidOperationException("settings.replace completed without an admitted export session.");
+        return await ExportSessionCoreAsync(folderID, selectedSessionID, path).ConfigureAwait(false);
     }
 
     public Task<bool> CommitSettingsAsync() => RunRequestAsync(() =>
@@ -132,7 +147,11 @@ public sealed partial class ShellStore : IAsyncDisposable
         {
             if (_disposeTask is not null) return new ValueTask(_disposeTask);
             _disposeRequested = true; _stop.Cancel();
-            var final = new Work(() => _working = _working with { Phase = ShellPhase.Disposed, Pending = ImmutableHashSet<EngineCommandName>.Empty });
+            var final = new Work(() =>
+            {
+                CancelSelectedInspectionRefresh();
+                _working = _working with { Phase = ShellPhase.Disposed, Pending = ImmutableHashSet<EngineCommandName>.Empty };
+            });
             if (!_work.Writer.TryWrite(final)) throw new InvalidOperationException("ShellStore reducer stopped before disposal was queued.");
             _work.Writer.TryComplete(); return new ValueTask(_disposeTask = FinishDisposeAsync(final.Acknowledgement.Task));
         }
@@ -145,7 +164,9 @@ public sealed partial class ShellStore : IAsyncDisposable
             await finalAcknowledgement.ConfigureAwait(false);
             var tailTask = _tailTask ?? Task.CompletedTask;
             var sessionsRefreshTask = _sessionsRefreshTask ?? Task.CompletedTask;
-            await Task.WhenAll(_initialization, _watcherTask, _reducerTask, tailTask, sessionsRefreshTask).ConfigureAwait(false);
+            var selectedInspectionRefreshTask = _selectedInspectionRefreshTask ?? Task.CompletedTask;
+            await Task.WhenAll(_initialization, _watcherTask, _reducerTask, tailTask, sessionsRefreshTask,
+                selectedInspectionRefreshTask).ConfigureAwait(false);
         }
         finally { _stop.Dispose(); }
     }
@@ -265,7 +286,10 @@ public sealed partial class ShellStore : IAsyncDisposable
         if (state == EngineClientState.Failed)
             ApplyClientFailure(ResolveClientFailure(RequireClientFailure()));
         else if (state == EngineClientState.Closed && !IsTerminal(_working.Phase))
+        {
+            CancelSelectedInspectionRefresh();
             _working = _working with { Phase = ShellPhase.Closed, Pending = ImmutableHashSet<EngineCommandName>.Empty };
+        }
     }
 
     // Correlated Accepted/Completed/Error are transport-owned; request tasks apply terminal results once; Rows belong to the transcript reducer.
@@ -302,7 +326,7 @@ public sealed partial class ShellStore : IAsyncDisposable
 
     private Task<bool> RunRequestAsync(Func<EngineCommand?> commandFactory) => RunRequestAsync(commandFactory, ApplyResult, HandleRequestFailure);
 
-    private async Task<bool> RunRequestAsync(Func<EngineCommand?> commandFactory, Action<EngineCommand, EngineResult> apply, Action<EngineCommandName, Exception, bool> failure)
+    private async Task<bool> RunRequestAsync(Func<EngineCommand?> commandFactory, Action<EngineCommand, EngineResult> apply, Action<EngineCommandName, Exception, bool> failure, bool clearCommandErrorOnAdmission = true)
     {
         ArgumentNullException.ThrowIfNull(commandFactory); ArgumentNullException.ThrowIfNull(apply); ArgumentNullException.ThrowIfNull(failure);
         EngineCommand? command = null; Task<EngineResult>? request = null;
@@ -314,7 +338,7 @@ public sealed partial class ShellStore : IAsyncDisposable
             var settings = command.Name is EngineCommandName.SettingsGet or EngineCommandName.SettingsReplace;
             if (_working.Pending.Contains(command.Name) || settings && (_working.Pending.Contains(EngineCommandName.SettingsGet) || _working.Pending.Contains(EngineCommandName.SettingsReplace)))
             { _working = _working with { CommandError = "A request of this kind is already pending." }; return; }
-            _working = _working with { Pending = _working.Pending.Add(command.Name), CommandError = null };
+            _working = _working with { Pending = _working.Pending.Add(command.Name), CommandError = clearCommandErrorOnAdmission ? null : _working.CommandError };
             try { request = _client.SendAsync(command); }
             catch (Exception exception) { failure(command.Name, exception, true); }
         }).ConfigureAwait(false);
@@ -351,14 +375,18 @@ public sealed partial class ShellStore : IAsyncDisposable
             case (EngineCommand.DiagnosticsGet, EngineResult.DiagnosticsGet diagnostics): _working = _working with { Diagnostics = diagnostics.Result }; break;
             case (EngineCommand.ModelsInspect, EngineResult.ModelsInspect models): _working = _working with { ModelsInspection = models.Result }; break;
             case (EngineCommand.SettingsGet, EngineResult.SettingsGet settings): ApplySettings(settings.Result, false); break;
-            case (EngineCommand.SettingsReplace, EngineResult.SettingsReplace settings): ApplySettings(settings.Result, true); break;
+            case (EngineCommand.SettingsReplace, EngineResult.SettingsReplace settings):
+                ApplySettings(settings.Result, true);
+                RefreshSelectedInspection();
+                break;
             case (EngineCommand.RecordingStart, EngineResult.RecordingStart started):
                 _recordingGeneration = checked(_recordingGeneration + 1);
                 _working = _working with { SelectedFolderID = null, SessionInspection = null };
-                SelectSession(started.Result.SessionID);
+                CancelSelectedInspectionRefresh();
+                SelectSession(started.Result.SessionID, clearCommandError: true);
                 break;
             case (EngineCommand.RecordingStop, EngineResult.RecordingStop): InvalidateSessions(); break;
-            case (EngineCommand.ModelsPrepare, EngineResult.ModelsPrepare): break;
+            case (EngineCommand.ModelsPrepare, EngineResult.ModelsPrepare): RefreshSelectedInspection(); break;
             default: throw new InvalidOperationException($"{command.Name} returned unexpected result {result.GetType().Name}.");
         }
         if (command.Name is EngineCommandName.SettingsGet or EngineCommandName.SettingsReplace)
@@ -391,20 +419,29 @@ public sealed partial class ShellStore : IAsyncDisposable
     private EngineClientFailure ResolveClientFailure(EngineClientFailure failure) => _client.Completion.IsCompleted ? RequireClientFailure() : failure;
 
     private EngineClientFailure RequireClientFailure() => _client.Failure ?? throw new InvalidOperationException("Client state is Failed but its failure snapshot is null.");
-    private void ApplyClientFailure(EngineClientFailure failure) => _working = _working with
+    private void ApplyClientFailure(EngineClientFailure failure)
     {
-        Phase = _working.Phase == ShellPhase.Disposed ? ShellPhase.Disposed : ShellPhase.EngineFailed,
-        EngineFailure = failure, LastError = failure.LastEngineError is null ? _working.LastError : failure.LastEngineError, Pending = ImmutableHashSet<EngineCommandName>.Empty
-    };
-    private void FailStore(Exception exception) => _working = _working with
+        CancelSelectedInspectionRefresh();
+        _working = _working with
+        {
+            Phase = _working.Phase == ShellPhase.Disposed ? ShellPhase.Disposed : ShellPhase.EngineFailed,
+            EngineFailure = failure, LastError = failure.LastEngineError is null ? _working.LastError : failure.LastEngineError, Pending = ImmutableHashSet<EngineCommandName>.Empty
+        };
+    }
+    private void FailStore(Exception exception)
     {
-        Phase = _working.Phase == ShellPhase.Disposed ? ShellPhase.Disposed : ShellPhase.EngineFailed,
-        StoreFailure = _working.StoreFailure ?? $"{exception.GetType().Name}: {exception.Message}", Pending = ImmutableHashSet<EngineCommandName>.Empty
-    };
+        CancelSelectedInspectionRefresh();
+        _working = _working with
+        {
+            Phase = _working.Phase == ShellPhase.Disposed ? ShellPhase.Disposed : ShellPhase.EngineFailed,
+            StoreFailure = _working.StoreFailure ?? $"{exception.GetType().Name}: {exception.Message}", Pending = ImmutableHashSet<EngineCommandName>.Empty
+        };
+    }
     private void RemovePending(EngineCommandName name)
     {
         _working = _working with { Pending = _working.Pending.Remove(name) };
         EnsureSessionsRefreshWorker();
+        EnsureSelectedInspectionRefreshWorker();
     }
 
     private static bool IsTerminal(ShellPhase phase) => phase is ShellPhase.EngineFailed or ShellPhase.Closed or ShellPhase.Disposed;

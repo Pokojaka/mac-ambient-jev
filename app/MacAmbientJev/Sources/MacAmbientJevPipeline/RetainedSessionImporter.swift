@@ -32,9 +32,9 @@ public struct ValidatedSessionPaths: Sendable {
 /// `SessionProcessingCoordinator`, or the CLI awaits it directly. Nothing else finalizes the session.
 public struct SessionFinalizeRequest: Sendable, Equatable {
     public let sessionID: UUID
-    public let metadataPolicy: UnreadableMetadataPolicy
+    public let metadataPolicy: SessionFinalizationPolicy
 
-    public init(sessionID: UUID, metadataPolicy: UnreadableMetadataPolicy) {
+    public init(sessionID: UUID, metadataPolicy: SessionFinalizationPolicy) {
         self.sessionID = sessionID
         self.metadataPolicy = metadataPolicy
     }

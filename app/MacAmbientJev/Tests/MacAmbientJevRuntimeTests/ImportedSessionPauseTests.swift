@@ -95,7 +95,8 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
         onPhase: { _ in },
         metadataPolicy: .reject,
         onStatus: { _ in },
-        onUpdate: { _, _ in }
+        onUpdate: { _, _ in },
+        onGenerationOpened: { _ in }
     )
 
     #expect(paused.disposition == .paused)
@@ -134,7 +135,8 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
         onPhase: { _ in },
         metadataPolicy: .reject,
         onStatus: { _ in },
-        onUpdate: { _, _ in }
+        onUpdate: { _, _ in },
+        onGenerationOpened: { _ in }
     )
 
     #expect(resumed.disposition == .completed)

@@ -50,10 +50,21 @@ public struct EngineEventEmitter: Sendable {
 public struct EngineRequestContext: Sendable {
     public let requestID: EngineID
     public let events: EngineEventEmitter
+    private let terminalReplyClaim: @MainActor @Sendable () -> Void
 
-    public init(requestID: EngineID, events: EngineEventEmitter) {
+    public init(
+        requestID: EngineID,
+        events: EngineEventEmitter,
+        terminalReplyClaim: @escaping @MainActor @Sendable () -> Void
+    ) {
         self.requestID = requestID
         self.events = events
+        self.terminalReplyClaim = terminalReplyClaim
+    }
+
+    @MainActor
+    public func claimTerminalReply() {
+        terminalReplyClaim()
     }
 }
 

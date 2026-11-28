@@ -93,11 +93,7 @@ struct SavedSessionsView: View {
             Button {
                 if case .readable(let session) = summary { onReprocess(session.sessionID) }
             } label: {
-                if isQueued(summary) {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Text("再処理")
-                }
+                Text("再処理")
             }
             .controlSize(.small)
             .disabled(isUnavailableForReprocess || !summary.canReprocess || isQueued(summary))
@@ -300,7 +296,7 @@ struct SavedSessionsView: View {
 
     private func reprocessHelp(_ summary: SavedSessionSummary) -> String {
         if isUnavailableForReprocess { return "録音または読み込みが終わってから再処理できます" }
-        if isQueued(summary) { return "この録音は処理待ち、または処理中です" }
+        if isQueued(summary) { return "このセッションの処理が終わってから再処理できます" }
         switch summary {
         case .unreadable(_, _, let reason):
             return reason

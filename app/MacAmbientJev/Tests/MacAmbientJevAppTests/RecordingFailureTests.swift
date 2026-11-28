@@ -224,12 +224,10 @@ func durableWriteFailureFinalizesHealthyPrefix() async throws {
     #expect(state.statusTone == .error)
     #expect(state.statusText == "録音の保存に失敗しました: 空き容量が不足したため chunk-000001.f32le を書き込めませんでした")
     #expect(engine.stopped == 1)
-    #expect(state.processingQueue.pending.count == 1)
-    guard case .finalize(let queuedSession, .reject)? = state.processingQueue.pending.first else {
-        Issue.record("Expected the healthy prefix to be queued for finalization")
-        return
-    }
-    #expect(queuedSession == sessionID)
+    let queued = try #require(state.processingQueue.summaries.first(where: {
+        $0.sessionID == sessionID && $0.holdReason == .pending
+    }))
+    #expect(queued.kind == .finalization)
 
     #expect(state.recordingPhase == .idle)
     #expect(!state.isRecording)
@@ -284,13 +282,10 @@ func automaticFailureFinalizesLikeNormalStop() async throws {
         #expect(state.recordingPhase == .idle)
         // A failure reported while starting ends the recording before live VAD exists.
         #expect(await vad.finishedCheckpoints == (trigger == .startingFailure ? [] : [checkpoint]))
-        #expect(state.processingQueue.pending.count == 1)
-        guard state.processingQueue.pending.count == 1,
-              case .finalize(let queuedID, .reject) = state.processingQueue.pending[0] else {
-            Issue.record("stop did not enqueue finalization")
-            continue
-        }
-        #expect(queuedID == sessionID)
+        let queued = try #require(state.processingQueue.summaries.first(where: {
+            $0.sessionID == sessionID && $0.holdReason == .pending
+        }))
+        #expect(queued.kind == .finalization)
         #expect(state.processingState == .idle)
     }
 }
@@ -325,12 +320,16 @@ func duplicateCaptureFailuresDoNotStopOrFinalizeTwice() async throws {
     await stopping.value
     #expect(state.recordingPhase == .idle)
     #expect(engine.stopped == 1)
-    #expect(state.processingQueue.pending.count == 1)
+    #expect(state.processingQueue.summaries.contains {
+        $0.sessionID == sessionID && $0.holdReason == .pending
+    })
 
     #expect(state.captureDidFail(sessionID: sessionID, message: "late duplicate failure") == nil)
     #expect(state.recordingPhase == .idle)
     #expect(engine.stopped == 1)
-    #expect(state.processingQueue.pending.count == 1)
+    #expect(state.processingQueue.summaries.contains {
+        $0.sessionID == sessionID && $0.holdReason == .pending
+    })
     #expect(state.statusText == "capture interrupted")
     #expect(state.statusTone == .error)
 }
@@ -378,7 +377,7 @@ func failedStartupRetainsOnlyCapturedAudio() async throws {
         #expect(state.statusTone == .error)
         #expect(state.statusText == "startup failed")
         #expect(state.savedSessions.contains(where: { $0.sessionID == sessionID }) == containsCapture)
-        #expect(state.processingQueue.pending.isEmpty)
+        #expect(state.processingQueue.summaries.isEmpty)
     }
 }
 
@@ -421,5 +420,7 @@ func recordingPreservesCaptureAndReleaseFailures(kind: String) async throws {
     #expect(state.statusTone == .error)
     #expect(state.statusText.contains(original))
     #expect(state.statusText.contains(release))
-    if kind != "throw" { #expect(state.processingQueue.pending.count == 1) }
+    if kind != "throw" { #expect(state.processingQueue.summaries.contains {
+        $0.sessionID == sessionID && $0.holdReason == .pending
+    }) }
 }

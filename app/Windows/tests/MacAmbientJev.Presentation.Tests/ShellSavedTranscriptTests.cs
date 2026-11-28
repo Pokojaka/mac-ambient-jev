@@ -52,6 +52,31 @@ public sealed partial class ShellStoreTests
     }
 
     [Fact]
+    public async Task ReprocessStartsWatchingNewlyAvailableSavedTranscript()
+    {
+        var engine = NewEngine(); await using var store = await Start(engine, TimeProvider.System);
+        var summary = Readable("saved-folder", "saved-session", true, false, "保存済み");
+        summary = summary with { Metadata = ((EngineSessionMetadata.Readable)summary.Metadata) with { HasTranscript = false } };
+        var select = store.SelectSavedSessionAsync(summary); var inspect = await engine.NextRequestAsync();
+        inspect.Complete(new EngineResult.SessionInspect(summary)); Assert.True(await select);
+        Assert.Null(store.State.Transcript.SessionID);
+        Assert.Equal("この録音には確定文字起こしがありません", store.State.Transcript.UnavailableReason);
+
+        var reprocess = store.ReprocessSessionAsync(); var request = await engine.NextRequestAsync();
+        Assert.IsType<EngineCommand.SessionReprocess>(request.Command);
+        request.Complete(new EngineResult.SessionReprocess(new EngineSessionPayload(summary.SessionID!)));
+        Assert.True(await reprocess);
+        var refresh = await engine.NextRequestAsync(); Assert.IsType<EngineCommand.SessionInspect>(refresh.Command);
+        var updated = summary with { Metadata = ((EngineSessionMetadata.Readable)summary.Metadata) with { HasTranscript = true } };
+        refresh.Complete(new EngineResult.SessionInspect(updated));
+        await ChangedTo(store, state => state.SessionInspection == updated && !state.IsPending(EngineCommandName.SessionInspect));
+        Assert.Equal(summary.SessionID, store.State.Transcript.SessionID);
+        var watch = await engine.NextRequestAsync();
+        Assert.Equal(summary.SessionID, Assert.IsType<EngineCommand.TranscriptWatch>(watch.Command).Payload.SessionID);
+        watch.Complete(new EngineResult.TranscriptWatch(Page(summary.SessionID!, 1, "本文", null, null)));
+    }
+
+    [Fact]
     public async Task AcceptedImportUsesEngineNameAndShowsProcessingBadgeUntilComplete()
     {
         var engine = NewEngine(); var clock = new ManualClock(); await using var store = await Start(engine, clock);
@@ -109,6 +134,38 @@ public sealed partial class ShellStoreTests
         Assert.Equal("読み込んだ音声の本文", Assert.Single(live.Rows).Text);
         Assert.Equal("表示中の録音: エンジン表示名", live.TranscriptDisplayText);
         Assert.Equal("保存済み文字起こしを表示中", live.BadgeText);
+    }
+
+    [Fact]
+    public async Task ImportedDisplayNameAndAutomaticTranscriptWatchPreserveCommandError()
+    {
+        var engine = NewEngine(); var clock = new ManualClock(); await using var store = await Start(engine, clock);
+        const string error = "Audio picker reported a failure.";
+        var import = store.ImportAudioAsync(@"C:\音声\講義.wav");
+        var importRequest = await engine.NextRequestAsync();
+        importRequest.Complete(new EngineResult.SessionImport(new EngineSessionPayload("imported")));
+        Assert.True(await import);
+
+        var listRequest = await engine.NextRequestAsync();
+        Assert.Equal(EngineCommandName.SessionList, listRequest.Command.Name);
+        await store.ReportCommandErrorAsync(error);
+        var summary = Readable("imported-folder", "imported", false, false, "処理中") with
+        {
+            DisplayName = "エンジン表示名",
+            Metadata = new EngineSessionMetadata.Readable(1, new EngineSessionSource.Imported("講義.wav"),
+                new EngineSessionAudio.Available(), false)
+        };
+        listRequest.Complete(new EngineResult.SessionList(new EngineSessionListResult([summary], null, null)));
+        await ChangedTo(store, state => state.Transcript.DisplayName == summary.DisplayName);
+        Assert.Equal(error, store.State.CommandError);
+
+        var watchRequest = await engine.NextRequestAsync();
+        Assert.Equal("imported", Assert.IsType<EngineCommand.TranscriptWatch>(watchRequest.Command).Payload.SessionID);
+        await ChangedTo(store, state => state.IsPending(EngineCommandName.TranscriptWatch));
+        Assert.Equal(error, store.State.CommandError);
+        watchRequest.Complete(new EngineResult.TranscriptWatch(Page("imported", 1, "imported tail", null, null)));
+        await ChangedTo(store, state => state.Transcript.Tail is not null);
+        Assert.Equal(error, store.State.CommandError);
     }
 
     [Fact]

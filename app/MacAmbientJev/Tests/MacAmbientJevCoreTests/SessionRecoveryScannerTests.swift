@@ -107,6 +107,8 @@ func recordingThatCrashedBeforeStopIsFinalizedFromItsTimeline() async throws {
     #expect(scan.candidates.count == 1)
     #expect(scan.candidates.first?.action == .finalize)
     let first = try #require(scan.candidates.first)
+    let metadataGenerationID = try ProcessingMetadataStore(sessionURL: url).load()?.generationID
+    #expect(first.generationID == metadataGenerationID)
     #expect(try SessionLayout(sessionURL: first.sessionURL).audioSource(for: first.manifest)
         == .recordedPCM(recoveryCheckpoint))
 }
@@ -122,6 +124,7 @@ func unprocessedImportIsFinalizedFromItsOriginal() throws {
     let candidate = try #require(try SessionRecoveryScanner(sessionsRoot: root).inspect(sessionID: id).recovery)
 
     #expect(candidate.action == .finalize)
+    #expect(candidate.generationID == nil)
     guard case .importedOriginal(let original, _) = try SessionLayout(sessionURL: url)
         .audioSource(for: candidate.manifest) else {
         Issue.record("an import recovers from its original")

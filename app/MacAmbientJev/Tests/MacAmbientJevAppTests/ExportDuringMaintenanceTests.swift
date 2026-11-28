@@ -30,7 +30,7 @@ func exportDuringMaintenanceReportsMaintenanceForPCMRecordings() async throws {
         duration: .seconds(1), audio: .available(.recordedPCM(checkpoint)),
         hasActiveTranscript: true, processingStatus: .complete
     )
-    state.processingQueue.beginStorageMaintenance()
+    state.processingCoordinator.beginStorageMaintenance()
 
     await state.export(session)
 

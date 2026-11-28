@@ -31,6 +31,32 @@ public struct EngineApplicationConfiguration: Sendable {
     }
 }
 
+typealias RetainedSessionImport = @Sendable (URL, RetainedSessionImporter) async throws -> RetainedSession
+typealias TranscriptGenerationLookup = @Sendable (SavedSession) async throws -> UUID?
+typealias SessionCatalogLookup = @Sendable (URL) async throws -> [SavedSessionSummary]
+typealias SessionBundleExport = @Sendable (SavedSession, URL) async throws -> URL
+
+func blockingSessionCatalogLookup(sessionsRoot: URL) async throws -> [SavedSessionSummary] {
+    try await Task.detached(executorPreference: BlockingIOExecutor.shared) {
+        try SavedSessionCatalog(fileManager: .default).list(sessionsRoot: sessionsRoot)
+    }.value
+}
+
+func blockingTranscriptGenerationLookup(for session: SavedSession) async throws -> UUID? {
+    try await Task.detached(executorPreference: BlockingIOExecutor.shared) {
+        try ProcessingLogState(
+            eventsURL: SessionLayout(sessionURL: session.sessionURL).eventsURL,
+            sessionID: session.sessionID
+        )?.generation.id
+    }.value
+}
+
+func blockingSessionBundleExport(session: SavedSession, to directory: URL) async throws -> URL {
+    try await Task.detached(executorPreference: BlockingIOExecutor.shared) {
+        try SessionExporter().export(session: session, to: directory)
+    }.value
+}
+
 /// The real engine: the handlers behind `EngineController`, composed from the shared recording-start coordinator,
 /// the live and processing coordinators, startup recovery, the settings store and the portable exporter. Capture and
 /// inference come from injected adapters, so the same composition runs on every OS under test.
@@ -44,7 +70,37 @@ public final class EngineApplication {
         inference: any EngineInferenceProviding,
         events: EngineEventEmitter
     ) {
-        core = EngineApplicationCore(configuration: configuration, capture: capture, inference: inference, events: events)
+        core = EngineApplicationCore(
+            configuration: configuration, capture: capture, inference: inference, events: events,
+            saveProcessingMetadata: { sessionURL, metadata in
+                try ProcessingMetadataStore(sessionURL: sessionURL).save(metadata)
+            },
+            importRetainedSession: { audioURL, importer in
+                try importer.importRetainedSession(audioURL: audioURL)
+            },
+            sessionCatalogLookup: blockingSessionCatalogLookup,
+            transcriptGenerationLookup: blockingTranscriptGenerationLookup,
+            exportSessionBundle: blockingSessionBundleExport
+        )
+    }
+
+    init(
+        configuration: EngineApplicationConfiguration,
+        capture: any EngineCaptureProviding,
+        inference: any EngineInferenceProviding,
+        events: EngineEventEmitter,
+        saveProcessingMetadata: @escaping NativeSessionProcessor.ProcessingMetadataSave,
+        importRetainedSession: @escaping RetainedSessionImport,
+        sessionCatalogLookup: @escaping SessionCatalogLookup,
+        transcriptGenerationLookup: @escaping TranscriptGenerationLookup,
+        exportSessionBundle: @escaping SessionBundleExport
+    ) {
+        core = EngineApplicationCore(
+            configuration: configuration, capture: capture, inference: inference, events: events,
+            saveProcessingMetadata: saveProcessingMetadata, importRetainedSession: importRetainedSession,
+            sessionCatalogLookup: sessionCatalogLookup,
+            transcriptGenerationLookup: transcriptGenerationLookup, exportSessionBundle: exportSessionBundle
+        )
     }
 
     public var handlers: EngineHandlers {
@@ -79,6 +135,11 @@ final class EngineApplicationCore {
     let inferenceProvider: any EngineInferenceProviding
     let events: EngineEventEmitter
     let sleep: @MainActor @Sendable (Duration) async throws -> Void
+    let saveProcessingMetadata: NativeSessionProcessor.ProcessingMetadataSave
+    let importRetainedSession: RetainedSessionImport
+    let sessionCatalogLookup: SessionCatalogLookup
+    let transcriptGenerationLookup: TranscriptGenerationLookup
+    let exportSessionBundle: SessionBundleExport
     let shutdownPauseTimeout: Duration
     let timeZone: TimeZone
     let gateway = EngineProcessorGateway()
@@ -99,12 +160,13 @@ final class EngineApplicationCore {
     var preparationStage: EngineModelProgress.Stage?
     /// An automatic preparation failed; automatic attempts stop until `models.prepare` or a profile change.
     var automaticPreparationFailed = false
+    var modelPreparationFailure: EngineCommandError?
     var presentation = EnginePresentation()
     /// The finalizing request that is running and the resource hold it will pause for at its next boundary.
     var resourceFinalizingSessionID: UUID?
     var finalizationResourceHoldReason: InferenceHoldReason?
     private var resourceObservation: (any InferenceResourceObservation)?
-    private var loggedResourceMonitorFailure: String?
+    private var loggedResourceMonitorFailures: Set<String> = []
     var isShuttingDown = false
     private(set) var mutationTasks: [UUID: Task<Void, Never>] = [:]
 
@@ -118,11 +180,14 @@ final class EngineApplicationCore {
     var activeRecording: (source: EngineSource, device: EngineDevice)?
 
     // Processing and recovery
-    var processingQueue = SessionProcessingQueue()
+    var processingQueue: ProcessingQueueSnapshot { processingCoordinator.queueSnapshot }
     let liveTranscription = LiveTranscriptionState()
     var savedSessionOperations = SavedSessionOperations()
     var savedSessionsAreStale = true
+    var savedSessionsVersion: UInt64 = 0
     var sessionListSnapshot: EngineSessionListSnapshot?
+    var finalPublishedSessionIDs: Set<UUID> = []
+    var processingCompletionEpoch: UInt64 = 0
     var idleReleaseTask: Task<Void, Never>?
     var startupTask: Task<Void, Never>?
     var recoveryStatus: EngineRecoveryStatus = .pending
@@ -138,9 +203,11 @@ final class EngineApplicationCore {
     var transcriptReadNavigation: EnginePageNavigation?
     var transcriptRowDetailsSnapshot: EngineTranscriptRowDetailsSnapshot?
     var nextTranscriptRevision: UInt64 = 0
+    var transcriptEpoch: UInt64 = 0
 
     // State publication
     var failures: [EngineFailure] = []
+    var monitorFailureEntry: EngineFailure?
     var stateRevision: UInt64 = 1
     var publishedState: EngineState?
     var eventsEnabled = false
@@ -171,7 +238,12 @@ final class EngineApplicationCore {
         configuration: EngineApplicationConfiguration,
         capture: any EngineCaptureProviding,
         inference: any EngineInferenceProviding,
-        events: EngineEventEmitter
+        events: EngineEventEmitter,
+        saveProcessingMetadata: @escaping NativeSessionProcessor.ProcessingMetadataSave,
+        importRetainedSession: @escaping RetainedSessionImport,
+        sessionCatalogLookup: @escaping SessionCatalogLookup,
+        transcriptGenerationLookup: @escaping TranscriptGenerationLookup,
+        exportSessionBundle: @escaping SessionBundleExport
     ) {
         paths = configuration.paths
         logicalCPUCount = configuration.logicalCPUCount
@@ -181,25 +253,61 @@ final class EngineApplicationCore {
         inferenceProvider = inference
         self.events = events
         sleep = configuration.sleep
+        self.saveProcessingMetadata = saveProcessingMetadata
+        self.importRetainedSession = importRetainedSession
+        self.sessionCatalogLookup = sessionCatalogLookup
+        self.transcriptGenerationLookup = transcriptGenerationLookup
+        self.exportSessionBundle = exportSessionBundle
         shutdownPauseTimeout = configuration.shutdownPauseTimeout
         timeZone = configuration.timeZone
         loadSettings()
         resourceObservation = resourceMonitor.observeChanges { [weak self] in
             self?.resourceMonitorDidChange()
         }
-        logResourceMonitorFailureIfNew()
+        monitorFailureEntry = logResourceMonitorFailureIfNew()
     }
 
-    private func logResourceMonitorFailureIfNew() {
+    private func logResourceMonitorFailureIfNew() -> EngineFailure? {
         guard case .monitorFailed(let detail) = resourceMonitor.signal,
-              detail != loggedResourceMonitorFailure else { return }
-        loggedResourceMonitorFailure = detail
+              loggedResourceMonitorFailures.insert(detail).inserted else { return nil }
         EngineLog.write("resource monitor failed: \(detail)")
+        return EngineFailures.failure(
+            code: .internalError, message: monitorFailureMessage(detail: detail), stage: .finalization,
+            sessionID: nil, severity: .error, recoveryAction: .restart
+        )
+    }
+
+    private func monitorFailureMessage(detail: String) -> String {
+        "Windows の推論リソース監視に失敗しました（\(detail)）。アプリを再起動してください。"
+    }
+
+    func monitorFailureError(sessionID: UUID) -> EngineCommandError? {
+        guard case .monitorFailed(let detail) = resourceMonitor.signal else { return nil }
+        return EngineFailures.commandError(
+            .internalError, monitorFailureMessage(detail: detail),
+            stage: .finalization, sessionID: sessionID, recoveryAction: .restart
+        )
+    }
+
+    func modelPreparationError(sessionID: UUID) -> EngineCommandError? {
+        guard let failure = modelPreparationFailure else { return nil }
+        return EngineFailures.commandError(
+            failure.code, failure.message, stage: failure.stage, sessionID: sessionID,
+            severity: failure.severity, recoveryAction: failure.recoveryAction,
+            details: failure.details, cleanupErrors: failure.cleanupErrors
+        )
     }
 
     private func resourceMonitorDidChange() {
         guard !isShuttingDown else { return }
-        logResourceMonitorFailureIfNew()
+        if let failure = logResourceMonitorFailureIfNew() {
+            monitorFailureEntry = failure
+            trimOrdinaryFailures()
+            report(failure, includeInFailureHistory: false)
+        }
+        if case .monitorFailed = resourceMonitor.signal {
+            finishHeldReprocessWaitersForMonitorFailure()
+        }
         if let currentSessionID = processingQueue.currentSessionID,
            currentSessionID == resourceFinalizingSessionID,
            let reason = resourceMonitor.signal.holdReason {
@@ -207,6 +315,16 @@ final class EngineApplicationCore {
             presentation.processingStatusText = reason.finalizationExplanation + "（実行中の処理の終了待ち）"
         }
         stateDidChange()
+    }
+
+    private func finishHeldReprocessWaitersForMonitorFailure() {
+        for item in processingQueue.summaries {
+            guard item.kind == .replacement,
+                  item.holdReason == .inference(.resourcePressure)
+                    || item.holdReason == .inference(.monitorFailed),
+                  let error = monitorFailureError(sessionID: item.sessionID) else { continue }
+            completions.finish(requestID: item.requestID, with: error)
+        }
     }
 
     func performMutation<T: Sendable>(
@@ -266,7 +384,7 @@ final class EngineApplicationCore {
             prepareModels()
         }
         recoveryStatus = .running
-        processingQueue.beginStorageMaintenance()
+        processingCoordinator.beginStorageMaintenance()
         stateDidChange()
         startupTask = Task { [self] in await runStartupRecovery() }
     }
@@ -310,7 +428,7 @@ final class EngineApplicationCore {
                 recovery: recoveryStatus,
                 recording: try recordingState(),
                 queue: try queueState(),
-                failures: failures,
+                failures: failureSnapshot(),
                 presentation: try presentationState()
             )
         } catch {
@@ -345,28 +463,23 @@ final class EngineApplicationCore {
     }
 
     private func queueState() throws -> [EngineQueuedOperation] {
-        var operations: [EngineQueuedOperation] = []
-        func add(_ request: PendingProcessing) throws {
-            let stage: EngineStage = request.finalizesTranscript ? .finalization : .decisions
-            operations.append(try EngineQueuedOperation(sessionID: EngineFailures.wireID(request.sessionID), stage: stage))
+        try processingQueue.summaries.prefix(Self.queueLimit).map { item in
+            let stage: EngineStage = item.kind == .decisionRetry ? .decisions : .finalization
+            return try EngineQueuedOperation(sessionID: EngineFailures.wireID(item.sessionID), stage: stage)
         }
-        if let current = processingQueue.currentSessionID {
-            operations.append(try EngineQueuedOperation(sessionID: EngineFailures.wireID(current), stage: .finalization))
-        }
-        for request in processingQueue.pending { try add(request) }
-        for entry in processingQueue.held { try add(entry.request) }
-        for request in processingQueue.modelHeld { try add(request) }
-        return Array(operations.prefix(Self.queueLimit))
     }
 
-    /// Records a failure no request awaits: it joins the state's bounded failure list and, once the client has
-    /// said hello, is also sent as an `error` event.
+    /// Records a failure no request awaits and, once the client has said hello, sends it as an `error` event.
     func report(_ failure: EngineFailure) {
-        guard !pendingFailureEvents.contains(failure), inFlightFailureEvent != failure else {
-            return
+        report(failure, includeInFailureHistory: true)
+    }
+
+    private func report(_ failure: EngineFailure, includeInFailureHistory: Bool) {
+        guard !pendingFailureEvents.contains(failure), inFlightFailureEvent != failure else { return }
+        if includeInFailureHistory {
+            failures.append(failure)
+            trimOrdinaryFailures()
         }
-        failures.append(failure)
-        if failures.count > Self.failureLimit { failures.removeFirst(failures.count - Self.failureLimit) }
         stateDidChange()
         guard eventsEnabled, !eventsClosed else { return }
 
@@ -378,6 +491,16 @@ final class EngineApplicationCore {
         if failureEventTask == nil {
             failureEventTask = Task { @MainActor [self] in await drainFailureEvents() }
         }
+    }
+
+    private func trimOrdinaryFailures() {
+        let ordinaryLimit = Self.failureLimit - (monitorFailureEntry == nil ? 0 : 1)
+        if failures.count > ordinaryLimit { failures.removeFirst(failures.count - ordinaryLimit) }
+    }
+
+    private func failureSnapshot() -> [EngineFailure] {
+        guard let monitorFailureEntry else { return Array(failures.suffix(Self.failureLimit)) }
+        return [monitorFailureEntry] + Array(failures.suffix(Self.failureLimit - 1))
     }
 
     private func drainFailureEvents() async {
@@ -448,16 +571,14 @@ final class EngineApplicationCore {
 
     /// No finalization, decision retry or live transcription is queued or running.
     var isProcessingIdle: Bool {
-        !hasRunnableOrRunningProcessing && processingQueue.modelHeld.isEmpty
+        !hasRunnableOrRunningProcessing && !processingQueue.summaries.contains { $0.holdReason == .models }
     }
 
     /// Finalizing work that is queued, resource-held, draining, running or claimed. Work that only waits
     /// for the models is not running, so a recording may start while it waits.
     var hasRunnableOrRunningProcessing: Bool {
-        !processingQueue.pending.isEmpty
-            || !processingQueue.held.isEmpty
+        processingQueue.summaries.contains { $0.holdReason != .models }
             || processingCoordinator.isDraining
-            || processingQueue.currentSessionID != nil
             || !processingQueue.claimedSessionIDs.isEmpty
             || !liveCoordinator.isASRIdle
     }
@@ -475,7 +596,8 @@ final class EngineApplicationCore {
             engines: inference.engines,
             audioHandling: SessionProcessingAudio(timelineBuilder: inference.timelineBuilder),
             contentPriority: inference.contentPriority,
-            sleep: { try await Task.sleep(for: $0) }
+            sleep: { try await Task.sleep(for: $0) },
+            saveProcessingMetadata: saveProcessingMetadata
         )
         gateway.install(processor, pacing: settings.lowHeat ? .lowHeat : .normal)
     }
@@ -505,6 +627,7 @@ struct EngineTranscriptRowFailure: Equatable {
 
 struct EngineTranscriptCache {
     let sessionID: UUID
+    var generationID: UUID?
     var revision: UInt64
     var rows: [EngineTranscriptRow]
     var materializedSegments: [MaterializedTranscriptSegment]
@@ -618,8 +741,10 @@ extension EngineApplicationCore: EngineSettingsHandling {
             if let removed = gateway.remove() { await removed.releaseIdleResources() }
             modelsPrepared = false
             automaticPreparationFailed = false
-            presentation.preparationPhase = .idle
-            presentation.preparationStatusText = nil
+            if modelPreparationFailure == nil {
+                presentation.preparationPhase = .idle
+                presentation.preparationStatusText = nil
+            }
             configureInference()
             prepareModels()
         }
@@ -661,16 +786,20 @@ extension EngineApplicationCore: EngineModelsHandling {
         guard !isShuttingDown else {
             throw EngineFailures.commandError(.cancelled, "終了処理中のためモデルを準備できません", stage: .shutdown)
         }
-        if modelsPrepared { return }
+        if modelsPrepared {
+            modelPreparationFailure = nil
+            return
+        }
         automaticPreparationFailed = false
         isPreparingModels = true
         try await runPreparation(settings: settings, requestID: context.requestID)
+        modelPreparationFailure = nil
     }
 
     /// Starts an automatic preparation when there is something to prepare and nothing has stopped trying.
     func prepareModels() {
         guard let settings, inference != nil, !modelsPrepared, !isPreparingModels,
-              !automaticPreparationFailed, !isShuttingDown else { return }
+              !automaticPreparationFailed, modelPreparationFailure == nil, !isShuttingDown else { return }
         isPreparingModels = true
         preparationTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -790,13 +919,31 @@ extension EngineApplicationCore: EngineModelsHandling {
             modelsPrepared = false
             presentation.preparationID = nil
             presentation.preparationPhase = .failed
-            presentation.preparationStatusText = "準備できませんでした: \(error.localizedDescription)"
-            if error is CancellationError {
+            let wasCancelled = error is CancellationError
+                || (error as? EngineCommandError)?.code == .cancelled
+                || Task.isCancelled
+            if isShuttingDown {
+                presentation.preparationStatusText = "モデルの準備が中止されました"
                 throw EngineFailures.commandError(.cancelled, "モデルの準備が中止されました", stage: .loadingModels)
             }
-            throw EngineFailures.commandError(
-                from: error, fallback: .modelFailure, stage: .loadingModels, recoveryAction: .prepareModels
-            )
+            let preparationError = wasCancelled
+                ? EngineFailures.commandError(
+                    .cancelled, "モデルの準備が中止されました", stage: .loadingModels,
+                    recoveryAction: .prepareModels
+                )
+                : EngineFailures.commandError(
+                    from: error, fallback: .modelFailure, stage: .loadingModels, recoveryAction: .prepareModels
+                )
+            automaticPreparationFailed = true
+            modelPreparationFailure = preparationError
+            presentation.preparationStatusText = wasCancelled
+                ? preparationError.message
+                : "準備できませんでした: \(preparationError.message)"
+            for item in processingQueue.summaries where item.kind == .replacement {
+                guard let commandError = modelPreparationError(sessionID: item.sessionID) else { continue }
+                completions.finish(requestID: item.requestID, with: commandError)
+            }
+            throw preparationError
         }
         updateRecoveryStatus()
         // Finalizations queued while models were missing, such as launch recovery, can run now.
@@ -834,14 +981,25 @@ extension EngineApplicationCore: EngineShutdownHandling {
     /// Stops capture durably, pauses inference at its next boundary and waits for it. Sessions left unfinished are
     /// recovered on the next launch. Fails when running work does not pause within `shutdownPauseTimeout`.
     func shutdown(reason: EngineShutdownReason) async throws {
+        completions.finishPendingAndHeldForShutdown(summaries: processingQueue.summaries)
         eventsClosed = true
         eventsEnabled = false
         pendingFailureEvents.removeAll()
         onBackgroundEventStateChange?()
         let failureEventTaskAtShutdown = failureEventTask
 
+        let clock = ContinuousClock()
+        let pauseDeadline = clock.now.advanced(by: shutdownPauseTimeout)
         isShuttingDown = true
         processingCoordinator.requestPause()
+        let shutdownWaiterDeadline = Task { @MainActor [completions, shutdownPauseTimeout] in
+            do {
+                try await Task.sleep(for: shutdownPauseTimeout)
+            } catch {
+                return
+            }
+            completions.finishRemainingForShutdown()
+        }
         var sessionIDs = processingQueue.sessionIDs
         if let recordingSessionID = recording.sessionID {
             sessionIDs.insert(recordingSessionID)
@@ -868,8 +1026,10 @@ extension EngineApplicationCore: EngineShutdownHandling {
         await liveCoordinator.cancelAndWait(sessionIDs: sessionIDs)
 
         do {
-            try await waitForProcessingToPause()
+            try await waitForProcessingToPause(until: pauseDeadline, clock: clock)
         } catch {
+            shutdownWaiterDeadline.cancel()
+            completions.finishRemainingForShutdown()
             await waitForMutations()
             await failureEventTaskAtShutdown?.value
             throw error
@@ -878,6 +1038,7 @@ extension EngineApplicationCore: EngineShutdownHandling {
         await idleReleaseTask?.value
         stateDidChange()
         await failureEventTaskAtShutdown?.value
+        shutdownWaiterDeadline.cancel()
     }
 
     private func waitForMutations() async {
@@ -887,9 +1048,10 @@ extension EngineApplicationCore: EngineShutdownHandling {
         }
     }
 
-    private func waitForProcessingToPause() async throws {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: shutdownPauseTimeout)
+    private func waitForProcessingToPause(
+        until deadline: ContinuousClock.Instant,
+        clock: ContinuousClock
+    ) async throws {
         while processingCoordinator.isDraining {
             if clock.now >= deadline {
                 throw EngineFailures.commandError(

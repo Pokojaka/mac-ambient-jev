@@ -144,7 +144,7 @@ private final class PausedSessionFinalizationHarness {
             inference: PausedSessionInferenceProvider(gate: gate),
             events: events
         )
-        context = EngineRequestContext(requestID: try EngineID(1), events: events)
+        context = EngineRequestContext(requestID: try EngineID(1), events: events, terminalReplyClaim: {})
     }
 }
 

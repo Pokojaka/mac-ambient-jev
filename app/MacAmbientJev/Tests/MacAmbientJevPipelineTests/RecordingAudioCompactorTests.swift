@@ -527,6 +527,7 @@ func maintenanceCancellationBeforeFirstCandidateReportsEveryCandidateAsUncomplet
                 source: .recording(.microphone)
             ),
             sessionURL: item.sessionURL,
+            generationID: nil,
             action: .finalize
         )
     }
@@ -535,7 +536,7 @@ func maintenanceCancellationBeforeFirstCandidateReportsEveryCandidateAsUncomplet
             candidates: recoveryCandidates,
             recordingSessionID: nil,
             maintenanceFailures: failures,
-            pending: []
+            occupiedSessionIDs: []
         )
     }
     #expect(requests.isEmpty)

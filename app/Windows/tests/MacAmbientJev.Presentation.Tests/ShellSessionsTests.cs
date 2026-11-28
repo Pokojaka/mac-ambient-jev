@@ -33,7 +33,7 @@ public sealed partial class ShellStoreTests
         engine.EmitBatch(new EngineOutput(1, new EngineID(2), null, new EngineEvent.State(recording)));
         await ChangedTo(store, state => state.Engine?.Revision == new EngineID(2)); await RenderAsync(dispatcher, clock);
         Assert.False(vm.CanSelectSession); Assert.False(vm.Select.CanExecute(summary)); var sent = engine.SentCount;
-        Assert.False(await store.InspectSessionAsync("opaque-folder")); Assert.Equal(sent, engine.SentCount);
+        Assert.False(await store.SelectSavedSessionAsync(summary)); Assert.Equal(sent, engine.SentCount);
     }
 
     [Fact]
@@ -44,13 +44,13 @@ public sealed partial class ShellStoreTests
         var allowReprocess = false; var allowRetry = false; var status = "初回検査"; var requests = new List<EngineCommand>();
         engine.AutoResponse = command => { requests.Add(command); return command switch
         {
-            EngineCommand.SessionInspect inspect => new EngineResult.SessionInspect(Readable(inspect.Payload.FolderID, session, allowReprocess, allowRetry, status)),
+            EngineCommand.SessionInspect inspect => new EngineResult.SessionInspect(WithoutTranscript(Readable(inspect.Payload.FolderID, session, allowReprocess, allowRetry, status))),
             EngineCommand.SessionReprocess action => new EngineResult.SessionReprocess(new EngineSessionPayload(action.Payload.SessionID)),
             EngineCommand.SessionRetryDecisions action => new EngineResult.SessionRetryDecisions(new EngineSessionPayload(action.Payload.SessionID)),
             _ => throw new NotSupportedException($"Unexpected command: {command.Name}.")
         }; };
         var dispatcher = new TestDispatcher(); using var context = new ShellUiContext(store, dispatcher, clock); var vm = new SessionsViewModel(context, new TestFolderRevealer());
-        var candidate = Readable(folder, session, false, false, "一覧"); Assert.True(await store.InspectSessionAsync(folder)); await RenderAsync(dispatcher, clock);
+        var candidate = WithoutTranscript(Readable(folder, session, false, false, "一覧")); Assert.True(await store.SelectSavedSessionAsync(candidate)); await RenderAsync(dispatcher, clock);
         Assert.False(vm.Reprocess.CanExecute(null)); Assert.False(vm.RetryDecisions.CanExecute(null));
         var sent = engine.SentCount; Assert.False(await store.ReprocessSessionAsync()); Assert.False(await store.RetrySessionDecisionsAsync()); Assert.Equal(sent, engine.SentCount);
         var pending = new List<(EngineCommandName Name, bool Select, bool Reprocess, bool Retry)>();
@@ -62,11 +62,12 @@ public sealed partial class ShellStoreTests
         foreach (var retry in new[] { false, true })
         {
             allowReprocess = !retry; allowRetry = retry; status = retry ? "再試行可能" : "再処理可能";
-            Assert.True(await store.InspectSessionAsync(folder)); await RenderAsync(dispatcher, clock);
+            Assert.True(await store.SelectSavedSessionAsync(candidate)); await RenderAsync(dispatcher, clock);
             Assert.Equal(!retry, vm.Reprocess.CanExecute(null)); Assert.Equal(retry, vm.RetryDecisions.CanExecute(null));
             allowReprocess = false; allowRetry = false; status = "操作後の新しい検査";
             var before = requests.Count; var action = retry ? vm.RetryDecisions : vm.Reprocess;
-            action.Execute(null); action.Execute(null); await action.Execution!; await RenderAsync(dispatcher, clock);
+            action.Execute(null); action.Execute(null); await action.Execution!;
+            await SelectedInspectionRefreshIdle(store); await RenderAsync(dispatcher, clock);
             Assert.Equal(before + 2, requests.Count);
             if (retry) Assert.Equal(session, Assert.IsType<EngineCommand.SessionRetryDecisions>(requests[before]).Payload.SessionID);
             else Assert.Equal(session, Assert.IsType<EngineCommand.SessionReprocess>(requests[before]).Payload.SessionID);
@@ -79,29 +80,75 @@ public sealed partial class ShellStoreTests
     }
 
     [Fact]
-    public async Task RevealFailureShowsMissingFolderWithoutEngineFailure()
+    public async Task RevealFailureSurvivesPreparationRefreshOfVisibleSessionsAndInspection()
     {
         var engine = NewEngine(); var clock = new ManualClock(); await using var store = await Start(engine, clock);
         const string folder = "opaque-folder", path = "/engine/actual/missing", error = "録音フォルダが見つかりません: /engine/actual/missing";
-        var inspection = Readable(folder, "saved-session", false, false, "検査済み") with { FolderPath = path };
-        var requests = new List<EngineCommand>();
-        engine.AutoResponse = command => { requests.Add(command); return command switch
-        {
-            EngineCommand.SessionInspect => new EngineResult.SessionInspect(inspection),
-            _ => throw new NotSupportedException($"Unexpected command: {command.Name}.")
-        }; };
-        var revealer = new TestFolderRevealer { Failure = new DirectoryNotFoundException(error) };
-        var dispatcher = new TestDispatcher(); using var context = new ShellUiContext(store, dispatcher, clock); var vm = new SessionsViewModel(context, revealer);
-        Assert.True(await store.InspectSessionAsync(folder)); await RenderAsync(dispatcher, clock);
+        var inspection = WithoutTranscript(Readable(folder, "saved-session", false, false, "検査済み")) with { FolderPath = path };
+        var dispatcher = new TestDispatcher(); var revealer = new TestFolderRevealer { Failure = new DirectoryNotFoundException(error) };
+        using var context = new ShellUiContext(store, dispatcher, clock); var vm = new SessionsViewModel(context, revealer);
+
+        await store.SetSessionsVisibleAsync(true);
+        var initialList = await engine.NextRequestAsync();
+        Assert.Equal(EngineCommandName.SessionList, initialList.Command.Name);
+        initialList.Complete(new EngineResult.SessionList(new EngineSessionListResult([inspection], null, null)));
+        await SessionsRefreshIdle(store);
+        var selection = store.SelectSavedSessionAsync(inspection);
+        var initialInspection = await engine.NextRequestAsync();
+        Assert.Equal(folder, Assert.IsType<EngineCommand.SessionInspect>(initialInspection.Command).Payload.FolderID);
+        initialInspection.Complete(new EngineResult.SessionInspect(inspection));
+        Assert.True(await selection);
+        await RenderAsync(dispatcher, clock);
+
         var sent = engine.SentCount; vm.RevealFolder.Execute(null); await vm.RevealFolder.Execution!; await RenderAsync(dispatcher, clock);
-        Assert.Equal(path, revealer.RequestedPath); Assert.Equal(error, vm.CommandError);
+        Assert.Equal(path, revealer.RequestedPath);
+        Assert.Equal(error, vm.CommandError);
         Assert.Equal(ShellPhase.Running, store.State.Phase); Assert.Null(store.State.StoreFailure);
-        Assert.Equal(sent, engine.SentCount); Assert.Single(requests);
+        Assert.Equal(sent, engine.SentCount);
+
+        var currentEngineState = store.State.Engine!;
+        var changedEngineState = currentEngineState with
+        {
+            Revision = new EngineID(currentEngineState.Revision.Value + 1),
+            Presentation = currentEngineState.Presentation with
+            {
+                PreparationPhase = EnginePreparationPhase.Preparing,
+                PreparationStatusText = "モデルを準備しています"
+            }
+        };
+        engine.EmitBatch(new EngineOutput(1, changedEngineState.Revision, null, new EngineEvent.State(changedEngineState)));
+        var admitted = await ChangedTo(store, state => state.Engine?.Revision == changedEngineState.Revision &&
+            state.IsPending(EngineCommandName.SessionList) && state.IsPending(EngineCommandName.SessionInspect));
+        Assert.Equal(error, admitted.CommandError);
+        var refreshRequests = new[] { await engine.NextRequestAsync(), await engine.NextRequestAsync() };
+        var listRequest = Assert.Single(refreshRequests, request => request.Command.Name == EngineCommandName.SessionList);
+        var inspectionRequest = Assert.Single(refreshRequests, request => request.Command.Name == EngineCommandName.SessionInspect);
+        Assert.Equal(folder, Assert.IsType<EngineCommand.SessionInspect>(inspectionRequest.Command).Payload.FolderID);
+
+        listRequest.Complete(new EngineResult.SessionList(new EngineSessionListResult(
+            [inspection with { StatusText = "preparation list refresh" }], null, null)));
+        var listed = await ChangedTo(store, state => state.Sessions.Current?.Sessions.SingleOrDefault()?.StatusText == "preparation list refresh");
+        Assert.Equal(error, listed.CommandError);
+        inspectionRequest.Complete(new EngineResult.SessionInspect(inspection with { StatusText = "preparation inspection refresh" }));
+        var refreshed = await ChangedTo(store, state => state.SessionInspection?.StatusText == "preparation inspection refresh");
+        Assert.Equal(error, refreshed.CommandError);
+        await SessionsRefreshIdle(store); await SelectedInspectionRefreshIdle(store);
+
+        Assert.Equal(error, store.State.CommandError);
+        Assert.Equal("preparation inspection refresh", store.State.SessionInspection!.StatusText);
+        Assert.Equal(sent + 2, engine.SentCount);
     }
 
     private static EngineSessionSummary Readable(string folder, string session, bool reprocess, bool retry, string status) =>
         new(folder, session, EngineSessionStatus.Finalized, null, "Engine display", status, "/engine/actual/session", null,
             reprocess, retry, false, new EngineSessionMetadata.Readable(1, new EngineSessionSource.Microphone(), new EngineSessionAudio.Available(), true));
+
+    private static EngineSessionSummary WithoutTranscript(EngineSessionSummary summary)
+    {
+        if (summary.Metadata is not EngineSessionMetadata.Readable metadata)
+            throw new InvalidOperationException("A transcript-free selection requires readable metadata.");
+        return summary with { Metadata = metadata with { HasTranscript = false } };
+    }
 
     private static async Task<ShellStore> Start(SessionInspectClient engine, TimeProvider clock)
     {

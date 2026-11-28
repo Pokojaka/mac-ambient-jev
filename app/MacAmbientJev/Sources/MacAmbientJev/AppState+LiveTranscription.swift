@@ -104,6 +104,11 @@ extension AppState {
 }
 
 extension AppState: LiveTranscriptionEffects {
+    func liveGenerationDidOpen(sessionID: UUID, generationID: UUID) {
+        // macOS transcript rows are not generation-revisioned in this coordinator.
+        _ = (sessionID, generationID)
+    }
+
     func committedLiveCheckpoint() async throws -> AudioCheckpoint {
         try await captureEngine.committedCheckpoint()
     }

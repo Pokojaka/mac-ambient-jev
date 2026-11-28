@@ -7,6 +7,51 @@ import MacAmbientJevEngineProtocol
 import MacAmbientJevPipeline
 import MacAmbientJevTestSupport
 
+actor EngineApplicationTestGate {
+    private var armed = false
+    private var entered = false
+    private var released = false
+    private var skippedCalls = 0
+    private var entryContinuation: CheckedContinuation<Void, Never>?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func arm(skippingCalls: Int = 0) {
+        armed = true
+        entered = false
+        released = false
+        skippedCalls = skippingCalls
+    }
+
+    func suspendIfArmed() async {
+        guard armed else { return }
+        if skippedCalls > 0 {
+            skippedCalls -= 1
+            return
+        }
+        armed = false
+        entered = true
+        entryContinuation?.resume()
+        entryContinuation = nil
+        await withCheckedContinuation { continuation in
+            if released { continuation.resume() }
+            else { releaseContinuation = continuation }
+        }
+    }
+
+    func waitUntilSuspended() async {
+        if entered { return }
+        await withCheckedContinuation { entryContinuation = $0 }
+    }
+
+    func release() {
+        released = true
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+        entryContinuation?.resume()
+        entryContinuation = nil
+    }
+}
+
 // MARK: Fake engines
 
 final class CallCounter: @unchecked Sendable {
@@ -134,6 +179,7 @@ final class FakeInferenceProvider: EngineInferenceProviding, @unchecked Sendable
     let calls = CallCounter()
     let usageCounter = DecisionUsageCounter()
     private let failure = LockedBox<EngineAdapterError?>(nil)
+    private let cancelNextPrepare = LockedBox(false)
     private let isPrepareHeld = LockedBox(false)
     /// The settings of every `prepare` call, in order.
     let preparedSettings = LockedBox<[EngineSettings]>([])
@@ -146,10 +192,18 @@ final class FakeInferenceProvider: EngineInferenceProviding, @unchecked Sendable
         failure.set(error)
     }
 
+    func cancelNextPreparation() {
+        cancelNextPrepare.set(true)
+    }
+
     func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
         calls.increment("prepare")
         preparedSettings.set(preparedSettings.get() + [settings])
         while isPrepareHeld.get() { try await Task.sleep(for: .milliseconds(5)) }
+        if cancelNextPrepare.get() {
+            cancelNextPrepare.set(false)
+            throw CancellationError()
+        }
         onProgress(EngineModelProgress(stage: .validating, completed: 0, total: 1))
         if let failure = failure.get() { throw failure }
         onProgress(EngineModelProgress(stage: .loading, completed: 1, total: 1))
@@ -352,6 +406,9 @@ final class ApplicationHarness {
     let capture = FakeCapture()
     let inference = FakeInferenceProvider()
     let resources = FakeResourceMonitor()
+    let sessionCatalogLookupGate = EngineApplicationTestGate()
+    let transcriptGenerationLookupGate = EngineApplicationTestGate()
+    let sessionBundleExportGate = EngineApplicationTestGate()
     let transport: EngineTransport
     let app: EngineApplication
     let controller: EngineController
@@ -359,18 +416,77 @@ final class ApplicationHarness {
     private var nextRequestID: UInt64 = 1
 
     /// `provider` replaces the fake inference, for tests that need another provider's behaviour.
-    init(root: URL, provider: (any EngineInferenceProviding)? = nil) {
+    init(
+        root: URL, provider: (any EngineInferenceProviding)? = nil,
+        shutdownPauseTimeout: Duration = .seconds(20),
+        saveProcessingMetadata: NativeSessionProcessor.ProcessingMetadataSave? = nil,
+        importRetainedSession: RetainedSessionImport? = nil
+    ) {
         self.root = root
         paths = engineTestPaths(root: root)
         transport = EngineTransport(source: source, sink: sink, limits: testLimits())
-        app = EngineApplication(
-            configuration: EngineApplicationConfiguration(
-                paths: paths, logicalCPUCount: 4, resourceMonitor: resources, sleep: { try await Task.sleep(for: $0) },
-                shutdownPauseTimeout: .seconds(20), timeZone: TimeZone(identifier: "Asia/Tokyo")!),
-            capture: capture,
-            inference: provider ?? inference,
-            events: EngineEventEmitter(transport: transport)
+        let configuration = EngineApplicationConfiguration(
+            paths: paths, logicalCPUCount: 4, resourceMonitor: resources, sleep: { try await Task.sleep(for: $0) },
+            shutdownPauseTimeout: shutdownPauseTimeout, timeZone: TimeZone(identifier: "Asia/Tokyo")!
         )
+        let events = EngineEventEmitter(transport: transport)
+        let catalogGate = sessionCatalogLookupGate
+        let generationGate = transcriptGenerationLookupGate
+        let exportGate = sessionBundleExportGate
+        let catalogLookup: SessionCatalogLookup = { sessionsRoot in
+            await catalogGate.suspendIfArmed()
+            return try await blockingSessionCatalogLookup(sessionsRoot: sessionsRoot)
+        }
+        let generationLookup: TranscriptGenerationLookup = { session in
+            let generationID = try await blockingTranscriptGenerationLookup(for: session)
+            await generationGate.suspendIfArmed()
+            return generationID
+        }
+        let exportSessionBundle: SessionBundleExport = { session, directory in
+            await exportGate.suspendIfArmed()
+            return try await blockingSessionBundleExport(session: session, to: directory)
+        }
+        switch (saveProcessingMetadata, importRetainedSession) {
+        case (nil, nil):
+            app = EngineApplication(
+                configuration: configuration, capture: capture, inference: provider ?? inference, events: events,
+                saveProcessingMetadata: { sessionURL, metadata in
+                    try ProcessingMetadataStore(sessionURL: sessionURL).save(metadata)
+                },
+                importRetainedSession: { audioURL, importer in
+                    try importer.importRetainedSession(audioURL: audioURL)
+                },
+                sessionCatalogLookup: catalogLookup, transcriptGenerationLookup: generationLookup,
+                exportSessionBundle: exportSessionBundle
+            )
+        case (let save?, nil):
+            app = EngineApplication(
+                configuration: configuration, capture: capture, inference: provider ?? inference, events: events,
+                saveProcessingMetadata: save,
+                importRetainedSession: { audioURL, importer in
+                    try importer.importRetainedSession(audioURL: audioURL)
+                },
+                sessionCatalogLookup: catalogLookup, transcriptGenerationLookup: generationLookup,
+                exportSessionBundle: exportSessionBundle
+            )
+        case (nil, let importSession?):
+            app = EngineApplication(
+                configuration: configuration, capture: capture, inference: provider ?? inference, events: events,
+                saveProcessingMetadata: { sessionURL, metadata in
+                    try ProcessingMetadataStore(sessionURL: sessionURL).save(metadata)
+                },
+                importRetainedSession: importSession,
+                sessionCatalogLookup: catalogLookup, transcriptGenerationLookup: generationLookup,
+                exportSessionBundle: exportSessionBundle
+            )
+        case (let save?, let importSession?):
+            app = EngineApplication(
+                configuration: configuration, capture: capture, inference: provider ?? inference, events: events,
+                saveProcessingMetadata: save, importRetainedSession: importSession,
+                sessionCatalogLookup: catalogLookup, transcriptGenerationLookup: generationLookup,
+                exportSessionBundle: exportSessionBundle
+            )
+        }
         controller = EngineController(transport: transport, handlers: app.handlers, admission: .production)
     }
 

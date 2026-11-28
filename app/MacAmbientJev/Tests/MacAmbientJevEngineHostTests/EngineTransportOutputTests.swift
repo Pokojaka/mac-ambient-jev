@@ -241,7 +241,8 @@ private final class SteppedSink: EngineByteSink, @unchecked Sendable {
                 sink: sink,
                 limits: testLimits(maxRecords: 6, reservedRecords: 2),
                 deadlineClock: LiveEngineWriteDeadlineClock(),
-                onReliableWait: { reliableWaits.record() }
+                onReliableWait: { reliableWaits.record() },
+                beforeReliableAppend: { _ in }
             )
             defer { transport.close() }
             let successfulSends = SuccessfulSendCount()
@@ -270,7 +271,8 @@ private final class SteppedSink: EngineByteSink, @unchecked Sendable {
             sink: sink,
             limits: testLimits(deadline: 0.4),
             deadlineClock: clock,
-            onReliableWait: {}
+            onReliableWait: {},
+            beforeReliableAppend: { _ in }
         )
         let failure = WriteFailureObservation()
         let failureObserver = Task {
@@ -308,7 +310,8 @@ private final class SteppedSink: EngineByteSink, @unchecked Sendable {
             sink: sink,
             limits: testLimits(deadline: 0.4),
             deadlineClock: clock,
-            onReliableWait: {}
+            onReliableWait: {},
+            beforeReliableAppend: { _ in }
         )
         defer { transport.close() }
         transport.start()

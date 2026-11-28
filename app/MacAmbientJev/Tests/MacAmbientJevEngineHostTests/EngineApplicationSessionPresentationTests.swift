@@ -50,7 +50,7 @@ private actor PresentationDecisionProvider: DecisionProvider {
     }
 
     private func requestContext(for harness: ApplicationHarness) throws -> EngineRequestContext {
-        EngineRequestContext(requestID: try EngineID(1), events: EngineEventEmitter(transport: harness.transport))
+        EngineRequestContext(requestID: try EngineID(1), events: EngineEventEmitter(transport: harness.transport), terminalReplyClaim: {})
     }
 
     private func recordAndFinalize(in harness: ApplicationHarness) async throws -> (id: String, folder: URL) {
@@ -486,7 +486,7 @@ private actor PresentationDecisionProvider: DecisionProvider {
         #expect(unchangedDestinationProbe.exportPath == nil)
 
         let completeDestination = root.appending(path: "complete-export", directoryHint: .isDirectory)
-        let session = try core.readableSession(sessionID)
+        let session = try await core.readableSession(sessionID)
         let completeBundle = try SessionExporter().export(session: session, to: completeDestination)
         #expect(FileManager.default.fileExists(atPath: completeBundle.appending(path: "transcript.txt").path))
         #expect(FileManager.default.fileExists(atPath: completeBundle.appending(path: "audio.flac").path))
@@ -774,9 +774,13 @@ private actor PresentationDecisionProvider: DecisionProvider {
         #expect((try await inspect(core, context: context, folderID: recorded.folder.lastPathComponent)).canReprocess)
         core.isPreparingModels = false
 
-        core.processingQueue.beginStorageMaintenance()
+        core.processingCoordinator.beginStorageMaintenance()
         #expect(!(try await inspect(core, context: context, folderID: recorded.folder.lastPathComponent)).canReprocess)
-        core.processingQueue.endStorageMaintenance()
+        await core.processingCoordinator.recoverPendingSessions(
+            effects: core,
+            scan: { SessionRecoveryScan(candidates: [], maintenance: [], failures: []) },
+            maintain: { _, _ in [:] }
+        )
 
         let installedInference = try #require(core.inference)
         core.inference = nil
@@ -788,35 +792,96 @@ private actor PresentationDecisionProvider: DecisionProvider {
         #expect(!shuttingDown.canReprocess && !shuttingDown.canExport)
         core.isShuttingDown = false
 
-        let claimed = core.processingQueue.claimReprocessing(sessionID)
-        #expect(claimed)
-        #expect(!(try await inspect(core, context: context, folderID: recorded.folder.lastPathComponent)).canReprocess)
-        core.processingQueue.releaseReprocessing(sessionID)
-
-        core.processingQueue.hold(.finalize(sessionID: sessionID, metadataPolicy: .reject), reason: .inference(.thermal))
+        harness.resources.setSignal(.pressure)
+        try core.processingCoordinator.enqueueReprocess(sessionID: sessionID)
+        await core.processingCoordinator.waitUntilIdle()
         let held = try await inspect(core, context: context, folderID: recorded.folder.lastPathComponent)
         #expect(!held.canReprocess)
         #expect(!held.canRetryDecisions)
         #expect(!held.canExport)
-        let didResumeHeld = core.processingQueue.resumeHeld(
-            activeInferenceHold: nil, releasesPauses: false, pausesProcessing: false)
-        #expect(didResumeHeld)
-        let dequeued = core.processingQueue.dequeue()
-        let resumed = try #require(dequeued)
-        #expect(resumed.sessionID == sessionID)
-        core.processingQueue.begin(resumed)
-        core.processingQueue.completeCurrent()
-
-        core.processingQueue.begin(.finalize(sessionID: sessionID, metadataPolicy: .reject))
-        let queued = try await inspect(core, context: context, folderID: recorded.folder.lastPathComponent)
-        #expect(!queued.canReprocess && !queued.canExport)
-        core.processingQueue.completeCurrent()
+        harness.resources.setSignal(.healthy)
+        core.processingCoordinator.resumeHeldProcessing()
+        await core.processingCoordinator.waitUntilIdle()
 
         #expect(core.savedSessionOperations.beginExport(readable, isMaintainingStorage: false) == .ready)
         #expect(!(try await inspect(core, context: context, folderID: recorded.folder.lastPathComponent)).canExport)
         core.savedSessionOperations.resetExportDestination()
         #expect((try await inspect(core, context: context, folderID: recorded.folder.lastPathComponent)).canExport)
         #expect(try await harness.shutdown() == .shutdownRequested)
+    }
+
+    @Test func modelPreparationFailureStaysVisibleAfterProfileChangeAndDisablesReprocess() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = try await prepared(root, decisions: false)
+        _ = try await recordAndFinalize(in: h)
+        let other = try await recordAndFinalize(in: h)
+
+        let failure = EngineAdapterError(
+            code: .modelMissing, message: "再処理用モデルを準備できません", recoveryAction: .prepareModels, details: []
+        )
+        h.inference.holdPrepare()
+        h.inference.failPrepare(with: failure)
+        defer { h.inference.releasePrepare() }
+        let larger = try EngineSettings(
+            schemaVersion: 1, source: .microphone, device: .default, asrSize: .large, executionProvider: .cpu,
+            threads: 1, lowHeat: false, decisionsEnabled: false, automaticExport: false, exportDestinationPath: nil
+        )
+        try await h.replaceSettings(larger, expectedRevision: 1)
+        try await h.sink.changes.wait("model profile preparation starts") {
+            h.inference.calls.count("prepare") == 2
+        }
+        h.inference.releasePrepare()
+        await h.awaitModels()
+        let failedState = try await h.state()
+        #expect(failedState.presentation.preparationPhase == .failed)
+        let failureText = try #require(failedState.presentation.preparationStatusText)
+        let preparationAttempts = h.inference.calls.count("prepare")
+
+        try await h.replaceSettings(try engineTestSettings(decisions: false), expectedRevision: 2)
+        let changedProfileState = try await h.state()
+        #expect(changedProfileState.presentation.preparationPhase == .failed)
+        #expect(changedProfileState.presentation.preparationStatusText == failureText)
+        #expect(h.inference.calls.count("prepare") == preparationAttempts)
+
+        let summary = try await inspect(h, folderID: other.folder.lastPathComponent)
+        #expect(!summary.canReprocess)
+        #expect(!h.app.core.processingQueue.containsProcessing(try #require(UUID(uuidString: other.id))))
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func idleReleaseKeepsModelPreparationFailureVisible() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = try await prepared(root, decisions: false)
+        let failure = EngineAdapterError(
+            code: .modelMissing, message: "再処理用モデルを準備できません", recoveryAction: .prepareModels, details: []
+        )
+        h.inference.holdPrepare()
+        h.inference.failPrepare(with: failure)
+        defer { h.inference.releasePrepare() }
+        let larger = try EngineSettings(
+            schemaVersion: 1, source: .microphone, device: .default, asrSize: .large, executionProvider: .cpu,
+            threads: 1, lowHeat: false, decisionsEnabled: false, automaticExport: false, exportDestinationPath: nil
+        )
+        try await h.replaceSettings(larger, expectedRevision: 1)
+        try await h.sink.changes.wait("automatic model preparation starts") {
+            h.inference.calls.count("prepare") == 2
+        }
+        h.inference.releasePrepare()
+        await h.awaitModels()
+        let failedState = try await h.state()
+        #expect(failedState.presentation.preparationPhase == .failed)
+        let failureText = try #require(failedState.presentation.preparationStatusText)
+
+        h.app.core.processingDidChange(.drained)
+        let idleReleaseTask = try #require(h.app.core.idleReleaseTask)
+        await idleReleaseTask.value
+
+        let releasedState = try await h.state()
+        #expect(releasedState.presentation.preparationPhase == .failed)
+        #expect(releasedState.presentation.preparationStatusText == failureText)
+        #expect(try await h.shutdown() == .shutdownRequested)
     }
 
     @Test func byteLimitedListSnapshotPagesRemainStableAndRejectForeignCursors() async throws {
@@ -866,7 +931,7 @@ private actor PresentationDecisionProvider: DecisionProvider {
         }
         #expect(forwardPages.count >= 3)
         #expect(forwardPages.last?.nextCursor == nil)
-        let expectedCatalogOrder = try core.currentSessions().map { $0.sessionURL.lastPathComponent }
+        let expectedCatalogOrder = try await core.currentSessions().map { $0.sessionURL.lastPathComponent }
         let flattened = forwardPages.flatMap { $0.sessions.map(\.folderID) }
         #expect(flattened == expectedCatalogOrder)
         #expect(flattened.count == 11)

@@ -102,8 +102,12 @@ final class AppState: ObservableObject {
     @Published var modelPreparation = ModelPreparationStatus.initial
     @Published var processingState: ProcessingState = .idle
     @Published var processingStatusText: String?
-    @Published var processingQueue = SessionProcessingQueue()
+    @Published private(set) var processingQueue = ProcessingQueueSnapshot.empty
     @Published var savedSessionOperations = SavedSessionOperations()
+
+    func processingQueueDidChange(_ snapshot: ProcessingQueueSnapshot) {
+        processingQueue = snapshot
+    }
     @Published var exportDirectoryPath: String?
     @Published var exportDestinationMessage: String?
 
@@ -209,8 +213,9 @@ final class AppState: ObservableObject {
         terminationObserver = TerminationObservation(center: .default) { [weak self] in
             MainActor.assumeIsolated { self?.terminateCapture() }
         }
+        processingQueue = processingCoordinator.queueSnapshot
         if !pausesProcessing {
-            processingQueue.beginStorageMaintenance()
+            processingCoordinator.beginStorageMaintenance()
             startupMaintenanceTask = Task { [weak self] in
                 guard let self else { return }
                 await self.processingCoordinator.recoverPendingSessions(
@@ -249,6 +254,6 @@ final class AppState: ObservableObject {
     }
 
     var queuedFinalizationSessionIDs: Set<UUID> {
-        processingQueue.sessionIDs
+        processingQueue.sessionIDs.union(liveCoordinator.processingWorkerSessionIDs)
     }
 }

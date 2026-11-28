@@ -42,22 +42,13 @@ private enum VADFinishPlan: Sendable {
 
 @MainActor
 private final class RecordingFinishEffectsFake: RecordingFinishEffects, LiveTranscriptionEffects, SessionProcessingEffects {
-    var processingQueue = SessionProcessingQueue() {
-        didSet {
-            guard processingQueue.pending.count > oldValue.pending.count,
-                  let request = processingQueue.pending.last else { return }
-            switch request {
-            case .finalize(_, let policy):
-                precondition(policy == .reject, "Recording finish finalization must reject unreadable metadata")
-                orderLog.append("enqueue.finalize.reject")
-            case .retryContentPriority:
-                preconditionFailure("Unexpected retry request")
-            }
-        }
-    }
+    private(set) var processingQueue: ProcessingQueueSnapshot!
     let pausesProcessing = true
     private let sessionID: UUID
-    var recordingSessionID: UUID? { sessionID }
+    private var activeRecordingSessionID: UUID?
+    var recordingSessionID: UUID? { activeRecordingSessionID }
+    var onRecordingDidFinish: (@MainActor () -> Void)?
+    private(set) var didFinishWhileStopClaimed = false
     private let state: LiveTranscriptionState
     private let stopPlan: CaptureStopPlan
     private let orderLog: FinishOrderLog
@@ -67,9 +58,24 @@ private final class RecordingFinishEffectsFake: RecordingFinishEffects, LiveTran
     private(set) var refreshCount = 0
     private(set) var idleReleaseCount = 0
     init(state: LiveTranscriptionState, sessionID: UUID, stopPlan: CaptureStopPlan, orderLog: FinishOrderLog) {
-        self.state = state; self.sessionID = sessionID
+        self.state = state; self.sessionID = sessionID; activeRecordingSessionID = sessionID
         self.stopPlan = stopPlan; self.orderLog = orderLog
     }
+    func processingQueueDidChange(_ snapshot: ProcessingQueueSnapshot) {
+        let previous = processingQueue
+        processingQueue = snapshot
+        guard let previous, snapshot.pending.count > previous.pending.count,
+              let request = snapshot.pending.last else { return }
+        switch request.kind {
+        case .finalization:
+            orderLog.append("enqueue.finalize.reject")
+        case .replacement:
+            orderLog.append("enqueue.finalize.replacement")
+        case .decisionRetry:
+            preconditionFailure("Unexpected retry request")
+        }
+    }
+
     func stopCapture() async throws -> AudioCaptureStopResult {
         orderLog.append("capture.stop")
         switch stopPlan {
@@ -82,8 +88,11 @@ private final class RecordingFinishEffectsFake: RecordingFinishEffects, LiveTran
         orderLog.append("capture.stopped:\(dropoutCount)")
     }
     func recordingDidFinish(_ outcome: RecordingFinishOutcome) {
+        activeRecordingSessionID = nil
+        didFinishWhileStopClaimed = processingQueue.claimedSessionIDs.contains(sessionID)
         outcomes.append(outcome)
         pendingSegmentsAtFinish.append(state.pendingSegmentCount(sessionID: sessionID))
+        onRecordingDidFinish?()
         switch outcome {
         case .saved: orderLog.append("finish.saved")
         case .failed: orderLog.append("finish.failed")
@@ -108,6 +117,9 @@ private final class RecordingFinishEffectsFake: RecordingFinishEffects, LiveTran
     func awaitModelPreparation() async {}
     func liveStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler { preconditionFailure("Unexpected live processing status handler") }
     func liveUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler { preconditionFailure("Unexpected live processing update handler") }
+    func liveGenerationDidOpen(sessionID: UUID, generationID: UUID) {
+        _ = (sessionID, generationID)
+    }
     func liveDidChange(_ event: LiveTranscriptionEvent) {
         guard case .started = event else {
             preconditionFailure("Unexpected live-transcription event: \(event)")
@@ -122,6 +134,10 @@ private final class RecordingFinishEffectsFake: RecordingFinishEffects, LiveTran
     func processingUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler {
         preconditionFailure("Paused processing must not request an update handler")
     }
+    func processingGenerationDidOpen(sessionID: UUID, generationID: UUID) {
+        preconditionFailure("Paused processing must not open a generation")
+    }
+    func hasLiveProcessingWorker(sessionID: UUID) -> Bool { false }
     func waitForLiveASRDrain(sessionID: UUID) async -> LiveASRDrainOutcome { preconditionFailure("Paused processing must not drain") }
     func liveASRFailure(sessionID: UUID) -> String? { preconditionFailure("Paused processing must not inspect ASR state") }
     func cleanupLiveASRState(sessionID: UUID) { preconditionFailure("Paused processing must not clean up ASR state") }
@@ -139,9 +155,13 @@ private actor FinishTestExecutor: LiveTranscriptionExecuting, SessionProcessingE
         self.sessionID = sessionID
         self.orderLog = orderLog
     }
-    func startLiveTranscription(sessionID: UUID, sampleRate: Double) async throws -> String {
+    func startLiveTranscription(
+        sessionID: UUID, sampleRate: Double,
+        onGenerationOpened: @escaping NativeSessionProcessor.GenerationOpenedHandler
+    ) async throws -> String {
         _ = (sessionID, sampleRate)
         startCount += 1
+        await onGenerationOpened(UUID())
         orderLog.append("live.start")
         return "finish-test-seg-run"
     }
@@ -181,10 +201,11 @@ private actor FinishTestExecutor: LiveTranscriptionExecuting, SessionProcessingE
     func processSession(
         sessionID: UUID, pacingMode: ASRPacingMode,
         shouldPause: @escaping NativeSessionProcessor.PauseCheck, onPhase: @escaping NativeSessionProcessor.PhaseHandler,
-        metadataPolicy: UnreadableMetadataPolicy, onStatus: @escaping NativeSessionProcessor.StatusHandler,
-        onUpdate: @escaping NativeSessionProcessor.UpdateHandler
+        metadataPolicy: SessionFinalizationPolicy, onStatus: @escaping NativeSessionProcessor.StatusHandler,
+        onUpdate: @escaping NativeSessionProcessor.UpdateHandler,
+        onGenerationOpened: @escaping NativeSessionProcessor.GenerationOpenedHandler
     ) async -> SessionProcessingResult {
-        _ = (sessionID, pacingMode, shouldPause, onPhase, metadataPolicy, onStatus, onUpdate)
+        _ = (sessionID, pacingMode, shouldPause, onPhase, metadataPolicy, onStatus, onUpdate, onGenerationOpened)
         preconditionFailure("Paused queue must retain finalization without model work")
     }
     func retryContentPrioritySession(
@@ -303,12 +324,9 @@ private func makeFixture(
 
 @MainActor
 private func expectQueuedFinalize(_ effects: RecordingFinishEffectsFake, sessionID: UUID) throws {
-    guard case .finalize(let queuedID, let policy) = try #require(effects.processingQueue.pending.first) else {
-        #expect(Bool(false), "Recording failure must enqueue rejected-metadata finalization")
-        return
-    }
-    #expect(queuedID == sessionID)
-    #expect(policy == .reject)
+    let request = try #require(effects.processingQueue.pending.first)
+    #expect(request.sessionID == sessionID)
+    #expect(request.kind == .finalization)
 }
 
 @MainActor
@@ -420,6 +438,40 @@ func cancelledVADFinishDiscardsLiveQueueBeforeFullFinalization() async throws {
     #expect(fixture.state.pendingSegmentCount(sessionID: sessionID) == 0)
     #expect(fixture.state.vadFailureText == nil)
     #expect(fixture.state.vadSegmentCount == 0)
+    try expectQueuedFinalize(fixture.effects, sessionID: sessionID)
+}
+
+@MainActor
+@Test
+func stoppingSessionClaimBlocksReprocessUntilFinalizationHandoff() async throws {
+    let sessionID = UUID()
+    let checkpoint = makeCheckpoint(72_000)
+    let result = makeStopResult(checkpoint: checkpoint, dropouts: 1, writerFailure: nil, releaseFailure: nil)
+    let fixture = makeFixture(
+        sessionID: sessionID,
+        checkpoint: checkpoint,
+        stopPlan: .succeed(result),
+        vadPlan: .cancelled
+    )
+    var admissionError: SessionProcessingAdmissionError?
+    fixture.effects.onRecordingDidFinish = {
+        do {
+            try fixture.processing.enqueueReprocess(sessionID: sessionID)
+        } catch let error as SessionProcessingAdmissionError {
+            admissionError = error
+        } catch {
+            preconditionFailure("unexpected reprocess admission error: \(error)")
+        }
+    }
+
+    try await fixture.startVAD()
+    await fixture.finish(failureMessage: nil)
+
+    #expect(fixture.effects.recordingSessionID == nil)
+    #expect(fixture.effects.didFinishWhileStopClaimed)
+    #expect(admissionError != nil)
+    #expect(fixture.effects.processingQueue.pending.count == 1)
+    #expect(fixture.effects.processingQueue.claimedSessionIDs.isEmpty)
     try expectQueuedFinalize(fixture.effects, sessionID: sessionID)
 }
 

@@ -154,8 +154,10 @@ func coolingResumesThermallyHeldFinalization() async throws {
         await state.modelPreparer.runTask?.value
         await state.idleReleaseTask?.value
 
-        #expect(state.processingQueue.held.contains { $0.request.sessionID == sessionID })
-        #expect(state.processingQueue.pending.isEmpty)
+        #expect(state.processingQueue.summaries.contains {
+            $0.sessionID == sessionID && $0.holdReason == .inference(.thermal)
+        })
+        #expect(!state.processingQueue.summaries.contains { $0.holdReason == .pending || $0.holdReason == nil })
         #expect(state.processingState == .backlogged)
         #expect(await asr.inputs() == [])
 
@@ -164,7 +166,7 @@ func coolingResumesThermallyHeldFinalization() async throws {
         await state.modelPreparer.runTask?.value
         await state.idleReleaseTask?.value
 
-        #expect(state.processingQueue.held.isEmpty)
+        #expect(state.processingQueue.summaries.isEmpty)
         #expect(state.processingState == .complete)
         let sessionURL = try SessionDirectoryLocator(fileManager: .default)
             .resolve(sessionsRoot: paths.sessionsRoot, sessionID: sessionID)
