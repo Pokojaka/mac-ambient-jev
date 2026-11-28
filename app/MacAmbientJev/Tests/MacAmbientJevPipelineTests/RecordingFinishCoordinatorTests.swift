@@ -4,7 +4,7 @@ import Testing
 @testable import MacAmbientJevCore
 @testable import MacAmbientJevPipeline
 
-private final class FinishOrderLog: Sendable {
+final class FinishOrderLog: Sendable {
     private let storage = Mutex<[String]>([])
     func append(_ event: String) { storage.withLock { $0.append(event) } }
     var events: [String] { storage.withLock { $0 } }
@@ -31,7 +31,7 @@ private struct FinishTestError: LocalizedError, Sendable {
     let message: String
     var errorDescription: String? { message }
 }
-private enum CaptureStopPlan: Sendable {
+enum CaptureStopPlan: Sendable {
     case succeed(AudioCaptureStopResult)
     case fail(String)
 }
@@ -41,7 +41,7 @@ private enum VADFinishPlan: Sendable {
 }
 
 @MainActor
-private final class RecordingFinishEffectsFake: RecordingFinishEffects, LiveTranscriptionEffects, SessionProcessingEffects {
+final class RecordingFinishEffectsFake: RecordingFinishEffects, LiveTranscriptionEffects, SessionProcessingEffects {
     private(set) var processingQueue: ProcessingQueueSnapshot!
     let pausesProcessing = true
     private let sessionID: UUID
@@ -144,7 +144,7 @@ private final class RecordingFinishEffectsFake: RecordingFinishEffects, LiveTran
     func autoExportIfEnabled(sessionID: UUID) async { preconditionFailure("Paused processing must not export") }
     func processingDidChange(_ event: SessionProcessingEvent) { preconditionFailure("Paused processing must not change state") }
 }
-private actor FinishTestExecutor: LiveTranscriptionExecuting, SessionProcessingExecuting {
+actor FinishTestExecutor: LiveTranscriptionExecuting, SessionProcessingExecuting {
     private let state: LiveTranscriptionState
     private let sessionID: UUID
     private let orderLog: FinishOrderLog
@@ -433,7 +433,7 @@ func cancelledVADFinishDiscardsLiveQueueBeforeFullFinalization() async throws {
     #expect(fixture.orderLog.events == [
         "live.started", "live.start", "poll.entered", "capture.stop", "poll.cancelled",
         "capture.stopped:2", "live.seal", "vad.finish:64000", "finish.saved",
-        "live.cancel.queue-clean.vad-retained", "enqueue.finalize.reject"
+        "live.cancel.queue-clean.vad-reset", "enqueue.finalize.reject"
     ])
     #expect(fixture.state.pendingSegmentCount(sessionID: sessionID) == 0)
     #expect(fixture.state.vadFailureText == nil)

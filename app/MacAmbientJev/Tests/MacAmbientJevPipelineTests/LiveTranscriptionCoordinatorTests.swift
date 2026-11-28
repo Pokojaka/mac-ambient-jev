@@ -236,6 +236,8 @@ private actor FakeLiveTranscriptionExecutor: LiveTranscriptionExecuting {
     private var cancellationWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
     private var startCount = 0
     private var beforeGate: (@Sendable () async -> Void)?
+    var cancellationGate: OneShotAsyncGate?
+    func setCancellationGate(_ gate: OneShotAsyncGate) { cancellationGate = gate }
 
     func setBeforeGate(_ hook: @escaping @Sendable () async -> Void) { beforeGate = hook }
 
@@ -343,6 +345,7 @@ private actor FakeLiveTranscriptionExecutor: LiveTranscriptionExecuting {
     }
 
     func cancelLiveTranscription(sessionID: UUID) async {
+        if let gate = cancellationGate { cancellationGate = nil; await gate.wait() }
         cancellationSessions.append(sessionID)
         let ready = cancellationWaiters.filter { $0.count <= cancellationSessions.count }
         cancellationWaiters.removeAll { $0.count <= cancellationSessions.count }
@@ -843,6 +846,58 @@ func failureDuringRegistrationDoesNotResurrectDroppedBacklog() async throws {
     #expect(retainedState.failure(sessionID: retainedSessionID) == nil)
     #expect(retainedState.queuedBatchCount(sessionID: retainedSessionID) == 0)
     #expect(retainedCoordinator.isASRIdle)
+}
+
+@MainActor
+@Test
+func finishingFailedVADDoesNotStopNextRecordingVAD() async throws {
+    let a = UUID(), b = UUID(), checkpoint = makeCheckpoint(700)
+    let state = LiveTranscriptionState(), log = SharedCoordinatorOrderLog()
+    let effects = FakeLiveTranscriptionEffects(recordingSessionID: a, checkpoint: checkpoint, orderLog: log, stopsRecordingOnVADEnqueue: false)
+    let processor = FakeLiveTranscriptionExecutor(startRunID: "run", registrationScript: [], processingScript: [], orderLog: log)
+    let cancelGate = OneShotAsyncGate(), pollGate = OneShotAsyncGate()
+    let firstSleep = CancellationAwareSleepGate(), lastSleep = CancellationAwareSleepGate()
+    let sleeps = Mutex(0)
+    let coordinator = LiveTranscriptionCoordinator(state: state, effects: effects, processor: processor,
+        thermalMonitor: CoordinatorThermalMonitor(pressure: .nominal), resourceMonitor: nil) { _ in
+        let number = sleeps.withLock { $0 += 1; return $0 }
+        switch number {
+        case 1: try await firstSleep.wait()
+        case 2: await pollGate.wait()
+        default: try await lastSleep.wait()
+        }
+    }
+    let progress = LiveVADProgress(emittedSegments: [], totalSegmentCount: 3, committedFrames: 700, micSpeechLevels: [])
+    let vadA = FakeLiveVAD(segmentationRunID: "a", processScript: [], finishScript: [progress])
+    let vadB = FakeLiveVAD(segmentationRunID: "b", processScript: [progress], finishScript: [])
+    let finishLog = FinishOrderLog()
+    let stop = AudioCaptureStopResult(checkpoint: checkpoint, didOverflow: false, dropoutCount: 0, gapCount: 0,
+        totalGapFrames: 0, sleepAssertionHeld: false, writerFailure: nil, systemAudioReleaseFailure: nil)
+    let finishEffects = RecordingFinishEffectsFake(state: state, sessionID: a, stopPlan: .succeed(stop), orderLog: finishLog)
+    let finishExecutor = FinishTestExecutor(state: state, sessionID: a, orderLog: finishLog)
+    let processing = SessionProcessingCoordinator(effects: finishEffects, processor: finishExecutor,
+        thermalMonitor: CoordinatorThermalMonitor(pressure: .nominal), resourceHolds: nil)
+    try await coordinator.startVAD(sessionID: a, checkpoint: checkpoint) { _ in vadA }
+    await firstSleep.waitUntilEntered()
+    state.vadFailureText = "VAD failure"
+    await processor.setCancellationGate(cancelGate)
+    let finishing = Task { await coordinator.finishRecording(sessionID: a, failureMessage: nil, processing: processing, effects: finishEffects) }
+    await cancelGate.waitUntilEntered()
+    effects.recordingSessionID = b
+    try await coordinator.startVAD(sessionID: b, checkpoint: checkpoint) { _ in vadB }
+    await pollGate.waitUntilEntered()
+    await cancelGate.release()
+    await finishing.value
+    let bStillActive = coordinator.hasWork(sessionID: b)
+    #expect(bStillActive)
+    #expect(coordinator.processingWorkerSessionIDs.contains(b))
+    await pollGate.release()
+    if bStillActive {
+        await effects.waitForEvent(.vadProgress(b, progress))
+        #expect(await vadB.callCounts().process == 1)
+    }
+    effects.recordingSessionID = nil
+    await coordinator.stopVADPolling()
 }
 
 @MainActor

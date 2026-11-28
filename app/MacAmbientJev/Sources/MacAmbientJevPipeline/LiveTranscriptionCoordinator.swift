@@ -277,24 +277,26 @@ public final class LiveTranscriptionCoordinator {
                 failureMessage, result.systemAudioReleaseFailure
             )
             await finishVAD(sessionID: sessionID, checkpoint: checkpoint)
+            let vadFailureText = state.vadFailureText
+            let vadSegmentCount = state.vadSegmentCount
+            resetVAD()
             effects.recordingDidFinish(
                 .saved(
                     result: result,
                     failureMessage: stopFailureMessage,
-                    vadFailureText: state.vadFailureText,
-                    vadSegmentCount: state.vadSegmentCount
+                    vadFailureText: vadFailureText,
+                    vadSegmentCount: vadSegmentCount
                 )
             )
 
             // Stop drains the live worker in place. Without complete live segmentation there is no worker to keep.
-            if state.vadFailureText != nil || resourceSuspensions.contains(sessionID) {
+            if vadFailureText != nil || resourceSuspensions.contains(sessionID) {
                 cleanup(sessionID: sessionID)
                 await processor.cancelLiveTranscription(sessionID: sessionID)
             }
             processing.enqueue(.finalize(sessionID: sessionID, metadataPolicy: .reject))
 
             if failureMessage != nil { effects.refreshSavedSessions() }
-            resetVAD()
         } catch {
             await stopVADPolling()
             resetVAD()
