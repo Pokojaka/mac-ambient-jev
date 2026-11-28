@@ -3,7 +3,7 @@ import Testing
 @testable import MacAmbientJev
 import MacAmbientJevCapture
 import MacAmbientJevCore
-import MacAmbientJevPipeline
+@testable import MacAmbientJevPipeline
 import MacAmbientJevRuntime
 
 private actor BlockedLiveUpdate {
@@ -112,7 +112,6 @@ func aStaleLiveUpdateCannotReplaceFinalRowsWhileTheSameSessionIsBeingProcessed()
     #expect(state.transcriptViewModel.rows.map(\.text) == ["ライブ原文"])
 
     state.recording.finish()
-    state.processingQueue.begin(.finalize(sessionID: sessionID, metadataPolicy: .reject))
     let final = try MaterializedTranscriptSegment.fixture(
         segmentID: "final", startMilliseconds: 0, endMilliseconds: 1_000,
         text: "確定本文", fillerRanges: []

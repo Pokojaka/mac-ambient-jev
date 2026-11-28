@@ -67,6 +67,60 @@ private func launchMaintenanceState(paths: AppPaths, defaults: UserDefaults) -> 
     )
 }
 
+private actor LaunchMaintenanceGate {
+    private var entered = false
+    private var released = false
+    private var entryContinuation: CheckedContinuation<Void, Never>?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func hold() async {
+        entered = true
+        entryContinuation?.resume()
+        entryContinuation = nil
+        await withCheckedContinuation { continuation in
+            if released { continuation.resume() }
+            else { releaseContinuation = continuation }
+        }
+    }
+
+    func waitUntilEntered() async {
+        if entered { return }
+        await withCheckedContinuation { entryContinuation = $0 }
+    }
+
+    func release() {
+        released = true
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+        entryContinuation?.resume()
+        entryContinuation = nil
+    }
+}
+
+private final class QueueChangeAfterGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var gateIsOpen = false
+    private var emittedAfterGate = false
+
+    func openGate() {
+        lock.lock()
+        gateIsOpen = true
+        lock.unlock()
+    }
+
+    func recordChange() {
+        lock.lock()
+        if gateIsOpen { emittedAfterGate = true }
+        lock.unlock()
+    }
+
+    var didEmitAfterGate: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return emittedAfterGate
+    }
+}
+
 @MainActor
 @Test("completed launch maintenance clears the processing indicator and live header when no recovery is needed")
 func completedLaunchMaintenanceClearsItsStatus() async throws {
@@ -93,7 +147,7 @@ func completedLaunchMaintenanceClearsItsStatus() async throws {
     #expect(!state.processingQueue.isMaintainingStorage)
     #expect(state.processingStatusText == nil)
     #expect(state.transcriptViewModel.statusText == UserFacingStatus.idle.text)
-    #expect(state.processingQueue.pending.isEmpty)
+    #expect(state.processingQueue.summaries.isEmpty)
     #expect(!state.processingCoordinator.isDraining)
     guard case .recordingFLAC(let timeline) = try SessionAudioStorageStore(layout: layout).load() else {
         Issue.record("launch recovery did not compact the saved recording")
@@ -102,6 +156,45 @@ func completedLaunchMaintenanceClearsItsStatus() async throws {
     #expect(timeline.committedFrames == 16_000)
     #expect(FileManager.default.fileExists(atPath: layout.recordingFLACURL.path))
     #expect(!FileManager.default.fileExists(atPath: layout.processingDirectory.path))
+}
+
+@MainActor
+@Test("launch maintenance publishes the opened queue snapshot when no recovery work is queued")
+func completedLaunchMaintenancePublishesQueueSnapshotAfterOpeningGate() async throws {
+    let (root, paths) = temporaryRecordingPaths()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (defaults, suiteName) = try temporaryDefaults()
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    _ = try await launchMaintenanceRecording(paths: paths)
+    let scan = try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()
+    #expect(scan.candidates.isEmpty)
+    try #require(!scan.maintenance.isEmpty)
+    let state = launchMaintenanceState(paths: paths, defaults: defaults)
+    let gate = LaunchMaintenanceGate()
+    let changesAfterGate = QueueChangeAfterGate()
+    let observation = state.objectWillChange.sink { _ in changesAfterGate.recordChange() }
+    defer { observation.cancel() }
+
+    let recovery = Task { @MainActor in
+        await state.processingCoordinator.recoverPendingSessions(
+            effects: state,
+            scan: {
+                try SessionRecoveryScanner(sessionsRoot: paths.sessionsRoot).pendingSessions()
+            },
+            maintain: { items, callback in
+                await gate.hold()
+                return await SessionStorageMaintainer.maintain(items, willMaintain: callback)
+            }
+        )
+    }
+    await gate.waitUntilEntered()
+    #expect(state.processingQueue.isMaintainingStorage)
+    changesAfterGate.openGate()
+    await gate.release()
+    await recovery.value
+
+    #expect(changesAfterGate.didEmitAfterGate)
+    #expect(!state.processingQueue.isMaintainingStorage)
 }
 
 @MainActor
@@ -173,7 +266,7 @@ func failedLaunchMaintenanceReportsFailureWithoutStaleStatus() async throws {
     #expect(message.contains(layout.sessionURL.lastPathComponent + ": "))
     #expect(state.processingStatusText == message)
     #expect(state.transcriptViewModel.statusText == UserFacingStatus.idle.text)
-    #expect(state.processingQueue.pending.isEmpty)
+    #expect(state.processingQueue.summaries.isEmpty)
     #expect(!state.processingCoordinator.isDraining)
     #expect(FileManager.default.fileExists(atPath: layout.processingDirectory.path))
 }
@@ -209,8 +302,8 @@ func interruptedLaunchMaintenanceRemainsRetryableAfterCancellation() async throw
     await recoveryTask.value
 
     #expect(!state.processingQueue.isMaintainingStorage)
-    #expect(state.processingQueue.pending.isEmpty)
-    #expect(!state.processingQueue.containsForReprocessing(manifest.sessionID))
+    #expect(state.processingQueue.summaries.isEmpty)
+    #expect(!state.processingQueue.containsProcessing(manifest.sessionID))
     #expect(!state.processingCoordinator.isDraining)
     #expect(state.processingState == previousProcessingState)
     guard let status = state.processingStatusText else {

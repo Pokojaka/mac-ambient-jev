@@ -48,6 +48,10 @@ extension EngineApplicationCore: SessionProcessingEffects {
         }
     }
 
+    func processingGenerationDidOpen(sessionID: UUID, generationID: UUID) {
+        transcriptDidSelectGeneration(sessionID: sessionID, generationID: generationID)
+    }
+
     func processingUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler {
         { [weak self] segments, state in
             await MainActor.run {
@@ -78,6 +82,10 @@ extension EngineApplicationCore: SessionProcessingEffects {
         liveCoordinator.cleanup(sessionID: sessionID)
     }
 
+    func hasLiveProcessingWorker(sessionID: UUID) -> Bool {
+        liveCoordinator.hasWork(sessionID: sessionID)
+    }
+
     func autoExportIfEnabled(sessionID: UUID) async {
         guard !isShuttingDown, !Task.isCancelled else { return }
         guard let settings, settings.automaticExport else { return }
@@ -89,7 +97,7 @@ extension EngineApplicationCore: SessionProcessingEffects {
             return
         }
         do {
-            let session = try readableSession(sessionID)
+            let session = try await readableSession(sessionID)
             guard session.hasActiveTranscript else { return }
             switch session.processingStatus {
             case .complete, .classificationPending:
@@ -104,27 +112,39 @@ extension EngineApplicationCore: SessionProcessingEffects {
         }
     }
 
+    func processingQueueDidChange(_ snapshot: ProcessingQueueSnapshot) {}
+
     func processingDidChange(_ event: SessionProcessingEvent) {
         switch event {
         case .backlogged:
             presentation.processingState = .backlogged
             presentation.processingStatusText = "文字起こし処理が待機中です"
-        case let .held(request):
+        case let .held(item):
             presentation.processingState = .idle
             presentation.processingStatusText = "処理は中断されました。次回の起動時に再開できます"
-            if let reason = resourceHoldReason(sessionID: request.sessionID) {
+            if let reason = resourceHoldReason(sessionID: item.sessionID) {
                 presentation.processingStatusText = reason.finalizationExplanation
             }
-            if request.sessionID == watchedSessionID { watchedSessionIsFinal = false }
-        case let .heldForModels(request):
+            if item.holdReason == .paused {
+                completions.finish(requestID: item.requestID, with: .paused)
+            } else if !isShuttingDown, item.kind == .replacement, isResourceHold(item),
+                      let error = monitorFailureError(sessionID: item.sessionID) {
+                completions.finish(requestID: item.requestID, with: error)
+            }
+            if item.sessionID == watchedSessionID { watchedSessionIsFinal = false }
+        case let .heldForModels(item):
             presentation.processingState = .idle
             presentation.processingStatusText = ModelPreparationStatus.waitingForModelsText
-            if request.sessionID == watchedSessionID { watchedSessionIsFinal = false }
-        case let .began(request):
+            if item.kind == .replacement,
+               let error = modelPreparationError(sessionID: item.sessionID) {
+                completions.finish(requestID: item.requestID, with: error)
+            }
+            if item.sessionID == watchedSessionID { watchedSessionIsFinal = false }
+        case let .began(item):
             presentation.processingState = .running
-            resourceFinalizingSessionID = request.finalizesTranscript ? request.sessionID : nil
+            resourceFinalizingSessionID = item.kind == .decisionRetry ? nil : item.sessionID
             finalizationResourceHoldReason = nil
-            if request.finalizesTranscript, request.sessionID == watchedSessionID { watchedSessionIsFinal = false }
+            if item.kind != .decisionRetry, item.sessionID == watchedSessionID { watchedSessionIsFinal = false }
         case let .liveFailed(message):
             let notice = "ライブ文字起こしは停止しました。録音全体を確定処理します: \(message)"
             addLiveFailureNotice(notice)
@@ -132,16 +152,14 @@ extension EngineApplicationCore: SessionProcessingEffects {
                 code: .processingFailure, message: notice,
                 stage: .asr, sessionID: nil, severity: .warning, recoveryAction: .none
             ))
-        case let .finished(request, result):
-            finished(request, result: result)
+        case let .finished(item, result):
+            finished(item, result: result)
         case .next:
             presentation.processingState = .backlogged
             presentation.processingStatusText = "次の文字起こし処理を開始します"
         case .willFinishDrain:
             if presentation.processingState == .running || presentation.processingState == .backlogged,
-               processingQueue.held.isEmpty,
-               processingQueue.modelHeld.isEmpty,
-               processingQueue.pending.isEmpty,
+               processingQueue.summaries.isEmpty,
                !pausesProcessing {
                 presentation.processingState = .complete
             }
@@ -153,18 +171,25 @@ extension EngineApplicationCore: SessionProcessingEffects {
         stateDidChange()
     }
 
-    private func finished(_ request: PendingProcessing, result: SessionProcessingResult?) {
+    private func finished(_ item: ProcessingQueueItemSummary, result: SessionProcessingResult?) {
+        processingCompletionEpoch += 1
         resourceFinalizingSessionID = nil
         finalizationResourceHoldReason = nil
-        let sessionID = request.sessionID
+        let sessionID = item.sessionID
         recoveryOutstanding.remove(sessionID)
         updateRecoveryStatus()
         savedSessionsAreStale = true
+        savedSessionsVersion += 1
         switch result?.disposition {
         case .completed?:
             clearFailures(sessionID: sessionID)
-            if request.finalizesTranscript {
-                transcriptDidPublish(sessionID: sessionID)
+            transcriptEpoch += 1
+            if item.kind != .decisionRetry {
+                finalPublishedSessionIDs.insert(sessionID)
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    await self.transcriptDidPublish(sessionID: sessionID)
+                }
                 if sessionID == watchedSessionID { watchedSessionIsFinal = true }
             }
         case .failed?:
@@ -180,8 +205,8 @@ extension EngineApplicationCore: SessionProcessingEffects {
             }
             report(EngineFailures.failure(
                 code: .processingFailure, message: message,
-                stage: request.finalizesTranscript ? .finalization : .decisions, sessionID: sessionID,
-                severity: .error, recoveryAction: request.finalizesTranscript ? .reprocess : .retryDecisions
+                stage: item.kind == .decisionRetry ? .decisions : .finalization, sessionID: sessionID,
+                severity: .error, recoveryAction: item.kind == .decisionRetry ? .retryDecisions : .reprocess
             ))
         case .paused?, nil:
             guard result?.disposition == .paused,
@@ -189,13 +214,25 @@ extension EngineApplicationCore: SessionProcessingEffects {
             presentation.processingState = .idle
             presentation.processingStatusText = reason.finalizationExplanation
         }
-        completions.finished(request, result: result)
+        if !isShuttingDown,
+           result?.disposition == .paused,
+           item.kind == .replacement,
+           isResourceHold(item),
+           let error = monitorFailureError(sessionID: sessionID) {
+            completions.finish(requestID: item.requestID, with: error)
+        }
+        completions.finished(item, result: result, isShutdownCancellation: isShuttingDown)
+    }
+
+    private func isResourceHold(_ item: ProcessingQueueItemSummary) -> Bool {
+        guard case let .inference(reason)? = item.holdReason else { return false }
+        return reason == .resourcePressure || reason == .monitorFailed
     }
 
     /// The resource reason a held request waits for, if it waits for one.
     private func resourceHoldReason(sessionID: UUID) -> InferenceHoldReason? {
-        guard let held = processingQueue.held.first(where: { $0.request.sessionID == sessionID }),
-              case .inference(let reason) = held.reason,
+        guard let hold = processingQueue.summaries.first(where: { $0.sessionID == sessionID })?.holdReason,
+              case .inference(let reason) = hold,
               reason == .resourcePressure || reason == .monitorFailed else { return nil }
         return reason
     }
@@ -244,8 +281,10 @@ extension EngineApplicationCore {
         guard isIdle, idleReleaseTask == nil, !isShuttingDown else { return }
         idleReleaseTask = Task { [self] in
             if isIdle {
-                presentation.preparationPhase = .idle
-                presentation.preparationStatusText = nil
+                if modelPreparationFailure == nil {
+                    presentation.preparationPhase = .idle
+                    presentation.preparationStatusText = nil
+                }
                 stateDidChange()
                 await gateway.releaseIdleResources()
             }
@@ -337,9 +376,11 @@ extension EngineApplicationCore {
                 await SessionStorageMaintainer.maintain(items, willMaintain: willMaintain)
             }
         )
-        recoveryOutstanding = Set(processingQueue.pending.map(\.sessionID))
-            .union(processingQueue.currentSessionID.map { [$0] } ?? [])
+        recoveryOutstanding = Set(processingQueue.summaries
+            .filter { $0.holdReason == .pending || $0.holdReason == nil }
+            .map(\.sessionID))
         savedSessionsAreStale = true
+        savedSessionsVersion += 1
         updateRecoveryStatus()
         stateDidChange()
     }

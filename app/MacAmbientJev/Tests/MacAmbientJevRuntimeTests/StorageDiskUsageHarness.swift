@@ -140,7 +140,7 @@ func storageDiskUsageHarness() async throws {
     let recordingResult = await processor.processSession(
         sessionID: recordingID, pacingMode: .normal,
         shouldPause: { _ in nil }, onPhase: { _ in }, metadataPolicy: .reject,
-        onStatus: { _ in }, onUpdate: { _, _ in }
+        onStatus: { _ in }, onUpdate: { _, _ in }, onGenerationOpened: { _ in }
     )
     guard recordingResult.disposition == .completed else {
         throw StorageHarnessError.finalizationFailed(recordingResult.message)
@@ -161,7 +161,7 @@ func storageDiskUsageHarness() async throws {
     let importResult = await processor.processSession(
         sessionID: importID, pacingMode: .normal,
         shouldPause: { _ in nil }, onPhase: { _ in }, metadataPolicy: .reject,
-        onStatus: { _ in }, onUpdate: { _, _ in }
+        onStatus: { _ in }, onUpdate: { _, _ in }, onGenerationOpened: { _ in }
     )
     guard importResult.disposition == .completed else {
         throw StorageHarnessError.finalizationFailed(importResult.message)

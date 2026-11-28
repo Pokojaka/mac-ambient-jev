@@ -36,20 +36,34 @@ public enum EngineExit: Equatable, Sendable {
 @MainActor
 public final class EngineController {
     private struct InFlight {
+        enum Phase: Equatable { case running, claimed, sending }
+
         var task: Task<Void, Never>?
+        var phase: Phase = .running
     }
 
     private let transport: EngineTransport
     private let handlers: EngineHandlers
     private let admission: EngineAdmissionLimits
+    private let onShutdownWaitPass: @Sendable ([EngineID]) async -> Void
     private let emitter: EngineEventEmitter
     private var order = EngineRequestOrder()
     private var inFlight: [EngineID: InFlight] = [:]
 
-    public init(transport: EngineTransport, handlers: EngineHandlers, admission: EngineAdmissionLimits) {
+    public convenience init(transport: EngineTransport, handlers: EngineHandlers, admission: EngineAdmissionLimits) {
+        self.init(transport: transport, handlers: handlers, admission: admission, onShutdownWaitPass: { _ in })
+    }
+
+    init(
+        transport: EngineTransport,
+        handlers: EngineHandlers,
+        admission: EngineAdmissionLimits,
+        onShutdownWaitPass: @escaping @Sendable ([EngineID]) async -> Void
+    ) {
         self.transport = transport
         self.handlers = handlers
         self.admission = admission
+        self.onShutdownWaitPass = onShutdownWaitPass
         emitter = EngineEventEmitter(transport: transport)
     }
 
@@ -194,7 +208,11 @@ public final class EngineController {
 
     private func execute(_ request: EngineRequest) async {
         let id = request.requestID
-        let context = EngineRequestContext(requestID: id, events: emitter)
+        let context = EngineRequestContext(requestID: id, events: emitter) { [weak self] in
+            guard let self, var inFlight = self.inFlight[id], inFlight.phase == .running else { return }
+            inFlight.phase = .claimed
+            self.inFlight[id] = inFlight
+        }
         do {
             let result = try await dispatch(request.command, context: context)
             let sent = await finish(id, .completed(result))
@@ -253,11 +271,16 @@ public final class EngineController {
     /// Emits the terminal reply once. A request already finished, for example cancelled by shutdown, is ignored.
     @discardableResult
     private func finish(_ id: EngineID, _ event: EngineEvent) async -> Bool {
-        guard inFlight.removeValue(forKey: id) != nil else { return false }
+        guard var flight = inFlight[id] else { return false }
+        guard flight.phase != .sending else { return false }
+        flight.phase = .sending
+        inFlight[id] = flight
         do {
             try await transport.send(event, requestID: id)
+            inFlight.removeValue(forKey: id)
             return true
         } catch {
+            inFlight.removeValue(forKey: id)
             EngineLog.write("terminal reply for request \(id.rawValue) not sent: \(error)")
             return false
         }
@@ -346,9 +369,32 @@ public final class EngineController {
             failure = String(describing: error)
             EngineLog.write("shutdown handler failed: \(error)")
         }
-        for id in inFlight.keys.sorted() where id != keptID {
-            inFlight[id]?.task?.cancel()
-            await finish(id, Self.failure(for: CancellationError(), requestID: id))
+        var awaited = Set<EngineID>()
+        while true {
+            let waiting = inFlight.keys.sorted().compactMap { id -> (EngineID, Task<Void, Never>)? in
+                guard id != keptID, !awaited.contains(id),
+                      let flight = inFlight[id], flight.phase == .claimed || flight.phase == .sending,
+                      let task = flight.task else { return nil }
+                return (id, task)
+            }
+            let running = inFlight.keys.contains { id in
+                id != keptID && inFlight[id]?.phase == .running
+            }
+            await onShutdownWaitPass(waiting.map(\.0))
+            if waiting.isEmpty && !running { break }
+
+            for (id, task) in waiting {
+                awaited.insert(id)
+                await task.value
+            }
+            let runningIDs = inFlight.keys.sorted().filter { id in
+                id != keptID && inFlight[id]?.phase == .running
+            }
+            for id in runningIDs {
+                guard let flight = inFlight[id], flight.phase == .running else { continue }
+                flight.task?.cancel()
+                await finish(id, Self.failure(for: CancellationError(), requestID: id))
+            }
         }
         return failure
     }

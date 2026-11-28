@@ -101,6 +101,7 @@ if (-not (Test-Path -LiteralPath $harnessExecutablePath -PathType Leaf)) {
 Invoke-Step 'Test Engine.Tests with staged native engine and Swift deterministic harness' {
     dotnet test app/Windows/tests/MacAmbientJev.Engine.Tests/MacAmbientJev.Engine.Tests.csproj -c Release --no-restore --minimum-expected-tests 4 --environment "MAC_AMBIENT_JEV_TEST_ENGINE_PATH=$engineExecutablePath" --environment "MAC_AMBIENT_JEV_TEST_HARNESS_PATH=$harnessExecutablePath"
 }
+Remove-Item -LiteralPath $engineStageDestination -Recurse -Force -ErrorAction Stop
 
 $swiftExecutable = (Get-Command swift -CommandType Application -ErrorAction Stop).Source
 $swiftToolchainDirectory = Split-Path -Parent $swiftExecutable

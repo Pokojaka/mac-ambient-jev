@@ -22,6 +22,7 @@ extension EngineApplicationCore {
 
     /// Updates any cached view of this session. Only the watched session is streamed.
     func transcriptDidUpdate(sessionID: UUID, segments: [MaterializedTranscriptSegment]) {
+        transcriptEpoch += 1
         let watchedCache = sessionID == watchedSessionID && transcript?.sessionID == sessionID ? transcript : nil
         let cachedRead = readTranscript?.sessionID == sessionID ? readTranscript : nil
         guard watchedCache != nil || cachedRead != nil else { return }
@@ -220,9 +221,10 @@ extension EngineApplicationCore {
         }
     }
 
-    /// Replaces matching caches with the saved transcript after a successful finalization.
-    /// Publication always invalidates existing cursors, even when projected rows are identical.
-    func transcriptDidPublish(sessionID: UUID) {
+    /// Selecting a new generation invalidates every snapshot from the previous one immediately.
+    func transcriptDidSelectGeneration(sessionID: UUID, generationID: UUID) {
+        transcriptEpoch += 1
+        finalPublishedSessionIDs.remove(sessionID)
         if transcriptRowDetailsSnapshot?.sessionID == sessionID {
             transcriptRowDetailsSnapshot = nil
         }
@@ -230,14 +232,65 @@ extension EngineApplicationCore {
             transcriptReadSnapshot = nil
             transcriptReadNavigation = nil
         }
+
+        var watchedRevision: UInt64?
+        if var cache = transcript, cache.sessionID == sessionID {
+            cache.generationID = generationID
+            cache.rows = []
+            cache.materializedSegments = []
+            cache.revision = newRevision()
+            cache.isLiveState = true
+            cache.projection = EngineTranscriptProjection.Incremental(rows: [])
+            cache.reportedTranscriptFailures = []
+            watchedRevision = cache.revision
+            transcript = cache
+        }
+        if var cache = readTranscript, cache.sessionID == sessionID {
+            cache.generationID = generationID
+            cache.rows = []
+            cache.materializedSegments = []
+            cache.revision = newRevision()
+            cache.isLiveState = true
+            cache.projection = EngineTranscriptProjection.Incremental(rows: [])
+            cache.reportedTranscriptFailures = []
+            readTranscript = cache
+        }
+
+        guard let watchedRevision else { return }
+        do {
+            let payload = try Self.reloadRequired(
+                sessionID: sessionID, revision: wireRevision(watchedRevision)
+            )
+            if eventsEnabled { try events.rows(payload) }
+        } catch {
+            EngineLog.write("rows event not sent: \(error)")
+        }
+    }
+
+    /// Replaces matching caches with the saved transcript after a successful finalization.
+    /// Publication always invalidates existing cursors, even when projected rows are identical.
+    func transcriptDidPublish(sessionID: UUID) async {
+        retireTranscriptSnapshots(sessionID: sessionID)
+        defer { retireTranscriptSnapshots(sessionID: sessionID) }
+
         let watchedCache = sessionID == watchedSessionID && transcript?.sessionID == sessionID ? transcript : nil
         let cachedRead = readTranscript?.sessionID == sessionID ? readTranscript : nil
         guard watchedCache != nil || cachedRead != nil else { return }
 
+        let generationID: UUID
         let rows: [EngineTranscriptRow]
         let materializedSegments: [MaterializedTranscriptSegment]
+        var watchedValid = false
+        var readValid = false
         do {
-            let session = try readableSession(sessionID)
+            let session = try await readableSession(sessionID)
+            watchedValid = watchedCache != nil
+                && transcript?.sessionID == sessionID
+                && transcript?.revision == watchedCache?.revision
+            readValid = cachedRead != nil
+                && readTranscript?.sessionID == sessionID
+                && readTranscript?.revision == cachedRead?.revision
+            guard watchedValid || readValid else { return }
             guard session.audioSource != nil else {
                 throw EngineFailures.commandError(
                     .filesystem, "保存済み音声を使えないため、文字起こしを表示できません", stage: .finalization,
@@ -250,7 +303,8 @@ extension EngineApplicationCore {
                     .processingFailure, "確定済みの文字起こしを読み込めませんでした", stage: .finalization,
                     sessionID: sessionID, recoveryAction: .reprocess
                 )
-            case let .segments(segments):
+            case let .segments(savedGenerationID, segments):
+                generationID = savedGenerationID
                 rows = try EngineTranscriptProjection.rows(for: segments)
                 materializedSegments = segments
             }
@@ -260,7 +314,8 @@ extension EngineApplicationCore {
         }
 
         var updatedWatched: EngineTranscriptCache?
-        if var cache = watchedCache {
+        if watchedValid, var cache = watchedCache {
+            cache.generationID = generationID
             cache.rows = rows
             cache.materializedSegments = materializedSegments
             cache.revision = newRevision()
@@ -270,7 +325,8 @@ extension EngineApplicationCore {
             transcript = cache
             updatedWatched = cache
         }
-        if var cache = cachedRead {
+        if readValid, var cache = cachedRead {
+            cache.generationID = generationID
             cache.rows = rows
             cache.materializedSegments = materializedSegments
             cache.revision = newRevision()
@@ -279,7 +335,6 @@ extension EngineApplicationCore {
             cache.reportedTranscriptFailures = []
             readTranscript = cache
         }
-
         guard let cache = updatedWatched else { return }
         do {
             let payload = try Self.reloadRequired(
@@ -289,6 +344,17 @@ extension EngineApplicationCore {
         } catch {
             EngineLog.write("rows event not sent: \(error)")
         }
+    }
+
+    private func retireTranscriptSnapshots(sessionID: UUID) {
+        if transcriptReadSnapshot?.sessionID == sessionID {
+            transcriptReadSnapshot = nil
+            transcriptReadNavigation = nil
+        }
+        if transcriptRowDetailsSnapshot?.sessionID == sessionID {
+            transcriptRowDetailsSnapshot = nil
+        }
+        transcriptEpoch += 1
     }
 
     private func reportTranscriptError(_ error: any Error, sessionID: UUID) {
@@ -369,28 +435,80 @@ extension EngineApplicationCore {
         )
     }
 
-    /// The watched session uses its live view; all other sessions share one read cache.
-    private func transcriptCache(for sessionID: UUID) throws -> EngineTranscriptCache {
-        let session = try readableSession(sessionID)
-        let cache = try makeTranscriptCache(for: sessionID, session: session)
-        if sessionID == watchedSessionID { transcript = cache } else { readTranscript = cache }
-        return cache
+    private func durableGenerationID(for session: SavedSession) async throws -> UUID? {
+        try await transcriptGenerationLookup(session)
     }
 
-    private func makeTranscriptCache(for sessionID: UUID, session: SavedSession) throws -> EngineTranscriptCache {
-        let isWatched = sessionID == watchedSessionID
-        let isLiveOrPending = recording.sessionID == sessionID || processingQueue.sessionIDs.contains(sessionID)
+    private func retainsTranscriptRevision(_ revision: UInt64, sessionID: UUID) -> Bool {
+        [transcript, readTranscript, transcriptReadSnapshot].contains {
+            $0?.sessionID == sessionID && $0?.revision == revision
+        }
+    }
+
+    private func staleRevision(sessionID: UUID) -> EngineCommandError {
+        EngineFailures.commandError(
+            .staleRevision, "文字起こしの revision が古くなっています。最初から読み直してください",
+            stage: .finalization, sessionID: sessionID, recoveryAction: .retry
+        )
+    }
+
+    private func validateGeneration(
+        _ cachedGenerationID: UUID?, against durableGenerationID: UUID?, sessionID: UUID
+    ) throws {
+        guard cachedGenerationID == durableGenerationID else { throw staleRevision(sessionID: sessionID) }
+    }
+
+    /// The watched session uses its live view; all other sessions share one read cache.
+    private func transcriptCache(
+        for sessionID: UUID, asWatched: Bool = false
+    ) async throws -> (cache: EngineTranscriptCache, session: SavedSession) {
+        while true {
+            let session = try await readableSession(sessionID)
+            let liveOrPending = isLiveOrPending(sessionID)
+            let revision = nextTranscriptRevision
+            let epoch = transcriptEpoch
+            let cache = try await makeTranscriptCache(
+                for: sessionID, session: session, isLiveOrPending: liveOrPending, asWatched: asWatched
+            )
+            guard isLiveOrPending(sessionID) == liveOrPending,
+                  nextTranscriptRevision == revision,
+                  transcriptEpoch == epoch else {
+                continue
+            }
+            if !asWatched {
+                if sessionID == watchedSessionID { transcript = cache }
+                else { readTranscript = cache }
+            }
+            nextTranscriptRevision = max(nextTranscriptRevision, cache.revision)
+            return (cache, session)
+        }
+    }
+
+    private func isLiveOrPending(_ sessionID: UUID) -> Bool {
+        (recording.sessionID == sessionID || processingQueue.liveProjectionSessionIDs.contains(sessionID))
+            && !finalPublishedSessionIDs.contains(sessionID)
+    }
+
+    private func makeTranscriptCache(
+        for sessionID: UUID,
+        session: SavedSession,
+        isLiveOrPending: Bool,
+        asWatched: Bool
+    ) async throws -> EngineTranscriptCache {
+        let isWatched = asWatched || sessionID == watchedSessionID
         let existingCache = isWatched
             ? (transcript?.sessionID == sessionID ? transcript : nil)
             : (readTranscript?.sessionID == sessionID ? readTranscript : nil)
-        if let existingCache, !isLiveOrPending || existingCache.isLiveState {
-            return existingCache
-        }
-
+        let durableGenerationID = try await durableGenerationID(for: session)
+        let cacheRevision = nextTranscriptRevision + 1
         if isLiveOrPending {
+            let generationID = durableGenerationID
+            if let existingCache, existingCache.generationID == generationID, existingCache.isLiveState {
+                return existingCache
+            }
             return EngineTranscriptCache(
-                sessionID: sessionID, revision: newRevision(), rows: [], materializedSegments: [],
-                isLiveState: true, projection: nil
+                sessionID: sessionID, generationID: generationID, revision: cacheRevision,
+                rows: [], materializedSegments: [], isLiveState: true, projection: nil
             )
         }
         guard session.audioSource != nil else {
@@ -399,14 +517,23 @@ extension EngineApplicationCore {
                 sessionID: sessionID, recoveryAction: .inspectSession
             )
         }
+        if let existingCache, !existingCache.isLiveState, existingCache.generationID == durableGenerationID {
+            return existingCache
+        }
+        let generationID: UUID?
         let rows: [EngineTranscriptRow]
         let materializedSegments: [MaterializedTranscriptSegment]
         do {
-            switch try SavedTranscriptLoader.load(sessionURL: session.sessionURL) {
+            let savedTranscript = try await Task.detached(executorPreference: BlockingIOExecutor.shared) {
+                try SavedTranscriptLoader.load(sessionURL: session.sessionURL)
+            }.value
+            switch savedTranscript {
             case .unavailable:
+                generationID = nil
                 rows = []
                 materializedSegments = []
-            case let .segments(segments):
+            case let .segments(savedGenerationID, segments):
+                generationID = savedGenerationID
                 rows = try EngineTranscriptProjection.rows(for: segments)
                 materializedSegments = segments
             }
@@ -416,9 +543,13 @@ extension EngineApplicationCore {
                 recoveryAction: .reprocess
             )
         }
+        if let existingCache, existingCache.generationID == generationID,
+           (!existingCache.isLiveState || !existingCache.rows.isEmpty) {
+            return existingCache
+        }
         return EngineTranscriptCache(
-            sessionID: sessionID, revision: newRevision(), rows: rows, materializedSegments: materializedSegments,
-            isLiveState: false, projection: nil
+            sessionID: sessionID, generationID: generationID, revision: cacheRevision,
+            rows: rows, materializedSegments: materializedSegments, isLiveState: false, projection: nil
         )
     }
 }
@@ -432,54 +563,87 @@ extension EngineApplicationCore: EngineTranscriptHandling {
             )
         }
 
-        let latestCache = try transcriptCache(for: sessionID)
-        let cache: EngineTranscriptCache
-        let navigation: EnginePageNavigation
-        if let revision = payload.revision {
-            if let snapshot = transcriptReadSnapshot,
-               snapshot.sessionID == sessionID,
-               snapshot.revision == revision.value {
-                cache = snapshot
-                guard let retainedNavigation = transcriptReadNavigation else {
-                    preconditionFailure("a retained transcript snapshot has navigation")
-                }
-                navigation = retainedNavigation
-            } else if latestCache.revision == revision.value {
-                guard payload.cursor == nil else {
+        while true {
+            let (latestCache, session) = try await transcriptCache(for: sessionID)
+            let freshReadState: (epoch: UInt64, isLiveOrPending: Bool)?
+            if payload.revision == nil {
+                freshReadState = (transcriptEpoch, isLiveOrPending(sessionID))
+            } else {
+                freshReadState = nil
+            }
+            let cache: EngineTranscriptCache
+            let navigation: EnginePageNavigation
+            let isContinuation = payload.cursor != nil
+            if let revision = payload.revision {
+                if let snapshot = transcriptReadSnapshot,
+                   snapshot.sessionID == sessionID,
+                   snapshot.revision == revision.value {
+                    cache = snapshot
+                    if isContinuation {
+                        guard let retainedNavigation = transcriptReadNavigation else {
+                            preconditionFailure("a retained transcript snapshot has navigation")
+                        }
+                        navigation = retainedNavigation
+                    } else {
+                        navigation = EnginePageNavigation(limit: payload.limit)
+                    }
+                } else if latestCache.revision == revision.value {
+                    guard !isContinuation else {
+                        throw EngineFailures.commandError(
+                            .invalidCursor, "cursor に対応する文字起こし snapshot がありません",
+                            stage: .finalization, sessionID: sessionID
+                        )
+                    }
+                    cache = latestCache
+                    navigation = EnginePageNavigation(limit: payload.limit)
+                } else {
                     throw EngineFailures.commandError(
-                        .invalidCursor, "cursor に対応する文字起こし snapshot がありません",
-                        stage: .finalization, sessionID: sessionID
+                        .staleRevision, "文字起こしの revision が古くなっています。最初から読み直してください",
+                        stage: .finalization, sessionID: sessionID, recoveryAction: .retry
                     )
                 }
+            } else {
                 cache = latestCache
                 navigation = EnginePageNavigation(limit: payload.limit)
+            }
+
+            let selectedRevision = cache.revision
+            let durableGenerationID = try await durableGenerationID(for: session)
+            if let freshReadState {
+                guard transcriptEpoch == freshReadState.epoch,
+                      isLiveOrPending(sessionID) == freshReadState.isLiveOrPending else {
+                    continue
+                }
             } else {
+                guard retainsTranscriptRevision(selectedRevision, sessionID: sessionID) else {
+                    throw staleRevision(sessionID: sessionID)
+                }
+            }
+            try validateGeneration(cache.generationID, against: durableGenerationID, sessionID: sessionID)
+            if isContinuation, transcriptReadNavigation?.id != navigation.id {
                 throw EngineFailures.commandError(
-                    .staleRevision, "文字起こしの revision が古くなっています。最初から読み直してください",
-                    stage: .finalization, sessionID: sessionID, recoveryAction: .retry
+                    .invalidCursor, "cursor に対応する文字起こし snapshot がありません",
+                    stage: .finalization, sessionID: sessionID
                 )
             }
-        } else {
-            cache = latestCache
-            navigation = EnginePageNavigation(limit: payload.limit)
+
+            let location = try navigation.location(cursor: payload.cursor, limit: payload.limit)
+            let page = try EngineTranscriptProjection.page(
+                of: cache.rows, from: location.start, limit: payload.limit
+            )
+            let cursors = navigation.cursors(
+                for: location, end: location.start + page.count, total: cache.rows.count
+            )
+            let response = try EngineTranscriptPage(
+                sessionID: payload.sessionID, revision: wireRevision(cache.revision), rows: Array(page),
+                nextCursor: cursors.next, previousCursor: cursors.previous
+            )
+
+            // Commit the selected snapshot and navigation only after the page is valid.
+            transcriptReadSnapshot = cache
+            transcriptReadNavigation = navigation
+            return response
         }
-
-        let location = try navigation.location(cursor: payload.cursor, limit: payload.limit)
-        let page = try EngineTranscriptProjection.page(
-            of: cache.rows, from: location.start, limit: payload.limit
-        )
-        let cursors = navigation.cursors(
-            for: location, end: location.start + page.count, total: cache.rows.count
-        )
-        let response = try EngineTranscriptPage(
-            sessionID: payload.sessionID, revision: wireRevision(cache.revision), rows: Array(page),
-            nextCursor: cursors.next, previousCursor: cursors.previous
-        )
-
-        // Commit the selected snapshot and navigation only after the page is valid.
-        transcriptReadSnapshot = cache
-        transcriptReadNavigation = navigation
-        return response
     }
 
     func rowDetails(
@@ -487,13 +651,21 @@ extension EngineApplicationCore: EngineTranscriptHandling {
         context: EngineRequestContext
     ) async throws -> EngineTranscriptRowDetailsPage {
         let sessionID = try EngineFailures.sessionID(payload.sessionID, stage: .finalization)
-        _ = try readableSession(sessionID)
-
+        let session = try await readableSession(sessionID)
         let revision = payload.revision.value
         if let snapshot = transcriptRowDetailsSnapshot,
            snapshot.sessionID == sessionID,
            snapshot.revision == revision,
            snapshot.rowID == payload.rowID {
+            let durableGenerationID = try await durableGenerationID(for: session)
+            guard transcriptRowDetailsSnapshot?.sessionID == sessionID,
+                  transcriptRowDetailsSnapshot?.revision == revision,
+                  transcriptRowDetailsSnapshot?.rowID == payload.rowID else {
+                throw staleRevision(sessionID: sessionID)
+            }
+            try validateGeneration(
+                snapshot.generationID, against: durableGenerationID, sessionID: sessionID
+            )
             return try snapshot.page()
         }
 
@@ -511,11 +683,13 @@ extension EngineApplicationCore: EngineTranscriptHandling {
                   read.revision == revision {
             cache = read
         } else {
-            throw EngineFailures.commandError(
-                .staleRevision, "文字起こしの revision が古くなっています。最初から読み直してください",
-                stage: .finalization, sessionID: sessionID, recoveryAction: .retry
-            )
+            throw staleRevision(sessionID: sessionID)
         }
+        let durableGenerationID = try await durableGenerationID(for: session)
+        guard retainsTranscriptRevision(cache.revision, sessionID: sessionID) else {
+            throw staleRevision(sessionID: sessionID)
+        }
+        try validateGeneration(cache.generationID, against: durableGenerationID, sessionID: sessionID)
 
         guard cache.rows.contains(where: { $0.rowID == payload.rowID }) else {
             throw EngineFailures.commandError(
@@ -530,7 +704,7 @@ extension EngineApplicationCore: EngineTranscriptHandling {
             )
         }
         let snapshot = try EngineTranscriptRowDetailsSnapshot(
-            sessionID: sessionID, revision: revision, segment: segment
+            sessionID: sessionID, generationID: cache.generationID, revision: revision, segment: segment
         )
         let page = try snapshot.page()
         transcriptRowDetailsSnapshot = snapshot
@@ -539,9 +713,10 @@ extension EngineApplicationCore: EngineTranscriptHandling {
 
     func watch(_ payload: EngineSessionPayload, context: EngineRequestContext) async throws -> EngineTranscriptPage {
         let sessionID = try EngineFailures.sessionID(payload.sessionID, stage: .finalization)
-        let session = try readableSession(sessionID)
-        let cache = try makeTranscriptCache(for: sessionID, session: session)
-        let isLiveOrPending = recording.sessionID == sessionID || processingQueue.sessionIDs.contains(sessionID)
+        let cacheResult = try await transcriptCache(for: sessionID, asWatched: true)
+        let cache = cacheResult.cache
+        let session = cacheResult.session
+        let isLiveOrPending = isLiveOrPending(sessionID)
         let isFinal: Bool
         if isLiveOrPending {
             isFinal = false
@@ -557,7 +732,7 @@ extension EngineApplicationCore: EngineTranscriptHandling {
             nextCursor: nil, previousCursor: nil
         )
 
-        // Commit only after session validation and page construction succeeded.
+        // Commit both cache and selection only after session validation and page construction succeeded.
         transcript = cache
         watchedSessionID = sessionID
         watchedSessionIsFinal = isFinal

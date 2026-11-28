@@ -1,5 +1,5 @@
 import Foundation
-import MacAmbientJevEngineHost
+@testable import MacAmbientJevEngineHost
 import MacAmbientJevEngineProtocol
 import MacAmbientJevTestSupport
 
@@ -19,10 +19,20 @@ final class FakeEngineHandlers:
     private(set) var resumedHeldCount = 0
     var onHelloDidComplete: (@MainActor () -> Void)?
     var heldCommands: Set<String> = []
+    var heldAfterTerminalClaimCommands: Set<String> = []
+    var heldAfterTerminalClaimRequestIDs: Set<UInt64> = []
+    var heldBeforeTerminalClaimRequestIDs: Set<UInt64> = []
+    private(set) var heldBeforeTerminalClaimIDs: Set<UInt64> = []
+    var holdShutdownHandler = false
+    private(set) var shutdownHandlerIsHeld = false
+    private(set) var shutdownHandlerReturnedCount = 0
     var failingCommands: [String: Error] = [:]
     var shutdownError: Error?
     var progressOnPrepare = false
+    private(set) var terminalReplyClaimCount = 0
     private var held: [CheckedContinuation<Void, Never>] = []
+    private var beforeTerminalClaimContinuations: [UInt64: CheckedContinuation<Void, Never>] = [:]
+    private var shutdownContinuation: CheckedContinuation<Void, Never>?
     let changes = ChangeSignal()
 
     var heldCount: Int { held.count }
@@ -31,6 +41,16 @@ final class FakeEngineHandlers:
         let continuations = held
         held = []
         for continuation in continuations { continuation.resume() }
+    }
+
+    func releaseBeforeTerminalClaim(requestID: UInt64) {
+        beforeTerminalClaimContinuations.removeValue(forKey: requestID)?.resume()
+        changes.signal()
+    }
+
+    func releaseShutdownHandler() {
+        shutdownContinuation?.resume()
+        shutdownContinuation = nil
     }
 
     private func enter(_ name: String) async throws {
@@ -45,6 +65,29 @@ final class FakeEngineHandlers:
             changes.signal()
         }
         if let error = failingCommands[name] { throw error }
+    }
+
+    private func holdBeforeTerminalClaim(_ requestID: UInt64) async {
+        guard heldBeforeTerminalClaimRequestIDs.contains(requestID) else { return }
+        await withCheckedContinuation { continuation in
+            heldBeforeTerminalClaimIDs.insert(requestID)
+            beforeTerminalClaimContinuations[requestID] = continuation
+            changes.signal()
+        }
+        heldBeforeTerminalClaimIDs.remove(requestID)
+        resumedHeldCount += 1
+        changes.signal()
+    }
+
+    private func holdAfterTerminalClaim(_ name: String, requestID: UInt64) async {
+        guard heldAfterTerminalClaimCommands.contains(name)
+                || heldAfterTerminalClaimRequestIDs.contains(requestID) else { return }
+        await withCheckedContinuation { continuation in
+            held.append(continuation)
+            changes.signal()
+        }
+        resumedHeldCount += 1
+        changes.signal()
     }
 
     var handlers: EngineHandlers {
@@ -118,6 +161,11 @@ final class FakeEngineHandlers:
 
     func reprocess(_ payload: EngineSessionPayload, context: EngineRequestContext) async throws -> EngineSessionPayload {
         try await enter("session.reprocess")
+        await holdBeforeTerminalClaim(context.requestID.value)
+        context.claimTerminalReply()
+        terminalReplyClaimCount += 1
+        changes.signal()
+        await holdAfterTerminalClaim("session.reprocess", requestID: context.requestID.value)
         return payload
     }
 
@@ -219,6 +267,15 @@ final class FakeEngineHandlers:
         calls.append("shutdown")
         shutdownReasons.append(reason)
         changes.signal()
+        if holdShutdownHandler {
+            await withCheckedContinuation { continuation in
+                shutdownHandlerIsHeld = true
+                shutdownContinuation = continuation
+                changes.signal()
+            }
+            shutdownHandlerReturnedCount += 1
+            changes.signal()
+        }
         if let shutdownError { throw shutdownError }
     }
 }
@@ -240,14 +297,36 @@ final class EngineHarness {
     let controller: EngineController
     private var runTask: Task<EngineExit, Never>?
 
-    init(
+    convenience init(
         limits: EngineTransportLimits = testLimits(),
         admission: EngineAdmissionLimits = .production,
-        sink: ScriptedSink = ScriptedSink()
+        sink: ScriptedSink = ScriptedSink(),
+        onReliableWait: @escaping @Sendable () -> Void = {}
+    ) {
+        self.init(
+            limits: limits, admission: admission, sink: sink, onReliableWait: onReliableWait,
+            beforeReliableAppend: { _ in }, onShutdownWaitPass: { _ in }
+        )
+    }
+
+    init(
+        limits: EngineTransportLimits,
+        admission: EngineAdmissionLimits,
+        sink: ScriptedSink,
+        onReliableWait: @escaping @Sendable () -> Void,
+        beforeReliableAppend: @escaping @Sendable (EngineID?) async -> Void,
+        onShutdownWaitPass: @escaping @Sendable ([EngineID]) async -> Void
     ) {
         self.sink = sink
-        transport = EngineTransport(source: source, sink: sink, limits: limits)
-        controller = EngineController(transport: transport, handlers: fake.handlers, admission: admission)
+        transport = EngineTransport(
+            source: source, sink: sink, limits: limits,
+            deadlineClock: LiveEngineWriteDeadlineClock(), onReliableWait: onReliableWait,
+            beforeReliableAppend: beforeReliableAppend
+        )
+        controller = EngineController(
+            transport: transport, handlers: fake.handlers, admission: admission,
+            onShutdownWaitPass: onShutdownWaitPass
+        )
     }
 
     func start() {

@@ -652,9 +652,11 @@ private struct LifecycleScanFailure: Error, LocalizedError {
         }
         #expect(next.presentation.processingStatusText == "次の文字起こし処理を開始します")
 
-        let heldRequest = PendingProcessing.finalize(sessionID: sessionID, metadataPolicy: .reject)
+        let heldItem = ProcessingQueueItemSummary(
+            requestID: UUID(), sessionID: sessionID, kind: .finalization, holdReason: .paused
+        )
         let beforeHeld = try await fixture.currentState()
-        fixture.app.core.processingDidChange(.held(heldRequest))
+        fixture.app.core.processingDidChange(.held(heldItem))
         let heldText = "処理は中断されました。次回の起動時に再開できます"
         let held = try await fixture.waitForState(after: beforeHeld.revision.value) { _ in true }
         #expect(held.presentation.processingStatusText == heldText)
@@ -688,11 +690,14 @@ private struct LifecycleScanFailure: Error, LocalizedError {
             state.presentation.processingIndicator == .complete
         }
         let cleanupFailure = "文字起こしは完了しましたが、後処理に失敗しました"
-        let request = PendingProcessing.finalize(sessionID: sessionID, metadataPolicy: .reject)
+        let item = ProcessingQueueItemSummary(requestID: UUID(), sessionID: sessionID, kind: .finalization, holdReason: nil)
         let beforeFinished = try await fixture.currentState()
         fixture.app.core.processingDidChange(.finished(
-            request,
-            .failed(message: cleanupFailure, metrics: nil, retained: .finalized)
+            item,
+            .failed(
+                message: cleanupFailure, metrics: nil, retained: .finalized,
+                replacementGeneration: .notOpened
+            )
         ))
         let partialFailure = try await fixture.waitForState(after: beforeFinished.revision.value) { state in
             state.presentation.processingIndicator == .partialFailure

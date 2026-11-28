@@ -54,7 +54,8 @@ import MacAmbientJevTestSupport
                 deadlineClock: ManualWriteDeadlineClock(),
                 onReliableWait: {
                     if successful.value == expectedSuccessfulAtBound { waitingAtBound.increment() }
-                }
+                },
+                beforeReliableAppend: { _ in }
             )
             transport.start()
             defer { transport.close() }

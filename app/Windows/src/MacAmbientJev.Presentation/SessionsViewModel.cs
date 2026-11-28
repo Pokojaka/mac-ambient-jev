@@ -69,15 +69,7 @@ public sealed class SessionsViewModel : ScreenViewModel
         };
     }
 
-    private async Task ListAsync(ShellPageMove move)
-    {
-        if (await Context.Store.ListSessionsAsync(move) && move == ShellPageMove.Reload)
-        {
-            var state = Context.Store.State;
-            if (state.SelectedFolderID is { } folderID && ShellStore.CanUseSavedSelection(state))
-                await Context.Store.InspectSessionAsync(folderID);
-        }
-    }
+    private async Task ListAsync(ShellPageMove move) => await Context.Store.ListSessionsAsync(move);
 
     private bool CanSelect(object? parameter) => parameter is EngineSessionSummary && ShellStore.CanUseSavedSelection(Context.Store.State);
 
@@ -102,8 +94,8 @@ public sealed class SessionsViewModel : ScreenViewModel
         if (path is not null) { await Context.Store.ExportSessionAsync(folderID, path); return; }
         try { path = await picker.PickExportFolderAsync(); }
         catch (Exception exception) { await Context.Store.ReportCommandErrorAsync(exception.Message); return; }
-        if (path is null || !await Context.Store.SetExportDestinationAsync(path)) return;
-        await Context.Store.ExportSessionAsync(folderID, path);
+        if (path is null) return;
+        await Context.Store.SaveExportDestinationAndExportAsync(folderID, path);
     }
 
     private bool CanRevealFolder(object? parameter) => parameter is null && Context.Store.State.SessionInspection is not null;

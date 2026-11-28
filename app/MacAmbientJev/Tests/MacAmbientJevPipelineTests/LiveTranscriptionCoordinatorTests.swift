@@ -253,11 +253,12 @@ private actor FakeLiveTranscriptionExecutor: LiveTranscriptionExecuting {
 
     func startLiveTranscription(
         sessionID: UUID,
-        sampleRate: Double
+        sampleRate: Double,
+        onGenerationOpened: @escaping NativeSessionProcessor.GenerationOpenedHandler
     ) async throws -> String {
-        _ = sessionID
-        _ = sampleRate
+        _ = (sessionID, sampleRate)
         startCount += 1
+        await onGenerationOpened(UUID())
         return startRunID
     }
 
@@ -430,6 +431,7 @@ private final class FakeLiveTranscriptionEffects: LiveTranscriptionEffects {
     private let stopsRecordingOnVADEnqueue: Bool
     private var idleReleaseGate: OneShotAsyncGate?
     private(set) var events: [LiveTranscriptionEvent] = []
+    private(set) var openedGenerations: [(sessionID: UUID, generationID: UUID)] = []
     private(set) var committedCheckpoints: [AudioCheckpoint] = []
     private var eventWaiters: [(LiveTranscriptionEvent, CheckedContinuation<Void, Never>)] = []
 
@@ -477,6 +479,11 @@ private final class FakeLiveTranscriptionEffects: LiveTranscriptionEffects {
     func liveUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler {
         _ = sessionID
         return { _, _ in }
+    }
+
+    func liveGenerationDidOpen(sessionID: UUID, generationID: UUID) {
+        openedGenerations.append((sessionID, generationID))
+        orderLog.append("generationOpened")
     }
 
     func liveDidChange(_ event: LiveTranscriptionEvent) {
@@ -901,6 +908,8 @@ func pollingDeliversMicProgressBeforeASREnqueueAndStopOwnsPolling() async throws
     try await coordinator.startVAD(sessionID: sessionID, checkpoint: checkpoint) { _ in vad }
     await pollGate.waitUntilEntered()
     #expect(await processor.startCalls() == 1)
+    #expect(effects.openedGenerations.count == 1)
+    #expect(effects.openedGenerations.first?.sessionID == sessionID)
     #expect(sleepLog.durations == [.milliseconds(LiveTranscriptionCadence.checkpointPollIntervalMilliseconds)])
 
     await pollGate.release()
@@ -916,8 +925,10 @@ func pollingDeliversMicProgressBeforeASREnqueueAndStopOwnsPolling() async throws
     #expect(state.vadSegmentCount == 7)
     #expect(await vad.callCounts().process == 1)
     #expect(sleepLog.durations == [.milliseconds(LiveTranscriptionCadence.checkpointPollIntervalMilliseconds)])
+    let generationPosition = try #require(orderLog.values.firstIndex(of: "generationOpened"))
     let progressPosition = try #require(orderLog.values.firstIndex(of: "vadProgress"))
     let registrationPosition = try #require(orderLog.values.firstIndex(of: "register"))
+    #expect(generationPosition < progressPosition)
     #expect(progressPosition < registrationPosition)
     #expect(await processor.registrations() == [[segment]])
 

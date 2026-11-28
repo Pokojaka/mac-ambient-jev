@@ -20,7 +20,7 @@ public struct SavedSessionOperations: Sendable {
 
     public init() {}
 
-    mutating func replaceSessions(_ sessions: [SavedSessionSummary]) {
+    public mutating func replaceSessions(_ sessions: [SavedSessionSummary]) {
         self.sessions = sessions
     }
 

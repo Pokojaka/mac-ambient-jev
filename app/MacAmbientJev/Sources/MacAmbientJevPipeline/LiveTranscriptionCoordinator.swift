@@ -5,7 +5,8 @@ public protocol LiveTranscriptionExecuting: Sendable {
     /// Creates the generation and returns its segmentation run ID.
     func startLiveTranscription(
         sessionID: UUID,
-        sampleRate: Double
+        sampleRate: Double,
+        onGenerationOpened: @escaping NativeSessionProcessor.GenerationOpenedHandler
     ) async throws -> String
 
     func registerLiveSegments(
@@ -63,6 +64,7 @@ public protocol LiveTranscriptionEffects: AnyObject {
     func awaitModelPreparation() async
     func liveStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler
     func liveUpdateHandler(sessionID: UUID) -> NativeSessionProcessor.UpdateHandler
+    func liveGenerationDidOpen(sessionID: UUID, generationID: UUID)
     func liveDidChange(_ event: LiveTranscriptionEvent)
 }
 
@@ -115,6 +117,19 @@ public final class LiveTranscriptionCoordinator {
         asrTasks.isEmpty && retiredASRTasks.isEmpty && state.isQueueEmpty
     }
 
+    public var processingWorkerSessionIDs: Set<UUID> {
+        Set(asrTasks.keys)
+            .union(retiredASRTaskSessionIDs.values)
+            .union(vadSession.map { [$0.sessionID] } ?? [])
+    }
+
+    public func hasWork(sessionID: UUID) -> Bool {
+        asrTasks[sessionID] != nil
+            || retiredASRTaskSessionIDs.values.contains(sessionID)
+            || state.hasQueued(sessionID: sessionID)
+            || vadSession?.sessionID == sessionID
+    }
+
     public func isDraining(sessionID: UUID) -> Bool {
         asrTasks[sessionID] != nil
     }
@@ -135,7 +150,10 @@ public final class LiveTranscriptionCoordinator {
         do {
             segmentationRunID = try await processor.startLiveTranscription(
                 sessionID: sessionID,
-                sampleRate: checkpoint.sampleRate
+                sampleRate: checkpoint.sampleRate,
+                onGenerationOpened: { generationID in
+                    effects.liveGenerationDidOpen(sessionID: sessionID, generationID: generationID)
+                }
             )
         } catch {
             // Without a generation there is no live VAD; stop reprocesses the whole recording.
@@ -229,6 +247,11 @@ public final class LiveTranscriptionCoordinator {
         processing: SessionProcessingCoordinator,
         effects: any RecordingFinishEffects
     ) async {
+        processing.claimStopHandoff(sessionID: sessionID)
+        var stopClaimHeld = true
+        defer {
+            if stopClaimHeld { processing.releaseStopHandoff(sessionID: sessionID) }
+        }
         do {
             let result = try await effects.stopCapture()
             await stopVADPolling()
@@ -281,6 +304,8 @@ public final class LiveTranscriptionCoordinator {
                 .failed(Self.combinedFailureMessage(failureMessage, error.localizedDescription))
             )
             if failureMessage != nil { effects.refreshSavedSessions() }
+            processing.releaseStopHandoff(sessionID: sessionID)
+            stopClaimHeld = false
             effects.releaseIdleResourcesIfIdle()
         }
     }

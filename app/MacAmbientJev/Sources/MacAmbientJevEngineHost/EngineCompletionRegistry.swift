@@ -2,8 +2,7 @@ import Foundation
 import MacAmbientJevCore
 import MacAmbientJevPipeline
 
-/// Lets a request wait for the queued processing it started: `session.reprocess` and `session.retry_decisions`
-/// complete only after their work reaches a terminal result.
+/// Keeps an RPC attached to the exact processing request it admitted.
 @MainActor
 final class EngineCompletionRegistry {
     enum Kind: Equatable {
@@ -14,41 +13,73 @@ final class EngineCompletionRegistry {
     enum Outcome {
         case completed
         case failed(String)
-        /// Finalization stopped before finishing and stays recoverable.
+        case commandFailure(EngineCommandError)
         case paused
     }
 
-    private struct Waiter {
-        let sessionID: UUID
-        let kind: Kind
-        let continuation: CheckedContinuation<Outcome, any Error>
+    private enum State {
+        case registered
+        case waiting(CheckedContinuation<Outcome, any Error>)
+        case completed(Outcome)
     }
 
-    private var waiters: [UInt64: Waiter] = [:]
-    private var nextToken: UInt64 = 0
-
-    static func kind(of request: PendingProcessing) -> Kind {
-        request.finalizesTranscript ? .finalization : .decisionRetry
+    private struct Request {
+        let terminalReplyClaim: @MainActor @Sendable () -> Void
+        var state: State
     }
 
-    func wait(sessionID: UUID, kind: Kind) async throws -> Outcome {
-        nextToken += 1
-        let token = nextToken
-        return try await withTaskCancellationHandler {
+    private var requests: [UUID: Request] = [:]
+
+    func register(
+        requestID: UUID,
+        terminalReplyClaim: @escaping @MainActor @Sendable () -> Void
+    ) {
+        if requests[requestID] != nil {
+            preconditionFailure("processing request identity must be unique")
+        }
+        requests[requestID] = Request(terminalReplyClaim: terminalReplyClaim, state: .registered)
+    }
+
+    func wait(requestID: UUID) async throws -> Outcome {
+        try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Outcome, any Error>) in
-                if Task.isCancelled {
-                    continuation.resume(throwing: CancellationError())
+                guard var request = requests[requestID] else {
+                    continuation.resume(throwing: EngineCompletionError.requestNotRegistered)
                     return
                 }
-                waiters[token] = Waiter(sessionID: sessionID, kind: kind, continuation: continuation)
+                switch request.state {
+                case .registered:
+                    if Task.isCancelled {
+                        requests.removeValue(forKey: requestID)
+                        continuation.resume(throwing: CancellationError())
+                    } else {
+                        request.state = .waiting(continuation)
+                        requests[requestID] = request
+                    }
+                case .completed(let outcome):
+                    requests.removeValue(forKey: requestID)
+                    continuation.resume(returning: outcome)
+                case .waiting:
+                    preconditionFailure("one RPC waiter is allowed per processing request")
+                }
             }
         } onCancel: {
-            Task { @MainActor [self] in cancel(token) }
+            Task { @MainActor [self] in cancel(requestID: requestID) }
         }
     }
 
-    func finished(_ request: PendingProcessing, result: SessionProcessingResult?) {
-        let kind = Self.kind(of: request)
+    func finished(
+        _ item: ProcessingQueueItemSummary,
+        result: SessionProcessingResult?,
+        isShutdownCancellation: Bool
+    ) {
+        let requestID = item.requestID
+        guard let request = requests[requestID] else { return }
+        if result?.disposition == .paused,
+           item.holdReason?.resumesInProcess == true,
+           !isShutdownCancellation {
+            return
+        }
         let outcome: Outcome
         switch result?.disposition {
         case nil, .completed?:
@@ -58,14 +89,56 @@ final class EngineCompletionRegistry {
         case .paused?:
             outcome = .paused
         }
-        for (token, waiter) in waiters where waiter.sessionID == request.sessionID && waiter.kind == kind {
-            waiters.removeValue(forKey: token)
-            waiter.continuation.resume(returning: outcome)
+        complete(requestID: requestID, request: request, with: outcome)
+    }
+
+    func finish(requestID: UUID, with error: EngineCommandError) {
+        finish(requestID: requestID, with: .commandFailure(error))
+    }
+
+    func finish(requestID: UUID, with outcome: Outcome) {
+        guard let request = requests[requestID] else { return }
+        complete(requestID: requestID, request: request, with: outcome)
+    }
+
+    func finishPendingAndHeldForShutdown(summaries: [ProcessingQueueItemSummary]) {
+        for item in summaries where item.holdReason != nil {
+            let requestID = item.requestID
+            guard let request = requests[requestID] else { continue }
+            complete(requestID: requestID, request: request, with: .paused)
         }
     }
 
-    private func cancel(_ token: UInt64) {
-        guard let waiter = waiters.removeValue(forKey: token) else { return }
-        waiter.continuation.resume(throwing: CancellationError())
+    func finishRemainingForShutdown() {
+        for (requestID, request) in Array(requests) {
+            complete(requestID: requestID, request: request, with: .paused)
+        }
     }
+
+    private func complete(requestID: UUID, request: Request, with outcome: Outcome) {
+        switch request.state {
+        case .registered:
+            request.terminalReplyClaim()
+            var updated = request
+            updated.state = .completed(outcome)
+            requests[requestID] = updated
+        case .waiting(let continuation):
+            request.terminalReplyClaim()
+            requests.removeValue(forKey: requestID)
+            continuation.resume(returning: outcome)
+        case .completed:
+            break
+        }
+    }
+
+    private func cancel(requestID: UUID) {
+        guard let request = requests.removeValue(forKey: requestID) else { return }
+        if case .waiting(let continuation) = request.state {
+            continuation.resume(throwing: CancellationError())
+        }
+    }
+}
+
+enum EngineCompletionError: Error {
+    case requestNotRegistered
 }

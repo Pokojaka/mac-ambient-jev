@@ -321,7 +321,7 @@ public struct SessionFileProcessingService: Sendable {
                     withDecisions: false
                 )
                 await callbacks.onEvent(.exported(request.outputURL))
-                return .completed(metrics: nil, noSpeech: false)
+                return .completed(metrics: nil, noSpeech: false, replacementGeneration: .notOpened)
             }
             guard let resources else {
                 throw SessionFileProcessingError.processingFailed(
@@ -344,7 +344,7 @@ public struct SessionFileProcessingService: Sendable {
                 withDecisions: request.withDecisions
             )
             await callbacks.onEvent(.exported(request.outputURL))
-            return .completed(metrics: nil, noSpeech: false)
+            return .completed(metrics: nil, noSpeech: false, replacementGeneration: .notOpened)
         }
     }
 
@@ -372,7 +372,8 @@ public struct SessionFileProcessingService: Sendable {
                     shouldPause: callbacks.shouldPause,
                     onPhase: callbacks.onPhase,
                     onStatus: callbacks.onStatus,
-                    onUpdate: onUpdate
+                    onUpdate: onUpdate,
+                    onGenerationOpened: { _ in }
                 )
             } else {
                 result = await processor.processSession(
@@ -382,7 +383,8 @@ public struct SessionFileProcessingService: Sendable {
                     onPhase: callbacks.onPhase,
                     metadataPolicy: .reject,
                     onStatus: callbacks.onStatus,
-                    onUpdate: onUpdate
+                    onUpdate: onUpdate,
+                    onGenerationOpened: { _ in }
                 )
             }
             guard result.disposition == .completed else {
@@ -445,7 +447,7 @@ public struct SessionFileProcessingService: Sendable {
             )
             await callbacks.onEvent(.exported(request.outputURL))
             await processor.releaseIdleResources()
-            return .completed(metrics: nil, noSpeech: false)
+            return .completed(metrics: nil, noSpeech: false, replacementGeneration: .notOpened)
         } catch {
             await processor.releaseIdleResources()
             throw error

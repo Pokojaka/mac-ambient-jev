@@ -234,20 +234,32 @@ private func processFinal(
     _ processor: NativeSessionProcessor,
     sessionID: UUID,
     sessionURL: URL,
-    metadataPolicy: UnreadableMetadataPolicy,
+    metadataPolicy: SessionFinalizationPolicy,
     statuses: FinalizationStatusRecorder,
     states: FinalizationStateRecorder,
-    phases: FinalizationCallLog
+    phases: FinalizationCallLog,
+    pauseGate: @escaping NativeSessionProcessor.PauseCheck = { _ in nil }
 ) async throws -> SessionProcessingResult {
     return await processor.processSession(
         sessionID: sessionID,
         pacingMode: .normal,
-        shouldPause: { _ in nil },
+        shouldPause: pauseGate,
         onPhase: { await phases.append("phase:\($0.rawValue)") },
         metadataPolicy: metadataPolicy,
         onStatus: { await statuses.append($0.text) },
-        onUpdate: { segments, state in await states.append((segments.map(\.text), state)) }
+        onUpdate: { segments, state in await states.append((segments.map(\.text), state)) },
+        onGenerationOpened: { _ in }
     )
+}
+
+private func admittedReplacementPolicy(sessionID: UUID) -> SessionFinalizationPolicy {
+    var queue = SessionProcessingQueue()
+    guard queue.enqueueAdmittedReplacement(sessionID: sessionID) != nil,
+          let request = queue.pending.first,
+          case .finalize(_, _, let policy) = request else {
+        preconditionFailure("an idle test session admits one replacement")
+    }
+    return policy
 }
 
 private func cancelProcessingWhenGateStarts(
@@ -264,7 +276,8 @@ private func cancelProcessingWhenGateStarts(
             onPhase: { _ in },
             metadataPolicy: .reject,
             onStatus: { _ in },
-            onUpdate: { _, _ in }
+            onUpdate: { _, _ in },
+            onGenerationOpened: { _ in }
         )
     }
     await gate.waitUntilStarted()
@@ -274,7 +287,9 @@ private func cancelProcessingWhenGateStarts(
 
 private func resumableDecisionPriority() -> ContentPriorityAccess {
     let counter = DecisionUsageCounter()
-    let provider = FrozenReuseProvider(fillerRangesByText: ["再開した本文": [], "前半": []])
+    let provider = FrozenReuseProvider(fillerRangesByText: [
+        "再開した本文": [], "前半": [], "旧1": [], "旧2": [], "新1": [], "新2": []
+    ])
     return .localTagger({
         DecisionCoordinator(provider: provider, identity: testDecisionIdentity, usageCounter: counter)
     }, usageCounter: counter)
@@ -336,7 +351,8 @@ func nativeProcessorPauseReasonForSessionProcessingCoordinator(reason: Inference
                 await typedStatusLog.append("selected-pause-reason")
             }
         },
-        onUpdate: { _, _ in }
+        onUpdate: { _, _ in },
+        onGenerationOpened: { _ in }
     )
 
     #expect(result.disposition == .paused)
@@ -671,7 +687,9 @@ func stoppingALiveRecordingEndsWithFinalizationStatus() async throws {
         contentPriority: .disabled,
         sleep: { _ in }
     )
-    _ = try await processor.startLiveTranscription(sessionID: sessionID, sampleRate: checkpoint.sampleRate)
+    _ = try await processor.startLiveTranscription(
+        sessionID: sessionID, sampleRate: checkpoint.sampleRate, onGenerationOpened: { _ in }
+    )
     let statuses = FinalizationStatusRecorder()
 
     let finish = await processor.processSession(
@@ -681,7 +699,8 @@ func stoppingALiveRecordingEndsWithFinalizationStatus() async throws {
         onPhase: { _ in },
         metadataPolicy: .reject,
         onStatus: { await statuses.append($0.text) },
-        onUpdate: { _, _ in }
+        onUpdate: { _, _ in },
+        onGenerationOpened: { _ in }
     )
 
     #expect(finish.disposition == .completed)
@@ -976,11 +995,138 @@ func unreadableMetadataIsReplacedOnlyByExplicitReprocessing() async throws {
     #expect(await log.snapshot().isEmpty)
 
     let replaced = try await processFinal(
-        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .replace,
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: admittedReplacementPolicy(sessionID: sessionID),
         statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
     )
     #expect(replaced.disposition == .completed)
     #expect(try ProcessingMetadataStore(sessionURL: sessionURL).load()?.state == .complete)
+}
+
+@Test
+func reprocessDiscardsAllStageResults() async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, _) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: paths.applicationSupportURL.deletingLastPathComponent()) }
+    let log = FinalizationCallLog()
+    let asr = FakeFinalASR(log: log, values: ["旧1", "旧2", "新1", "新2"])
+    let decisions = FrozenReuseProvider(fillerRangesByText: ["旧1": [], "旧2": [], "新1": [], "新2": []])
+    let usageCounter = DecisionUsageCounter()
+    let contentPriority = ContentPriorityAccess.localTagger({
+        DecisionCoordinator(provider: decisions, identity: testDecisionIdentity, usageCounter: usageCounter)
+    }, usageCounter: usageCounter)
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        engines: SessionProcessingEngines(
+            asr: asr,
+            finalTranscriptVAD: FakeFinalVAD(segments: [
+                SegmentReference(segmentationRunID: "ignored", segmentID: "first", speechRanges: [0..<8_000]),
+                SegmentReference(segmentationRunID: "ignored", segmentID: "second", speechRanges: [8_000..<16_000])
+            ], log: log)
+        ),
+        audioHandling: RecordingTestAudioHandling(), contentPriority: contentPriority, sleep: { _ in }
+    )
+    let statuses = FinalizationStatusRecorder()
+    let states = FinalizationStateRecorder()
+    let phases = FinalizationCallLog()
+
+    let initial = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: .reject,
+        statuses: statuses, states: states, phases: phases
+    )
+    #expect(initial.disposition == .completed)
+    #expect(initial.replacementGeneration == .notOpened)
+    let previous = try storedFinal(sessionURL: sessionURL).state
+    let previousBoundaryCalls = await decisions.assessedBoundaryTexts().count
+    let previousPriorityCalls = await decisions.sentPriorityTexts().count
+
+    let replacement = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: admittedReplacementPolicy(sessionID: sessionID),
+        statuses: statuses, states: states, phases: phases
+    )
+    #expect(replacement.disposition == .completed)
+    let current = try storedFinal(sessionURL: sessionURL).state
+    #expect(replacement.replacementGeneration == .opened(current.generation.id))
+    #expect(current.generation.id != previous.generation.id)
+    #expect(current.runs != previous.runs)
+    #expect(current.runs.clauseBoundary != previous.runs.clauseBoundary)
+    #expect(current.runs.contentPriority != previous.runs.contentPriority)
+    #expect(current.segments.count == 2)
+    let replacementRows = try readFinalRows(sessionURL: sessionURL)
+    #expect(replacementRows.map(\.text) == ["新1", "新2"])
+    let started = try eventObjects(sessionURL).filter { $0["event_type"] as? String == "processing.run.started" }
+    for (stage, runID) in [
+        ("segmentation", current.runs.segmentation), ("asr", current.runs.asr),
+        ("clauseBoundary", current.runs.clauseBoundary), ("contentPriority", current.runs.contentPriority)
+    ] {
+        let selectedRunID = try #require(runID)
+        let runEvents = started.filter { $0["processing_run_id"] as? String == selectedRunID }
+        #expect(runEvents.count == 1)
+        let stagePayload = runEvents.first?["payload"] as? [String: Any]
+        #expect(stagePayload?["stage"] as? String == stage)
+        let completedRuns = try eventObjects(sessionURL).filter {
+            $0["event_type"] as? String == "processing.run.completed"
+                && $0["processing_run_id"] as? String == selectedRunID
+        }
+        #expect(completedRuns.count == 1)
+        let completionPayload = completedRuns.first?["payload"] as? [String: Any]
+        #expect(completionPayload?["succeeded"] as? Bool == true)
+    }
+    #expect(await log.snapshot() == ["vad", "asr:0", "asr:1", "vad", "asr:2", "asr:3"])
+    #expect(await asr.recordedAudioFrameCounts() == [8_000, 8_000, 8_000, 8_000])
+    let boundaryTexts = await decisions.assessedBoundaryTexts()
+    let priorityTexts = await decisions.sentPriorityTexts()
+    #expect(boundaryTexts.count > previousBoundaryCalls)
+    #expect(priorityTexts.count > previousPriorityCalls)
+    #expect(boundaryTexts.suffix(2) == ["新1", "新2"])
+    #expect(priorityTexts.suffix(2) == ["新1", "新2"])
+}
+
+@Test
+func boundReplacementFailsIfItsGenerationChanged() async throws {
+    let sessionID = UUID()
+    let (paths, sessionURL, _) = try await finalizationFixture(sessionID: sessionID)
+    defer { try? FileManager.default.removeItem(at: paths.applicationSupportURL.deletingLastPathComponent()) }
+    let log = FinalizationCallLog()
+    let processor = NativeSessionProcessor(
+        paths: paths,
+        engines: SessionProcessingEngines(
+            asr: FakeFinalASR(log: log, values: ["初回"]),
+            finalTranscriptVAD: FakeFinalVAD(
+                segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "first", speechRanges: [0..<16_000])],
+                log: log
+            )
+        ),
+        audioHandling: RecordingTestAudioHandling(), contentPriority: .disabled, sleep: { _ in }
+    )
+    let policy = admittedReplacementPolicy(sessionID: sessionID)
+    let opened = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: policy,
+        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
+    )
+    #expect(opened.disposition == .completed)
+    let currentGenerationID = try storedFinal(sessionURL: sessionURL).state.generation.id
+    let provenance = RunProvenance(engine: "replacement-race-test", model: nil, version: "1", configuration: [:])
+    let replacementOutsideRequest = PipelineGeneration(
+        id: UUID(), runs: ActiveRuns(segmentation: "external-seg", asr: "external-asr"),
+        sampleRate: CanonicalAudio.sampleRate,
+        segmentationProvenance: provenance, asrProvenance: provenance
+    )
+    try await SessionWriter(sessionURL: sessionURL).append(
+        replacementOutsideRequest.startEvent(sessionID: sessionID)
+    )
+
+    let staleAttempt = try await processFinal(
+        processor, sessionID: sessionID, sessionURL: sessionURL, metadataPolicy: policy,
+        statuses: FinalizationStatusRecorder(), states: FinalizationStateRecorder(), phases: FinalizationCallLog()
+    )
+    #expect(staleAttempt.disposition == .failed)
+    #expect(staleAttempt.message?.contains("対象世代が変わりました") == true)
+    #expect(staleAttempt.replacementGeneration == .opened(currentGenerationID))
+    let durableState = try #require(try ProcessingLogState(
+        eventsURL: SessionLayout(sessionURL: sessionURL).eventsURL, sessionID: sessionID
+    ))
+    #expect(durableState.generation.id == replacementOutsideRequest.id)
+    #expect(await log.snapshot() == ["vad", "asr:0"])
 }
 
 /// Accepts every candidate, never continues, and answers LOW for every clause.
@@ -1184,7 +1330,9 @@ func failedVADDoesNotCompleteSegmentationOrReportNoSpeech() async throws {
     )
     let absent = UUID()
     do {
-        _ = try await processor.startLiveTranscription(sessionID: absent, sampleRate: 16_000)
+        _ = try await processor.startLiveTranscription(
+            sessionID: absent, sampleRate: 16_000, onGenerationOpened: { _ in }
+        )
         Issue.record("missing identity must fail")
     } catch {
         #expect(error as? SessionDirectoryLookupError == .notFound(absent))
@@ -1202,7 +1350,8 @@ func failedVADDoesNotCompleteSegmentationOrReportNoSpeech() async throws {
     let imported = await processor.processSession(
         sessionID: absent,
         pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
-        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in }
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in },
+        onGenerationOpened: { _ in }
     )
     #expect(imported.disposition == .failed)
     #expect(!imported.noSpeech)

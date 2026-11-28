@@ -124,12 +124,17 @@ private actor DecisionRetryFailureEventWriter: DecisionEventWriting {
 private actor DecisionRetryFailureTagger: DecisionProvider {
     private enum RetryBehavior {
         case unconfigured
+        case success
         case failure
         case suspended(DecisionRetryPriorityGate)
     }
 
     private var priorityCalls = 0
     private var retryBehavior: RetryBehavior = .unconfigured
+
+    func configureRetrySuccess() {
+        retryBehavior = .success
+    }
 
     func configureRetryFailure() {
         retryBehavior = .failure
@@ -160,6 +165,8 @@ private actor DecisionRetryFailureTagger: DecisionProvider {
         switch retryBehavior {
         case .unconfigured:
             preconditionFailure("retry behavior must be configured before the retry batch")
+        case .success:
+            break
         case .failure:
             throw DecisionRetryTaggerFailure("テスト判定エンジンに失敗しました")
         case let .suspended(gate):
@@ -231,6 +238,7 @@ private final class DecisionRetryFailureApplicationHarness {
     let sink = ScriptedSink()
     let capture = FakeCapture()
     let inference: DecisionRetryFailureInference
+    let transcriptGenerationLookupGate = EngineApplicationTestGate()
     let transport: EngineTransport
     let app: EngineApplication
     let controller: EngineController
@@ -244,13 +252,27 @@ private final class DecisionRetryFailureApplicationHarness {
         paths = engineTestPaths(root: root)
         self.inference = inference
         transport = EngineTransport(source: source, sink: sink, limits: testLimits())
+        let generationGate = transcriptGenerationLookupGate
         app = EngineApplication(
             configuration: EngineApplicationConfiguration(
                 paths: paths, logicalCPUCount: 4, resourceMonitor: FakeResourceMonitor(), sleep: { try await Task.sleep(for: $0) },
                 shutdownPauseTimeout: .seconds(20), timeZone: TimeZone(identifier: "Asia/Tokyo")!),
             capture: capture,
             inference: inference,
-            events: EngineEventEmitter(transport: transport)
+            events: EngineEventEmitter(transport: transport),
+            saveProcessingMetadata: { sessionURL, metadata in
+                try ProcessingMetadataStore(sessionURL: sessionURL).save(metadata)
+            },
+            importRetainedSession: { audioURL, importer in
+                try importer.importRetainedSession(audioURL: audioURL)
+            },
+            sessionCatalogLookup: blockingSessionCatalogLookup,
+            transcriptGenerationLookup: { session in
+                let generationID = try await blockingTranscriptGenerationLookup(for: session)
+                await generationGate.suspendIfArmed()
+                return generationID
+            },
+            exportSessionBundle: blockingSessionBundleExport
         )
         controller = EngineController(transport: transport, handlers: app.handlers, admission: .production)
     }
@@ -436,7 +458,7 @@ private final class DecisionRetryFailureApplicationHarness {
             let interruptedPlan = SessionRecoveryPlan(interruptedInspection.recovery?.action)
             let interruptedLaunchRequest = interruptedPlan.launchRecoveryRequest(sessionID: actualSessionID)
             #expect({
-                guard case let .retryContentPriority(sessionID, boundarySegments, clauses)? = interruptedLaunchRequest else {
+                guard case let .retryContentPriority(_, sessionID, boundarySegments, clauses)? = interruptedLaunchRequest else {
                     return false
                 }
                 return sessionID == actualSessionID
@@ -452,6 +474,44 @@ private final class DecisionRetryFailureApplicationHarness {
             }
             throw error
         }
+    }
+
+    @Test func firstTranscriptReadRebuildsAfterDecisionRetryPublishesWithoutCache() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { removeRoot(root) }
+        let inference = try DecisionRetryFailureInference()
+        let harness = DecisionRetryFailureApplicationHarness(root: root, inference: inference)
+        harness.start()
+        let prepared = try await preparePendingRetrySession(
+            harness, inference: inference, root: root,
+            writerMode: .gateBeforeWrite(DecisionRetryPriorityGate())
+        )
+        await inference.tagger.configureRetrySuccess()
+        #expect(harness.app.core.readTranscript == nil)
+        #expect(harness.app.core.transcript == nil)
+
+        let lookupGate = harness.transcriptGenerationLookupGate
+        await lookupGate.arm()
+        defer { Task { await lookupGate.release() } }
+        let readPayload = "{\"session_id\":\(try jsonString(prepared.sessionID)),\"revision\":null,\"cursor\":null,\"limit\":50}"
+        let read = Task { try await harness.call("transcript.read", payload: readPayload) }
+        await lookupGate.waitUntilSuspended()
+        let epochBeforeRetry = harness.app.core.transcriptEpoch
+
+        _ = try await harness.call(
+            "session.retry_decisions", payload: "{\"session_id\":\(jsonString(prepared.sessionID))}"
+        )
+        #expect(harness.app.core.readTranscript == nil)
+        #expect(harness.app.core.transcriptEpoch > epochBeforeRetry)
+
+        await lookupGate.release()
+        guard case let .transcriptRead(page) = try await read.value else {
+            Issue.record("transcript.read did not return the selected retry rows")
+            _ = try await harness.shutdown()
+            return
+        }
+        #expect(page.rows.first?.clauseState == EngineClauseState.classified)
+        #expect(try await harness.shutdown() == .shutdownRequested)
     }
 
     @Test func cancelledRetryDiscardsLatePriorityResponseAndHoldsRequest() async throws {
@@ -510,7 +570,7 @@ private final class DecisionRetryFailureApplicationHarness {
             await harness.app.core.failureEventTask?.value
             let state = try #require(harness.app.core.publishedState)
             let hasSessionFailure = state.failures.contains { $0.sessionID == imported.sessionID }
-            let isHeld = harness.app.core.processingQueue.held.contains { $0.request.sessionID == importedSessionID }
+            let isHeld = harness.app.core.processingQueue.held.contains { $0.sessionID == importedSessionID }
             let backgroundProcessingFailures = try Self.backgroundFailures(
                 in: harness.outputs, sessionID: imported.sessionID
             ).filter { $0.code == .processingFailure }
@@ -774,7 +834,7 @@ private final class DecisionRetryFailureApplicationHarness {
             ))
             let launchRequest = recoveryPlan.launchRecoveryRequest(sessionID: importedSessionID)
             #expect({
-                guard case let .retryContentPriority(sessionID, boundarySegments, clauses)? = launchRequest else {
+                guard case let .retryContentPriority(_, sessionID, boundarySegments, clauses)? = launchRequest else {
                     return false
                 }
                 return sessionID == importedSessionID

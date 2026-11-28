@@ -3,7 +3,8 @@ import MacAmbientJevEngineProtocol
 
 @MainActor
 final class EnginePageNavigation {
-    private(set) var limit: Int
+    let id: UUID
+    let limit: Int
 
     struct Location {
         let token: String
@@ -11,27 +12,21 @@ final class EnginePageNavigation {
         let previousCursor: String?
     }
 
-    private var firstLocation: Location
+    private let firstLocation: Location
     private var locationsByToken: [String: Location] = [:]
     private var nextLocationsByToken: [String: Location] = [:]
 
     init(limit: Int) {
+        id = UUID()
         self.limit = limit
         let firstLocation = Location(token: UUID().uuidString, start: 0, previousCursor: nil)
         self.firstLocation = firstLocation
         locationsByToken[firstLocation.token] = firstLocation
     }
 
-    /// A nil cursor starts fresh navigation for the supplied limit; only a non-nil cursor must match the current navigation's limit.
+    /// A first page uses the navigation's initial location; continuation cursors must match its limit.
     func location(cursor: String?, limit: Int) throws -> Location {
-        guard let cursor else {
-            self.limit = limit
-            let firstLocation = Location(token: UUID().uuidString, start: 0, previousCursor: nil)
-            self.firstLocation = firstLocation
-            locationsByToken = [firstLocation.token: firstLocation]
-            nextLocationsByToken = [:]
-            return firstLocation
-        }
+        guard let cursor else { return firstLocation }
         guard limit == self.limit else {
             throw EngineFailures.commandError(
                 .invalidCursor, "limit がスナップショット作成時と一致しません", stage: .protocolValidation

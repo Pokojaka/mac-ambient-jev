@@ -2,10 +2,158 @@ import Foundation
 import Testing
 import MacAmbientJevCore
 import MacAmbientJevEngineProtocol
-import MacAmbientJevPipeline
+@testable import MacAmbientJevPipeline
 import MacAmbientJevTestSupport
 
 @testable import MacAmbientJevEngineHost
+
+private actor TranscriptSecondASRGate {
+    private var entered = false
+    private var released = false
+    private var entryContinuation: CheckedContinuation<Void, Never>?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func suspendSecondCall() async {
+        guard !released else { return }
+        entered = true
+        entryContinuation?.resume()
+        entryContinuation = nil
+        await withCheckedContinuation { continuation in
+            if released { continuation.resume() }
+            else { releaseContinuation = continuation }
+        }
+    }
+
+    func waitUntilEntered() async {
+        if entered { return }
+        await withCheckedContinuation { entryContinuation = $0 }
+    }
+
+    func release() {
+        guard !released else { return }
+        released = true
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+        entryContinuation?.resume()
+        entryContinuation = nil
+    }
+}
+
+private actor TranscriptRecoveryMaintenanceGate {
+    private var entered = false
+    private var released = false
+    private var entryContinuation: CheckedContinuation<Void, Never>?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func holdMaintenance() async {
+        entered = true
+        entryContinuation?.resume()
+        entryContinuation = nil
+        await withCheckedContinuation { continuation in
+            if released { continuation.resume() }
+            else { releaseContinuation = continuation }
+        }
+    }
+
+    func waitUntilHeld() async {
+        if entered { return }
+        await withCheckedContinuation { entryContinuation = $0 }
+    }
+
+    func release() {
+        released = true
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+        entryContinuation?.resume()
+        entryContinuation = nil
+    }
+}
+
+private struct TranscriptGatedASR: ASREngine {
+    let calls: CallCounter
+    let gate: TranscriptSecondASRGate
+    let text: String
+    let provenance = RunProvenance(engine: "transcript-gated-asr", model: nil, version: "test", configuration: [:])
+
+    func prepare() async throws {}
+    func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
+        calls.increment("asr")
+        if calls.count("asr") == 2 { await gate.suspendSecondCall() }
+        return ASRResult(text: text, detectedLanguage: "ja")
+    }
+    func unload() async { calls.increment("asr.unload") }
+}
+
+private struct InjectedMetadataSaveFailure: Error {}
+
+private struct TranscriptMutableASR: ASREngine {
+    let text: LockedBox<String>
+    let provenance = RunProvenance(engine: "transcript-mutable-asr", model: nil, version: "test", configuration: [:])
+
+    func prepare() async throws {}
+    func transcribe(_ input: ASRAudioInput) async throws -> ASRResult {
+        ASRResult(text: text.get(), detectedLanguage: "ja")
+    }
+    func unload() async {}
+}
+
+private final class TranscriptMutableTextProvider: EngineInferenceProviding, @unchecked Sendable {
+    let base = FakeInferenceProvider()
+    let text: LockedBox<String>
+
+    init(text: LockedBox<String>) {
+        self.text = text
+    }
+
+    func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
+        try await base.prepare(settings: settings, onProgress: onProgress)
+    }
+
+    func makeInference(settings: EngineSettings) throws -> EngineInference {
+        _ = try base.makeInference(settings: settings)
+        return EngineInference(
+            engines: SessionProcessingEngines(
+                asr: TranscriptMutableASR(text: text), finalTranscriptVAD: FakeFinalVAD(segmentCount: 2)
+            ),
+            contentPriority: .disabled,
+            timelineBuilder: FakeTimelineBuilder(),
+            makeLiveVADSession: { _, _, _, runID in FakeLiveVAD(segmentationRunID: runID) }
+        )
+    }
+
+    func decisionUsage() async throws -> DecisionUsageSnapshot { try await base.decisionUsage() }
+    func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity { try await base.inspectClauseTagger() }
+}
+
+private final class TranscriptGenerationTestProvider: EngineInferenceProviding, @unchecked Sendable {
+    let base = FakeInferenceProvider()
+    let gate = TranscriptSecondASRGate()
+    let transcriptText: String
+
+    init(transcriptText: String) {
+        self.transcriptText = transcriptText
+    }
+
+    func prepare(settings: EngineSettings, onProgress: @escaping @Sendable (EngineModelProgress) -> Void) async throws {
+        try await base.prepare(settings: settings, onProgress: onProgress)
+    }
+
+    func makeInference(settings: EngineSettings) throws -> EngineInference {
+        _ = try base.makeInference(settings: settings)
+        return EngineInference(
+            engines: SessionProcessingEngines(
+                asr: TranscriptGatedASR(calls: base.calls, gate: gate, text: transcriptText),
+                finalTranscriptVAD: FakeFinalVAD(segmentCount: 2)
+            ),
+            contentPriority: .disabled,
+            timelineBuilder: FakeTimelineBuilder(),
+            makeLiveVADSession: { _, _, _, runID in FakeLiveVAD(segmentationRunID: runID) }
+        )
+    }
+
+    func decisionUsage() async throws -> DecisionUsageSnapshot { try await base.decisionUsage() }
+    func inspectClauseTagger() async throws -> ClauseTaggerModelIdentity { try await base.inspectClauseTagger() }
+}
 
 @MainActor
 @Suite(.timeLimit(.minutes(10))) struct EngineApplicationTranscriptTests {
@@ -73,6 +221,765 @@ import MacAmbientJevTestSupport
         #expect(core.readTranscript?.revision == readPage.revision.value)
 
         #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func failedOversizedWatchPreservesThePreviousWatchedSession() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transcriptText = LockedBox("通常の文字起こしです。")
+        let provider = TranscriptMutableTextProvider(text: transcriptText)
+        let h = try await prepared(root, provider: provider)
+        let sessionA = try await recordAndFinalize(in: h)
+        let context = try requestContext(for: h)
+        _ = try await h.app.core.watch(EngineSessionPayload(sessionID: sessionA), context: context)
+        let cacheA = try #require(h.app.core.transcript)
+
+        transcriptText.set(String(repeating: "x", count: EngineCodec.maxRowBytes))
+        let sessionB = try await recordAndFinalize(in: h)
+        do {
+            _ = try await h.app.core.watch(EngineSessionPayload(sessionID: sessionB), context: context)
+            Issue.record("watching an oversized row must fail")
+        } catch let error as EngineCommandError {
+            #expect(error.code == .rowTooLarge)
+            #expect(error.details.contains { $0.code == "row_too_large" })
+        } catch {
+            Issue.record("expected row_too_large, got \(error)")
+        }
+
+        #expect(h.app.core.watchedSessionID == UUID(uuidString: sessionA))
+        #expect(h.app.core.transcript?.sessionID == cacheA.sessionID)
+        #expect(h.app.core.transcript?.revision == cacheA.revision)
+        let sessionAUUID = try #require(UUID(uuidString: sessionA))
+        h.app.core.transcriptDidUpdate(sessionID: sessionAUUID, segments: [
+            try materializedApplicationSegment(id: "after-failed-watch-A", text: "A は引き続き更新されます")
+        ])
+        try await h.sink.changes.wait("updates continue for the previously watched session") {
+            ((try? h.outputs) ?? []).contains { output in
+                guard case let .rows(payload) = output.event else { return false }
+                return payload.sessionID == sessionA && payload.kind == .changes
+                    && payload.rows.contains { $0.rowID == "after-failed-watch-A" }
+            }
+        }
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func recoveryClaimKeepsSavedTranscriptVisibleDuringAndAfterClaim() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = try await prepared(root)
+        let sessionID = try await recordAndFinalize(in: h)
+        let context = try requestContext(for: h)
+        let sessionUUID = try #require(UUID(uuidString: sessionID))
+        let recoveryGate = TranscriptRecoveryMaintenanceGate()
+        let maintenance = SessionMaintenanceCandidate(
+            sessionID: sessionUUID,
+            sessionURL: URL(fileURLWithPath: "/recovery-transcript-test"),
+            maintenance: .removeTransients
+        )
+        let recoveryTask = Task { @MainActor in
+            await h.app.core.processingCoordinator.recoverPendingSessions(
+                effects: h.app.core,
+                scan: { SessionRecoveryScan(candidates: [], maintenance: [maintenance], failures: []) },
+                maintain: { _, _ in
+                    await recoveryGate.holdMaintenance()
+                    return [:]
+                }
+            )
+        }
+        await recoveryGate.waitUntilHeld()
+
+        let duringClaim = try await h.app.core.read(
+            EngineTranscriptReadPayload(sessionID: sessionID, revision: nil, cursor: nil, limit: 50),
+            context: context
+        )
+        #expect(!duringClaim.rows.isEmpty)
+
+        await recoveryGate.release()
+        await recoveryTask.value
+        let afterClaim = try await h.app.core.read(
+            EngineTranscriptReadPayload(
+                sessionID: sessionID, revision: duringClaim.revision, cursor: nil, limit: 50
+            ),
+            context: context
+        )
+        #expect(afterClaim.revision == duringClaim.revision)
+        #expect(afterClaim.rows == duringClaim.rows)
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func firstOrdinaryGenerationNotifiesWatchedTranscriptBeforeRows() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = TranscriptGenerationTestProvider(transcriptText: "日本語のテストです。")
+        let h = ApplicationHarness(root: root, provider: provider)
+        provider.base.holdPrepare()
+        h.start()
+        try await h.hello()
+        try await h.replaceSettings(engineTestSettings(), expectedRevision: nil)
+
+        let audio = root.appending(path: "ordinary-generation.wav")
+        try Data("fake wav".utf8).write(to: audio)
+        guard case let .sessionImport(imported) = try await h.call(
+            "session.import", payload: "{\"input_path\":\(String(decoding: try JSONEncoder().encode(audio.path), as: UTF8.self))}"
+        ) else {
+            Issue.record("session.import did not return a session")
+            return
+        }
+        guard case .transcriptWatch = try await h.call(
+            "transcript.watch", payload: String(decoding: try JSONEncoder().encode(
+                EngineSessionPayload(sessionID: imported.sessionID)
+            ), as: UTF8.self)
+        ) else {
+            Issue.record("transcript.watch did not return its response")
+            return
+        }
+        let sessionUUID = try #require(UUID(uuidString: imported.sessionID))
+        #expect(h.app.core.transcript?.generationID == nil)
+        guard case let .transcriptRead(beforeGeneration) = try await h.call(
+            "transcript.read",
+            payload: String(decoding: try JSONEncoder().encode(EngineTranscriptReadPayload(
+                sessionID: imported.sessionID, revision: nil, cursor: nil, limit: 200
+            )), as: UTF8.self)
+        ) else {
+            Issue.record("transcript.read did not return its pre-generation snapshot")
+            _ = try await h.shutdown()
+            return
+        }
+        #expect(beforeGeneration.rows.isEmpty)
+
+        provider.base.releasePrepare()
+        await h.awaitModels()
+        await provider.gate.waitUntilEntered()
+        try await h.sink.changes.wait("rows for the initial ordinary generation") {
+            ((try? h.outputs) ?? []).contains { output in
+                guard case let .rows(payload) = output.event else { return false }
+                return payload.sessionID == imported.sessionID && !payload.rows.isEmpty
+            }
+        }
+        guard case let .transcriptRead(page) = try await h.call(
+            "transcript.read",
+            payload: String(decoding: try JSONEncoder().encode(EngineTranscriptReadPayload(
+                sessionID: imported.sessionID, revision: nil, cursor: nil, limit: 200
+            )), as: UTF8.self)
+        ) else {
+            Issue.record("transcript.read did not return rows from the new generation")
+            _ = try await h.shutdown()
+            return
+        }
+        guard let row = page.rows.first else {
+            Issue.record("fresh generation transcript was unexpectedly empty")
+            _ = try await h.shutdown()
+            return
+        }
+        let detailsPayload = try EngineTranscriptRowDetailsPayload(
+            sessionID: imported.sessionID, revision: page.revision, rowID: row.rowID
+        )
+        do {
+            guard case .transcriptRowDetails = try await h.call(
+                "transcript.row_details",
+                payload: String(decoding: try JSONEncoder().encode(detailsPayload), as: UTF8.self)
+            ) else {
+                Issue.record("fresh generation row details were rejected")
+                _ = try await h.shutdown()
+                return
+            }
+        } catch {
+            Issue.record("fresh generation row details were rejected: \(error)")
+            _ = try await h.shutdown()
+            return
+        }
+        let layout = SessionLayout(sessionURL: try await h.app.core.readableSession(sessionUUID).sessionURL)
+        let generationID = try #require(try ProcessingLogState(
+            eventsURL: layout.eventsURL, sessionID: sessionUUID
+        )?.generation.id)
+        #expect(h.app.core.transcript?.generationID == generationID)
+        await provider.gate.release()
+        _ = try await h.waitForSession(status: .finalized)
+        _ = try await h.shutdown()
+    }
+
+    @Test func firstWatchRebuildsAfterReprocessChangesGenerationDuringDurableLookup() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = try await prepared(root)
+        let sessionID = try await recordAndFinalize(in: h)
+        let sessionUUID = try #require(UUID(uuidString: sessionID))
+        let session = try await h.app.core.readableSession(sessionUUID)
+        let eventsURL = SessionLayout(sessionURL: session.sessionURL).eventsURL
+        let generationBeforeReprocess = try #require(try ProcessingLogState(
+            eventsURL: eventsURL, sessionID: sessionUUID
+        )?.generation.id)
+
+        let lookupGate = h.transcriptGenerationLookupGate
+        await lookupGate.arm()
+        defer { Task { await lookupGate.release() } }
+        let watchPayload = try EngineSessionPayload(sessionID: sessionID)
+        let encodedWatchPayload = String(decoding: try JSONEncoder().encode(watchPayload), as: UTF8.self)
+        let watchTask = Task { @MainActor in
+            try await h.call("transcript.watch", payload: encodedWatchPayload)
+        }
+        await lookupGate.waitUntilSuspended()
+
+        guard case .sessionReprocess = try await h.call(
+            "session.reprocess", payload: encodedWatchPayload
+        ) else {
+            Issue.record("session.reprocess did not return its session")
+            await lookupGate.release()
+            return
+        }
+        let generationAfterReprocess = try #require(try ProcessingLogState(
+            eventsURL: eventsURL, sessionID: sessionUUID
+        )?.generation.id)
+        #expect(generationAfterReprocess != generationBeforeReprocess)
+        await lookupGate.release()
+
+        guard case let .transcriptWatch(page) = try await watchTask.value else {
+            Issue.record("transcript.watch did not return its page")
+            _ = try await h.shutdown()
+            return
+        }
+        guard case let .segments(savedGenerationID, savedSegments) = try SavedTranscriptLoader.load(
+            sessionURL: session.sessionURL
+        ) else {
+            Issue.record("saved transcript was unavailable after reprocess")
+            _ = try await h.shutdown()
+            return
+        }
+        let cache = try #require(h.app.core.transcript)
+        #expect(savedGenerationID == generationAfterReprocess)
+        #expect(cache.generationID == savedGenerationID)
+        #expect(cache.materializedSegments == savedSegments)
+        #expect(cache.rows == page.rows)
+        let row = try #require(page.rows.first)
+        let detailsPayload = try EngineTranscriptRowDetailsPayload(
+            sessionID: sessionID, revision: page.revision, rowID: row.rowID
+        )
+        guard case .transcriptRowDetails = try await h.call(
+            "transcript.row_details",
+            payload: String(decoding: try JSONEncoder().encode(detailsPayload), as: UTF8.self)
+        ) else {
+            Issue.record("row details rejected the first watch revision")
+            _ = try await h.shutdown()
+            return
+        }
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func freshReadRestartsWhenPublicationReplacesItsRevisionDuringDurableLookup() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = try await prepared(root)
+        let sessionID = try await recordAndFinalize(in: h)
+        let context = try requestContext(for: h)
+        let core = h.app.core
+        let sessionUUID = try #require(UUID(uuidString: sessionID))
+        let previousPage = try await core.read(
+            EngineTranscriptReadPayload(sessionID: sessionID, revision: nil, cursor: nil, limit: 200),
+            context: context
+        )
+
+        let lookupGate = h.transcriptGenerationLookupGate
+        await lookupGate.arm(skippingCalls: 1)
+        defer { Task { await lookupGate.release() } }
+        let freshRead = Task { @MainActor in
+            try await core.read(
+                EngineTranscriptReadPayload(sessionID: sessionID, revision: nil, cursor: nil, limit: 200),
+                context: context
+            )
+        }
+        await lookupGate.waitUntilSuspended()
+
+        await core.transcriptDidPublish(sessionID: sessionUUID)
+        let publishedCache = try #require(core.readTranscript)
+        #expect(publishedCache.revision > previousPage.revision.value)
+        await lookupGate.release()
+
+        let restartedPage = try await freshRead.value
+        #expect(restartedPage.revision.value == publishedCache.revision)
+        #expect(restartedPage.revision != previousPage.revision)
+        #expect(restartedPage.rows == publishedCache.rows)
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func freshReadKeepsItsOwnCacheWhenAnotherSessionReadsDuringDurableLookup() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = try await prepared(root)
+        let sessionA = try await recordAndFinalize(in: h)
+        let sessionB = try await recordAndFinalize(in: h)
+        let context = try requestContext(for: h)
+        let core = h.app.core
+        let sessionAUUID = try #require(UUID(uuidString: sessionA))
+        let sessionBUUID = try #require(UUID(uuidString: sessionB))
+        let lookupGate = h.transcriptGenerationLookupGate
+        await lookupGate.arm(skippingCalls: 1)
+        defer { Task { await lookupGate.release() } }
+
+        let readA = Task { @MainActor in
+            try await core.read(
+                EngineTranscriptReadPayload(sessionID: sessionA, revision: nil, cursor: nil, limit: 200),
+                context: context
+            )
+        }
+        await lookupGate.waitUntilSuspended()
+        let expectedRowsA = try #require(core.readTranscript)
+        #expect(expectedRowsA.sessionID == sessionAUUID)
+
+        let pageB = try await core.read(
+            EngineTranscriptReadPayload(sessionID: sessionB, revision: nil, cursor: nil, limit: 200),
+            context: context
+        )
+        #expect(pageB.sessionID == sessionB)
+        #expect(core.readTranscript?.sessionID == sessionBUUID)
+
+        await lookupGate.release()
+        let pageA = try await readA.value
+        #expect(pageA.sessionID == sessionA)
+        #expect(pageA.rows == expectedRowsA.rows)
+        #expect(!pageA.rows.isEmpty)
+        #expect(core.transcriptReadSnapshot?.sessionID == sessionAUUID)
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func retainedRevisionRestartRacingFirstPageReturnsUsableCursor() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = TranscriptGenerationTestProvider(transcriptText: "日本語のテストです。")
+        await provider.gate.release()
+        let h = try await prepared(root, provider: provider)
+        let sessionID = try await recordAndFinalize(in: h)
+        let context = try requestContext(for: h)
+        let core = h.app.core
+        let sessionUUID = try #require(UUID(uuidString: sessionID))
+        _ = try await core.watch(EngineSessionPayload(sessionID: sessionID), context: context)
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: [
+            try materializedApplicationSegment(id: "restart-row-1", text: "最初の行"),
+            try materializedApplicationSegment(id: "restart-row-2", text: "次の行"),
+        ])
+        let firstPage = try await core.read(
+            EngineTranscriptReadPayload(sessionID: sessionID, revision: nil, cursor: nil, limit: 1),
+            context: context
+        )
+        let firstCursor = try #require(firstPage.nextCursor)
+
+        let lookupGate = h.transcriptGenerationLookupGate
+        await lookupGate.arm(skippingCalls: 1)
+        defer { Task { await lookupGate.release() } }
+        let restart = Task { @MainActor in
+            try await core.read(
+                EngineTranscriptReadPayload(
+                    sessionID: sessionID, revision: firstPage.revision, cursor: nil, limit: 1
+                ),
+                context: context
+            )
+        }
+        await lookupGate.waitUntilSuspended()
+        let racingFirstPage = try await core.read(
+            EngineTranscriptReadPayload(sessionID: sessionID, revision: nil, cursor: nil, limit: 1),
+            context: context
+        )
+        #expect(racingFirstPage.nextCursor != nil)
+
+        await lookupGate.release()
+        let restartedPage = try await restart.value
+        #expect(restartedPage.revision == firstPage.revision)
+        #expect(restartedPage.nextCursor != nil)
+        let nextPage = try await core.read(
+            EngineTranscriptReadPayload(
+                sessionID: sessionID, revision: restartedPage.revision,
+                cursor: try #require(restartedPage.nextCursor), limit: 1
+            ),
+            context: context
+        )
+        #expect(nextPage.rows.first?.rowID != restartedPage.rows.first?.rowID)
+        #expect(nextPage.rows.first?.rowID != nil)
+        #expect(firstCursor != restartedPage.nextCursor)
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func failedRetainedRevisionRestartPreservesInstalledCursors() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = TranscriptGenerationTestProvider(transcriptText: "日本語のテストです。")
+        await provider.gate.release()
+        let h = try await prepared(root, provider: provider)
+        let sessionID = try await recordAndFinalize(in: h)
+        let context = try requestContext(for: h)
+        let core = h.app.core
+        let sessionUUID = try #require(UUID(uuidString: sessionID))
+        _ = try await core.watch(EngineSessionPayload(sessionID: sessionID), context: context)
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: [
+            try materializedApplicationSegment(id: "retained-row-1", text: "最初の行"),
+            try materializedApplicationSegment(id: "retained-row-2", text: "二番目の行"),
+        ])
+        let firstPage = try await core.read(
+            EngineTranscriptReadPayload(sessionID: sessionID, revision: nil, cursor: nil, limit: 1),
+            context: context
+        )
+        let oldNextCursor = try #require(firstPage.nextCursor)
+        let originalSnapshot = try #require(core.transcriptReadSnapshot)
+        var oversizedSnapshot = originalSnapshot
+        oversizedSnapshot.rows[1] = try EngineTranscriptRow(
+            rowID: "retained-row-2", startMS: 0, endMS: 1,
+            text: String(repeating: "x", count: EngineCodec.maxRowBytes), clauseState: .classified
+        )
+        core.transcriptReadSnapshot = oversizedSnapshot
+        do {
+            _ = try await core.read(
+                EngineTranscriptReadPayload(
+                    sessionID: sessionID, revision: firstPage.revision, cursor: nil, limit: 2
+                ),
+                context: context
+            )
+            Issue.record("oversized retained-revision restart must fail")
+        } catch let error as EngineCommandError {
+            #expect(error.code == .rowTooLarge)
+        } catch {
+            Issue.record("expected row_too_large, got \(error)")
+        }
+        core.transcriptReadSnapshot = originalSnapshot
+
+        let previousPage = try await core.read(
+            EngineTranscriptReadPayload(
+                sessionID: sessionID, revision: firstPage.revision, cursor: oldNextCursor, limit: 1
+            ),
+            context: context
+        )
+        #expect(previousPage.rows.first?.rowID == "retained-row-2")
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func continuationBecomesStaleWhenReplacementSelectsGenerationDuringLookup() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = TranscriptGenerationTestProvider(transcriptText: "日本語のテストです。")
+        await provider.gate.release()
+        let h = try await prepared(root, provider: provider)
+        let sessionID = try await recordAndFinalize(in: h)
+        let context = try requestContext(for: h)
+        let sessionUUID = try #require(UUID(uuidString: sessionID))
+        _ = try await h.app.core.watch(EngineSessionPayload(sessionID: sessionID), context: context)
+        h.app.core.transcriptDidUpdate(sessionID: sessionUUID, segments: [
+            try materializedApplicationSegment(id: "replacement-row-1", text: "最初の行"),
+            try materializedApplicationSegment(id: "replacement-row-2", text: "次の行"),
+        ])
+        let firstPage = try await h.app.core.read(
+            EngineTranscriptReadPayload(sessionID: sessionID, revision: nil, cursor: nil, limit: 1),
+            context: context
+        )
+        let cursor = try #require(firstPage.nextCursor)
+
+        let lookupGate = h.transcriptGenerationLookupGate
+        await lookupGate.arm(skippingCalls: 1)
+        defer { Task { await lookupGate.release() } }
+        let continuation = Task { @MainActor in
+            try await h.app.core.read(
+                EngineTranscriptReadPayload(
+                    sessionID: sessionID, revision: firstPage.revision, cursor: cursor, limit: 1
+                ),
+                context: context
+            )
+        }
+        await lookupGate.waitUntilSuspended()
+        guard case .sessionReprocess = try await h.call(
+            "session.reprocess", payload: "{\"session_id\":\"\(sessionID)\"}"
+        ) else {
+            Issue.record("session.reprocess did not return its session")
+            await lookupGate.release()
+            return
+        }
+        await lookupGate.release()
+        do {
+            _ = try await continuation.value
+            Issue.record("continuation after generation replacement must be stale")
+        } catch let error as EngineCommandError {
+            #expect(error.code == .staleRevision)
+        } catch {
+            Issue.record("expected stale_revision, got \(error)")
+        }
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func continuationReadRejectsNavigationReplacedDuringDurableLookupThroughRPC() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = TranscriptGenerationTestProvider(transcriptText: "日本語のテストです。")
+        await provider.gate.release()
+        let h = try await prepared(root, provider: provider)
+        let sessionID = try await recordAndFinalize(in: h)
+        let setupPayload = try EngineTranscriptReadPayload(
+            sessionID: sessionID, revision: nil, cursor: nil, limit: 200
+        )
+        _ = try await h.call(
+            "transcript.read", payload: String(decoding: try JSONEncoder().encode(setupPayload), as: UTF8.self)
+        )
+        h.app.core.transcriptDidUpdate(
+            sessionID: try #require(UUID(uuidString: sessionID)),
+            segments: [
+                try materializedApplicationSegment(id: "navigation-row-1", text: "first page"),
+                try materializedApplicationSegment(id: "navigation-row-2", text: "second page"),
+            ]
+        )
+
+        let firstPayload = try EngineTranscriptReadPayload(
+            sessionID: sessionID, revision: nil, cursor: nil, limit: 1
+        )
+        let firstJSON = String(decoding: try JSONEncoder().encode(firstPayload), as: UTF8.self)
+        guard case let .transcriptRead(firstPage) = try await h.call("transcript.read", payload: firstJSON) else {
+            Issue.record("transcript.read did not return the initial page")
+            _ = try await h.shutdown()
+            return
+        }
+        let oldCursor = try #require(firstPage.nextCursor)
+
+        let lookupGate = h.transcriptGenerationLookupGate
+        await lookupGate.arm(skippingCalls: 1)
+        let continuationPayload = try EngineTranscriptReadPayload(
+            sessionID: sessionID, revision: firstPage.revision, cursor: oldCursor, limit: 1
+        )
+        let continuationJSON = String(decoding: try JSONEncoder().encode(continuationPayload), as: UTF8.self)
+        let continuation = Task { @MainActor in
+            try await h.call("transcript.read", payload: continuationJSON)
+        }
+        await lookupGate.waitUntilSuspended()
+
+        let resetPayload = try EngineTranscriptReadPayload(
+            sessionID: sessionID, revision: nil, cursor: nil, limit: 1
+        )
+        let resetJSON = String(decoding: try JSONEncoder().encode(resetPayload), as: UTF8.self)
+        guard case let .transcriptRead(resetPage) = try await h.call("transcript.read", payload: resetJSON) else {
+            Issue.record("transcript.read did not return the replacement first page")
+            await lookupGate.release()
+            _ = try await h.shutdown()
+            return
+        }
+        let resetNextCursor = try #require(resetPage.nextCursor)
+
+        await lookupGate.release()
+        do {
+            _ = try await continuation.value
+            Issue.record("continuation using replaced navigation must fail")
+        } catch let error as CommandFailure {
+            #expect(error.failure.code == .invalidCursor)
+            #expect(error.failure.message == "cursor に対応する文字起こし snapshot がありません")
+        } catch {
+            Issue.record("expected invalid_cursor, got \(error)")
+        }
+
+        let nextPayload = try EngineTranscriptReadPayload(
+            sessionID: sessionID, revision: resetPage.revision, cursor: resetNextCursor, limit: 1
+        )
+        let nextJSON = String(decoding: try JSONEncoder().encode(nextPayload), as: UTF8.self)
+        guard case let .transcriptRead(nextPage) = try await h.call("transcript.read", payload: nextJSON) else {
+            Issue.record("the replacement first page's next cursor was rejected")
+            _ = try await h.shutdown()
+            return
+        }
+        #expect(nextPage.rows.first?.rowID != resetPage.rows.first?.rowID)
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func transcriptReadRebuildsAfterFinalizationDuringGenerationLookup() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = TranscriptGenerationTestProvider(transcriptText: "日本語のテストです。")
+        let h = try await prepared(root, provider: provider)
+        let lookupGate = h.transcriptGenerationLookupGate
+        let exportGate = h.sessionBundleExportGate
+        await lookupGate.arm()
+        await exportGate.arm()
+        defer {
+            Task {
+                await lookupGate.release()
+                await exportGate.release()
+                await provider.gate.release()
+            }
+        }
+        let exportPath = root.appending(path: "finalization-race-export", directoryHint: .isDirectory)
+        try await h.replaceSettings(
+            engineTestSettings(automaticExport: true, exportPath: exportPath.path), expectedRevision: 1
+        )
+
+        let audio = root.appending(path: "transcript-finalization-race.wav")
+        try Data("fake wav".utf8).write(to: audio)
+        guard case let .sessionImport(imported) = try await h.call(
+            "session.import",
+            payload: String(decoding: try JSONEncoder().encode(EngineImportPayload(inputPath: audio.path)), as: UTF8.self)
+        ) else {
+            Issue.record("session.import did not return a session")
+            return
+        }
+        await provider.gate.waitUntilEntered()
+
+        let readPayload = try EngineTranscriptReadPayload(
+            sessionID: imported.sessionID, revision: nil, cursor: nil, limit: 200
+        )
+        let encodedReadPayload = String(decoding: try JSONEncoder().encode(readPayload), as: UTF8.self)
+        let firstReadTask = Task { @MainActor in
+            try await h.call("transcript.read", payload: encodedReadPayload)
+        }
+        await lookupGate.waitUntilSuspended()
+
+        await provider.gate.release()
+        await exportGate.waitUntilSuspended()
+        await lookupGate.release()
+
+        guard case let .transcriptRead(firstPage) = try await firstReadTask.value else {
+            Issue.record("transcript.read did not return its first page")
+            return
+        }
+        #expect(!firstPage.rows.isEmpty)
+        #expect(firstPage.rows.contains { $0.text == "日本語のテストです。" })
+
+        await exportGate.release()
+        _ = try await h.waitForSession(status: .finalized)
+        guard case let .transcriptRead(secondPage) = try await h.call(
+            "transcript.read", payload: encodedReadPayload
+        ) else {
+            Issue.record("idle transcript.read did not return its page")
+            return
+        }
+        #expect(!secondPage.rows.isEmpty)
+        #expect(secondPage.rows == firstPage.rows)
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func metadataSaveFailureAfterGenerationAppendRejectsOldCursorsAndDetails() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let failMetadataSave = LockedBox(false)
+        let injectedSaveFailures = LockedBox(0)
+        let h = ApplicationHarness(root: root, saveProcessingMetadata: { sessionURL, metadata in
+            if failMetadataSave.get() {
+                injectedSaveFailures.set(injectedSaveFailures.get() + 1)
+                throw InjectedMetadataSaveFailure()
+            }
+            try ProcessingMetadataStore(sessionURL: sessionURL).save(metadata)
+        })
+        h.start()
+        try await h.hello()
+        try await h.replaceSettings(engineTestSettings(), expectedRevision: nil)
+        await h.awaitModels()
+        let sessionID = try await recordAndFinalize(in: h)
+        let context = try requestContext(for: h)
+        let core = h.app.core
+        let sessionUUID = try #require(UUID(uuidString: sessionID))
+        _ = try await core.watch(EngineSessionPayload(sessionID: sessionID), context: context)
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: [
+            try materializedApplicationSegment(id: "old-row-1", text: "old first"),
+            try materializedApplicationSegment(id: "old-row-2", text: "old second")
+        ])
+        let oldPage = try await core.read(
+            EngineTranscriptReadPayload(sessionID: sessionID, revision: nil, cursor: nil, limit: 1),
+            context: context
+        )
+        let oldCursor = try #require(oldPage.nextCursor)
+        let oldRow = try #require(oldPage.rows.first)
+        _ = try await core.rowDetails(
+            EngineTranscriptRowDetailsPayload(
+                sessionID: sessionID, revision: oldPage.revision, rowID: oldRow.rowID
+            ),
+            context: context
+        )
+
+        let session = try await core.readableSession(sessionUUID)
+        let layout = SessionLayout(sessionURL: session.sessionURL)
+        let oldGenerationID = try #require(try ProcessingLogState(
+            eventsURL: layout.eventsURL, sessionID: sessionUUID
+        )?.generation.id)
+        #expect(try ProcessingMetadataStore(sessionURL: session.sessionURL).load()?.generationID == oldGenerationID)
+        failMetadataSave.set(true)
+        let failureCode = try await h.failureCode(
+            of: "session.reprocess", payload: "{\"session_id\":\"\(sessionID)\"}"
+        )
+        #expect(failureCode == .processingFailure)
+        #expect(injectedSaveFailures.get() > 0)
+        let state = try #require(try ProcessingLogState(eventsURL: layout.eventsURL, sessionID: sessionUUID))
+        #expect(state.generation.id != oldGenerationID)
+        let metadataAfterFailure = try #require(
+            try ProcessingMetadataStore(sessionURL: session.sessionURL).load()
+        )
+        #expect(metadataAfterFailure.generationID == state.generation.id)
+        #expect(metadataAfterFailure.state == .failed)
+
+        let readPayload = try EngineTranscriptReadPayload(
+            sessionID: sessionID, revision: oldPage.revision, cursor: oldCursor, limit: 1
+        )
+        #expect(try await h.failureCode(
+            of: "transcript.read", payload: String(decoding: try JSONEncoder().encode(readPayload), as: UTF8.self)
+        ) == .staleRevision)
+        let detailsPayload = try EngineTranscriptRowDetailsPayload(
+            sessionID: sessionID, revision: oldPage.revision, rowID: oldRow.rowID
+        )
+        #expect(try await h.failureCode(
+            of: "transcript.row_details",
+            payload: String(decoding: try JSONEncoder().encode(detailsPayload), as: UTF8.self)
+        ) == .staleRevision)
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func durableGenerationRejectsOldWireRevisionBeforeMainActorInvalidation() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = try await prepared(root)
+        let sessionID = try await recordAndFinalize(in: h)
+        let context = try requestContext(for: h)
+        let core = h.app.core
+        let sessionUUID = try #require(UUID(uuidString: sessionID))
+        _ = try await core.watch(EngineSessionPayload(sessionID: sessionID), context: context)
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: [
+            try materializedApplicationSegment(id: "interval-row-1", text: "first"),
+            try materializedApplicationSegment(id: "interval-row-2", text: "second")
+        ])
+        let firstRead = try EngineTranscriptReadPayload(
+            sessionID: sessionID, revision: nil, cursor: nil, limit: 1
+        )
+        guard case let .transcriptRead(oldPage) = try await h.call(
+            "transcript.read", payload: String(decoding: try JSONEncoder().encode(firstRead), as: UTF8.self)
+        ) else {
+            Issue.record("transcript.read did not return the original page")
+            return
+        }
+        let oldCursor = try #require(oldPage.nextCursor)
+        let oldRow = try #require(oldPage.rows.first)
+        let detailsPayload = try EngineTranscriptRowDetailsPayload(
+            sessionID: sessionID, revision: oldPage.revision, rowID: oldRow.rowID
+        )
+        guard case .transcriptRowDetails = try await h.call(
+            "transcript.row_details", payload: String(decoding: try JSONEncoder().encode(detailsPayload), as: UTF8.self)
+        ) else {
+            Issue.record("transcript.row_details did not return details")
+            return
+        }
+
+        let session = try await core.readableSession(sessionUUID)
+        let layout = SessionLayout(sessionURL: session.sessionURL)
+        let previousGenerationID = try #require(try ProcessingLogState(
+            eventsURL: layout.eventsURL, sessionID: sessionUUID
+        )?.generation.id)
+        let provenance = RunProvenance(
+            engine: "durable-generation-race-test", model: nil, version: "1", configuration: [:]
+        )
+        let generation = PipelineGeneration(
+            id: UUID(), runs: ActiveRuns(segmentation: "race-seg", asr: "race-asr"),
+            sampleRate: CanonicalAudio.sampleRate,
+            segmentationProvenance: provenance, asrProvenance: provenance
+        )
+        try await SessionWriter(sessionURL: session.sessionURL).append(generation.startEvent(sessionID: sessionUUID))
+        #expect(generation.id != previousGenerationID)
+
+        let oldRevisionRead = try EngineTranscriptReadPayload(
+            sessionID: sessionID, revision: oldPage.revision, cursor: oldCursor, limit: 1
+        )
+        #expect(try await h.failureCode(
+            of: "transcript.read",
+            payload: String(decoding: try JSONEncoder().encode(oldRevisionRead), as: UTF8.self)
+        ) == .staleRevision)
+        #expect(try await h.failureCode(
+            of: "transcript.row_details",
+            payload: String(decoding: try JSONEncoder().encode(detailsPayload), as: UTF8.self)
+        ) == .staleRevision)
+        _ = try await h.shutdown()
     }
 
     @Test func oversizedRowInLargeBatchIsRejectedRetainedAndRecovered() async throws {
@@ -608,7 +1515,7 @@ import MacAmbientJevTestSupport
         #expect(establishedSnapshot.revision == watchedPage.revision)
         let previousRevision = establishedSnapshot.revision
 
-        core.transcriptDidPublish(sessionID: try #require(UUID(uuidString: sessionID)))
+        await core.transcriptDidPublish(sessionID: try #require(UUID(uuidString: sessionID)))
 
         let publishedCache = try #require(core.transcript)
         #expect(publishedCache.revision > previousRevision.value)
@@ -636,6 +1543,109 @@ import MacAmbientJevTestSupport
             }
         }
 
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func publicationClearsReadSnapshotCreatedDuringCatalogLookup() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = try await prepared(root)
+        let sessionID = try await recordAndFinalize(in: h)
+        let otherSessionID = try await recordAndFinalize(in: h)
+        let context = try requestContext(for: h)
+        let core = h.app.core
+        _ = try await core.watch(EngineSessionPayload(sessionID: sessionID), context: context)
+        let sessionUUID = try #require(UUID(uuidString: sessionID))
+        #expect(core.readTranscript == nil)
+        core.transcriptDidUpdate(sessionID: sessionUUID, segments: [
+            try materializedApplicationSegment(id: "publication-race-row-1", text: "最初の行"),
+            try materializedApplicationSegment(id: "publication-race-row-2", text: "次の行"),
+        ])
+
+        let catalogGate = h.sessionCatalogLookupGate
+        await catalogGate.arm()
+        core.savedSessionsAreStale = true
+        let publication = Task { @MainActor in
+            await core.transcriptDidPublish(sessionID: sessionUUID)
+        }
+        await catalogGate.waitUntilSuspended()
+
+        let freshPage = try await core.read(
+            EngineTranscriptReadPayload(sessionID: sessionID, revision: nil, cursor: nil, limit: 1),
+            context: context
+        )
+        let cursor = try #require(freshPage.nextCursor)
+        #expect(core.transcriptReadSnapshot?.revision == freshPage.revision.value)
+
+        let otherPage = try await core.watch(
+            EngineSessionPayload(sessionID: otherSessionID), context: context
+        )
+        #expect(otherPage.sessionID == otherSessionID)
+        await catalogGate.release()
+        await publication.value
+        do {
+            _ = try await core.read(
+                EngineTranscriptReadPayload(
+                    sessionID: sessionID, revision: freshPage.revision, cursor: cursor, limit: 1
+                ),
+                context: context
+            )
+            Issue.record("a read snapshot created during publication must be stale")
+        } catch let error as EngineCommandError {
+            #expect(error.code == .staleRevision)
+        } catch {
+            Issue.record("expected stale_revision, got \(error)")
+        }
+
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func publicationUpdatesWatchedCacheAfterAnUnrelatedReadReplacesReadCache() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = try await prepared(root)
+        let watchedSessionID = try await recordAndFinalize(in: h)
+        let unrelatedSessionID = try await recordAndFinalize(in: h)
+        let context = try requestContext(for: h)
+        let priorPage = try await h.app.core.read(
+            EngineTranscriptReadPayload(
+                sessionID: watchedSessionID, revision: nil, cursor: nil, limit: 50
+            ),
+            context: context
+        )
+        _ = try await h.app.core.watch(EngineSessionPayload(sessionID: watchedSessionID), context: context)
+        let watchedUUID = try #require(UUID(uuidString: watchedSessionID))
+        let catalogGate = h.sessionCatalogLookupGate
+        await catalogGate.arm()
+        h.app.core.savedSessionsAreStale = true
+        let publication = Task { @MainActor in
+            await h.app.core.transcriptDidPublish(sessionID: watchedUUID)
+        }
+        await catalogGate.waitUntilSuspended()
+
+        let unrelatedPage = try await h.app.core.read(
+            EngineTranscriptReadPayload(
+                sessionID: unrelatedSessionID, revision: nil, cursor: nil, limit: 50
+            ),
+            context: context
+        )
+        #expect(h.app.core.readTranscript?.sessionID == UUID(uuidString: unrelatedSessionID))
+        await catalogGate.release()
+        await publication.value
+
+        let publishedCache = try #require(h.app.core.transcript)
+        #expect(publishedCache.sessionID == watchedUUID)
+        #expect(publishedCache.revision > priorPage.revision.value)
+        #expect(publishedCache.isLiveState == false)
+        #expect(h.app.core.readTranscript?.sessionID == UUID(uuidString: unrelatedSessionID))
+        #expect(h.app.core.readTranscript?.revision == unrelatedPage.revision.value)
+        try await h.sink.changes.wait("watched session receives final reload_required") {
+            ((try? h.outputs) ?? []).contains { output in
+                guard case let .rows(payload) = output.event else { return false }
+                return payload.sessionID == watchedSessionID && payload.kind == .reloadRequired
+                    && payload.revision.value == publishedCache.revision
+            }
+        }
         #expect(try await h.shutdown() == .shutdownRequested)
     }
 
@@ -1043,7 +2053,7 @@ import MacAmbientJevTestSupport
         let publicationPreviousToken = try #require(publicationPages.last?.previousCursor)
         #expect(publicationNextToken != publicationPreviousToken)
 
-        core.transcriptDidPublish(sessionID: sessionUUID)
+        await core.transcriptDidPublish(sessionID: sessionUUID)
         let publishedCache = try #require(core.transcript)
         #expect(publishedCache.revision > publicationRevision.value)
         #expect(core.transcriptReadSnapshot == nil)
@@ -1138,6 +2148,17 @@ import MacAmbientJevTestSupport
         return h
     }
 
+    private func prepared(
+        _ root: URL, provider: any EngineInferenceProviding
+    ) async throws -> ApplicationHarness {
+        let h = ApplicationHarness(root: root, provider: provider)
+        h.start()
+        try await h.hello()
+        try await h.replaceSettings(engineTestSettings(), expectedRevision: nil)
+        await h.awaitModels()
+        return h
+    }
+
     private func recordAndFinalize(in h: ApplicationHarness) async throws -> String {
         guard case let .recordingStart(started) = try await h.call(
             "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}"
@@ -1163,7 +2184,7 @@ import MacAmbientJevTestSupport
 
     private func requestContext(for h: ApplicationHarness) throws -> EngineRequestContext {
         EngineRequestContext(
-            requestID: try EngineID(10_000), events: EngineEventEmitter(transport: h.transport)
+            requestID: try EngineID(10_000), events: EngineEventEmitter(transport: h.transport), terminalReplyClaim: {}
         )
     }
 }

@@ -17,7 +17,7 @@ import MacAmbientJevEngineProtocol
             sessionsRootOverride: nil
         )
         let transport = EngineTransport(source: ScriptedSource(), sink: ScriptedSink(), limits: testLimits())
-        let context = EngineRequestContext(requestID: try EngineID(1), events: EngineEventEmitter(transport: transport))
+        let context = EngineRequestContext(requestID: try EngineID(1), events: EngineEventEmitter(transport: transport), terminalReplyClaim: {})
         return (EngineSettingsStoreHandler(store: EngineSettingsStore(paths: paths, logicalCPUCount: 8), rejectsReplacement: rejects), context, base)
     }
 

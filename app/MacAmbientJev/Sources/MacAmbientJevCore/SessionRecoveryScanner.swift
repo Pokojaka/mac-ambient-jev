@@ -14,15 +14,18 @@ public enum RecoverableProcessingAction: Sendable, Equatable {
 public struct RecoverableSession: Sendable, Equatable {
     public let manifest: SessionManifest
     public let sessionURL: URL
+    public let generationID: UUID?
     public let action: RecoverableProcessingAction
 
     public init(
         manifest: SessionManifest,
         sessionURL: URL,
+        generationID: UUID?,
         action: RecoverableProcessingAction
     ) {
         self.manifest = manifest
         self.sessionURL = sessionURL
+        self.generationID = generationID
         self.action = action
     }
 }
@@ -215,6 +218,7 @@ public struct SessionRecoveryScanner: Sendable {
                     return RecoverableSession(
                         manifest: manifest,
                         sessionURL: layout.sessionURL,
+                        generationID: state?.generation.id,
                         action: .finalize
                     )
                 }
@@ -225,6 +229,7 @@ public struct SessionRecoveryScanner: Sendable {
         return RecoverableSession(
             manifest: manifest,
             sessionURL: layout.sessionURL,
+            generationID: state?.generation.id,
             action: action
         )
     }

@@ -36,7 +36,8 @@ private struct NoopVAD: FinalTranscriptVADSegmenter {
 @MainActor
 private func makeState(
     asr: CountingASR, defaults: UserDefaults, root: URL,
-    provisioning: any ModelProvisioning = ReadyModelProvisioning()
+    provisioning: any ModelProvisioning = ReadyModelProvisioning(),
+    thermalMonitor: TestThermalMonitor = TestThermalMonitor(.nominal)
 ) -> AppState {
     let paths = AppPaths(
         applicationSupportURL: root.appending(path: "support", directoryHint: .isDirectory),
@@ -49,7 +50,7 @@ private func makeState(
         engines: SessionProcessingEngines(asr: asr, finalTranscriptVAD: NoopVAD()),
         modelProvisioning: provisioning,
         makeLiveVADSession: idleLiveVADFactory(),
-        thermalMonitor: TestThermalMonitor(.nominal),
+        thermalMonitor: thermalMonitor,
         liveTranscriptionSleep: { try await Task.sleep(for: $0) }
     )
 }
@@ -90,7 +91,9 @@ func noReleaseWhileBusy() async throws {
     let (defaults, suiteName) = try temporaryDefaults()
     defer { defaults.removePersistentDomain(forName: suiteName) }
     let asr = CountingASR()
-    let state = makeState(asr: asr, defaults: defaults, root: root)
+    let thermalMonitor = TestThermalMonitor(.critical)
+    let state = makeState(asr: asr, defaults: defaults, root: root, thermalMonitor: thermalMonitor)
+    await state.startupMaintenanceTask?.value
 
     let sessionID = UUID()
     state.recording.start(sessionID: sessionID)
@@ -99,30 +102,53 @@ func noReleaseWhileBusy() async throws {
     #expect(state.idleReleaseTask == nil)
 
     state.recording.finish()
-    state.processingQueue.hold(.finalize(
-        sessionID: UUID(), metadataPolicy: .reject
-    ), reason: .inference(.thermal))
+    state.enqueueProcessing(.finalize(sessionID: UUID(), metadataPolicy: .reject))
+    await state.processingCoordinator.waitUntilIdle()
+    #expect(state.processingQueue.held.first?.holdReason == .inference(.thermal))
     state.releaseIdleResourcesIfIdle()
     #expect(state.idleReleaseTask == nil)
 
-    state.processingQueue = SessionProcessingQueue()
-    state.processingQueue.holdForModels(.finalize(
-        sessionID: UUID(), metadataPolicy: .reject
-    ))
-    state.releaseIdleResourcesIfIdle()
-    #expect(state.idleReleaseTask == nil)
+    thermalMonitor.pressure = .nominal
+    await state.processingCoordinator.waitUntilIdle()
+    await state.idleReleaseTask?.value
+    #expect(await asr.unloadCount == 1)
+}
 
-    state.processingQueue = SessionProcessingQueue()
-    state.processingQueue.enqueue(.finalize(
-        sessionID: UUID(), metadataPolicy: .reject
-    ))
-    state.releaseIdleResourcesIfIdle()
-    #expect(state.idleReleaseTask == nil)
+@MainActor
+@Test("capture stop failure drops its claim before idle model release", .timeLimit(.minutes(10)))
+func stopFailureReleasesIdleModelsAfterDroppingStopClaim() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (defaults, suiteName) = try temporaryDefaults()
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let paths = AppPaths(
+        applicationSupportURL: root.appending(path: "support", directoryHint: .isDirectory),
+        cacheURL: root.appending(path: "cache", directoryHint: .isDirectory), sessionsRootOverride: nil
+    )
+    let asr = CountingASR()
+    let capture = FakeAppCaptureEngine()
+    let state = AppState(
+        paths: paths, captureEngine: capture, microphoneAccess: { true }, pausesProcessing: false,
+        userDefaults: defaults,
+        engines: SessionProcessingEngines(asr: asr, finalTranscriptVAD: NoopVAD()),
+        modelProvisioning: ReadyModelProvisioning(), makeLiveVADSession: idleLiveVADFactory(),
+        thermalMonitor: TestThermalMonitor(.nominal), liveTranscriptionSleep: { try await Task.sleep(for: $0) }
+    )
+    await state.startupMaintenanceTask?.value
+    state.prepareModels()
+    await state.awaitModelPreparation()
+    await state.startRecording()
+    #expect(state.recordingPhase == .recording)
+    capture.stopError = NSError(
+        domain: "CaptureStopFailure", code: 1, userInfo: [NSLocalizedDescriptionKey: "injected stop failure"]
+    )
 
-    state.processingQueue = SessionProcessingQueue()
-    state.releaseIdleResourcesIfIdle()
+    await state.stopRecording()
     let release = try #require(state.idleReleaseTask)
     await release.value
+    #expect(state.recordingPhase == .idle)
+    #expect(state.processingQueue.claimedSessionIDs.isEmpty)
     #expect(await asr.unloadCount == 1)
 }
 
@@ -217,7 +243,9 @@ func finalizationWaitsForModelsAndStartsOnReady() async throws {
     await state.processingCoordinator.waitUntilIdle()
 
     #expect(state.modelPreparation.phase == .downloading)
-    #expect(state.processingQueue.modelHeld.map(\.sessionID) == [sessionID])
+    #expect(state.processingQueue.summaries.contains {
+        $0.sessionID == sessionID && $0.holdReason == .models
+    })
     #expect(state.processingStatusText == ModelPreparationStatus.waitingForModelsText)
     #expect(!state.isIdleForRelease)
     #expect(await asr.loadCount == 0)
@@ -227,7 +255,6 @@ func finalizationWaitsForModelsAndStartsOnReady() async throws {
     await state.processingCoordinator.waitUntilIdle()
 
     #expect(state.modelPreparation.phase == .ready || state.modelPreparation == .initial)
-    #expect(state.processingQueue.modelHeld.isEmpty)
-    #expect(state.processingQueue.pending.isEmpty)
+    #expect(state.processingQueue.summaries.isEmpty)
     #expect(await asr.loadCount == 1)
 }

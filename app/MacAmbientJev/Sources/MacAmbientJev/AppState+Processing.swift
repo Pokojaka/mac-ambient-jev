@@ -58,16 +58,44 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
         }
     }
 
-    func reprocess(sessionID: UUID) {
-        guard recordingPhase == .idle,
-              !processingQueue.containsForReprocessing(sessionID),
-              let session = readableSavedSession(sessionID),
-              session.audioSource != nil else {
+    func reprocess(sessionID: UUID) async {
+        guard recordingPhase == .idle else {
+            reportReprocessingError("録音中または録音・読み込み処理中は再処理できません")
             return
         }
+        let queueSnapshot = processingQueue
+        guard !queueSnapshot.isMaintainingStorage else {
+            reportReprocessingError("起動時の保存データの整理中は再処理できません")
+            return
+        }
+        if queuedFinalizationSessionIDs.contains(sessionID) {
+            let message = queueSnapshot.containsProcessing(sessionID)
+                ? "このセッションは処理待ち・保留中または実行中のため再処理できません"
+                : "このセッションのライブ文字起こし処理中は再処理できません"
+            reportReprocessingError(message)
+            return
+        }
+        guard let session = readableSavedSession(sessionID) else {
+            reportReprocessingError("保存済みセッションを読み取れないため再処理できません")
+            return
+        }
+        guard session.audioSource != nil else {
+            reportReprocessingError("保存済み音声がないため再処理できません")
+            return
+        }
+
         selectSavedSession(sessionID: sessionID)
-        guard processingQueue.claimReprocessing(sessionID) else { return }
-        enqueueProcessing(.finalize(sessionID: sessionID, metadataPolicy: .replace))
+        do {
+            try processingCoordinator.enqueueReprocess(sessionID: sessionID)
+        } catch {
+            reportReprocessingError(error.localizedDescription)
+        }
+    }
+
+    private func reportReprocessingError(_ message: String) {
+        processingState = .partialFailure(message)
+        processingStatusText = message
+        transcriptViewModel.setStatus(message)
     }
 
     func prepareModels() {
@@ -93,12 +121,12 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
         case .ready:
             processingCoordinator.resumeModelHeldProcessing()
         case .failed:
-            if let held = processingQueue.modelHeld.first {
+            if let held = processingQueue.summaries.first(where: { $0.holdReason == .models }) {
                 showWaitingForModels(sessionID: held.sessionID)
             }
         case .downloading, .loading:
-            if !processingQueue.modelHeld.isEmpty, processingStatusText != status.waitingText,
-               let held = processingQueue.modelHeld.first {
+            if let held = processingQueue.summaries.first(where: { $0.holdReason == .models }),
+               processingStatusText != status.waitingText {
                 showWaitingForModels(sessionID: held.sessionID)
             }
         case .idle:
@@ -119,9 +147,7 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
     /// and no model preparation. A download keeps running across recordings and thermal holds.
     var isIdleForRelease: Bool {
         recordingPhase == .idle
-            && processingQueue.pending.isEmpty
-            && processingQueue.held.isEmpty
-            && processingQueue.modelHeld.isEmpty
+            && processingQueue.summaries.isEmpty
             && !processingCoordinator.isDraining
             && processingQueue.currentSessionID == nil
             && processingQueue.claimedSessionIDs.isEmpty
@@ -204,6 +230,10 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
         liveTranscription.failure(sessionID: sessionID)
     }
 
+    func hasLiveProcessingWorker(sessionID: UUID) -> Bool {
+        liveCoordinator.hasWork(sessionID: sessionID)
+    }
+
     func processingStatusHandler(sessionID: UUID) -> NativeSessionProcessor.StatusHandler {
         { [weak self] status in
             let text = status.text
@@ -214,6 +244,13 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
                     self.transcriptViewModel.setStatus(text)
                 }
             }
+        }
+    }
+
+    func processingGenerationDidOpen(sessionID: UUID, generationID: UUID) {
+        _ = generationID
+        if displayedSessionID == sessionID {
+            transcriptViewModel.setDisplayState(.finalizing)
         }
     }
 
@@ -243,28 +280,28 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
             processingState = .backlogged
             processingStatusText = "文字起こし処理が待機中です"
             transcriptViewModel.setStatus("文字起こし処理が待機中です")
-        case .held(let request):
+        case .held(let item):
             processingState = .backlogged
             processingStatusText = UserFacingStatus.finalizationPausedForHeat.text
-            if displayedSessionID == request.sessionID {
+            if displayedSessionID == item.sessionID {
                 transcriptViewModel.setStatus(UserFacingStatus.finalizationPausedForHeat.text)
             }
-        case .heldForModels(let request):
-            showWaitingForModels(sessionID: request.sessionID)
-        case .began(let request):
+        case .heldForModels(let item):
+            showWaitingForModels(sessionID: item.sessionID)
+        case .began(let item):
             processingState = .running
-            if displayedSessionID == request.sessionID, request.finalizesTranscript {
+            if displayedSessionID == item.sessionID, item.kind != .decisionRetry {
                 transcriptViewModel.setDisplayState(.finalizing)
             }
         case .liveFailed(let failure):
             processingStatusText =
                 "ライブ文字起こしは停止しました。録音全体を確定処理します: \(failure)"
-        case .finished(let request, let result):
+        case .finished(let item, let result):
             if let result {
                 reportFailedFinalization(result)
             }
             if let retained = result?.retainedTranscript,
-               displayedSessionID == request.sessionID {
+               displayedSessionID == item.sessionID {
                 switch retained {
                 case .finalized: transcriptViewModel.setDisplayState(.finalized)
                 case .provisional: transcriptViewModel.setDisplayState(.live)
@@ -276,8 +313,7 @@ extension AppState: SessionProcessingEffects, SessionRecoveryEffects {
             processingStatusText = "次の文字起こし処理を開始します"
             transcriptViewModel.setStatus("次の文字起こし処理を開始します")
         case .willFinishDrain:
-            if processingQueue.held.isEmpty,
-               processingQueue.modelHeld.isEmpty,
+            if processingQueue.summaries.isEmpty,
                processingState == .running || processingState == .backlogged {
                 processingState = .complete
             }

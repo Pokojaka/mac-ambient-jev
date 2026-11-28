@@ -112,7 +112,8 @@ func finalizationEnginesReceiveCanonicalAudioForRecordedAndImportedSessions() as
     #expect(recorded.committedFrames == 32_000)
     let recordingResult = await processor.processSession(
         sessionID: recordingID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
-        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in })
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in },
+        onGenerationOpened: { _ in })
     #expect(recordingResult.disposition == .completed)
 
     let importID = UUID()
@@ -125,7 +126,8 @@ func finalizationEnginesReceiveCanonicalAudioForRecordedAndImportedSessions() as
     let originalBytes = try Data(contentsOf: original)
     let importResult = await processor.processSession(
         sessionID: importID, pacingMode: .normal, shouldPause: { _ in nil }, onPhase: { _ in },
-        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in })
+        metadataPolicy: .reject, onStatus: { _ in }, onUpdate: { _, _ in },
+        onGenerationOpened: { _ in })
     #expect(importResult.disposition == .completed)
     #expect(try Data(contentsOf: original) == originalBytes)
 

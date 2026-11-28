@@ -66,15 +66,19 @@ final class EngineProcessorGateway: SessionProcessingExecuting, LiveTranscriptio
         pacingMode: ASRPacingMode,
         shouldPause: @escaping NativeSessionProcessor.PauseCheck,
         onPhase: @escaping NativeSessionProcessor.PhaseHandler,
-        metadataPolicy: UnreadableMetadataPolicy,
+        metadataPolicy: SessionFinalizationPolicy,
         onStatus: @escaping NativeSessionProcessor.StatusHandler,
-        onUpdate: @escaping NativeSessionProcessor.UpdateHandler
+        onUpdate: @escaping NativeSessionProcessor.UpdateHandler,
+        onGenerationOpened: @escaping NativeSessionProcessor.GenerationOpenedHandler
     ) async -> SessionProcessingResult {
         let current: (processor: NativeSessionProcessor, pacing: ASRPacingMode)
         do {
             current = try self.current()
         } catch {
-            return .failed(message: error.localizedDescription, metrics: nil, retained: nil)
+            return .failed(
+                message: error.localizedDescription, metrics: nil, retained: nil,
+                replacementGeneration: metadataPolicy.replacementGeneration
+            )
         }
         return await current.processor.processSession(
             sessionID: sessionID,
@@ -83,7 +87,8 @@ final class EngineProcessorGateway: SessionProcessingExecuting, LiveTranscriptio
             onPhase: onPhase,
             metadataPolicy: metadataPolicy,
             onStatus: onStatus,
-            onUpdate: onUpdate
+            onUpdate: onUpdate,
+            onGenerationOpened: onGenerationOpened
         )
     }
 
@@ -100,7 +105,9 @@ final class EngineProcessorGateway: SessionProcessingExecuting, LiveTranscriptio
         } catch {
             let message = "発話文の判定を再試行できませんでした: \(error.localizedDescription)"
             await onStatus(.message(message))
-            return .failed(message: message, metrics: nil, retained: nil)
+            return .failed(
+                message: message, metrics: nil, retained: nil, replacementGeneration: .notOpened
+            )
         }
         return await processor.retryContentPrioritySession(
             sessionID: sessionID,
@@ -118,8 +125,14 @@ final class EngineProcessorGateway: SessionProcessingExecuting, LiveTranscriptio
 
     // MARK: LiveTranscriptionExecuting
 
-    func startLiveTranscription(sessionID: UUID, sampleRate: Double) async throws -> String {
-        try await current().processor.startLiveTranscription(sessionID: sessionID, sampleRate: sampleRate)
+    func startLiveTranscription(
+        sessionID: UUID,
+        sampleRate: Double,
+        onGenerationOpened: @escaping NativeSessionProcessor.GenerationOpenedHandler
+    ) async throws -> String {
+        try await current().processor.startLiveTranscription(
+            sessionID: sessionID, sampleRate: sampleRate, onGenerationOpened: onGenerationOpened
+        )
     }
 
     func hasUnresolvedASRFailure(sessionID: UUID) async throws -> Bool {

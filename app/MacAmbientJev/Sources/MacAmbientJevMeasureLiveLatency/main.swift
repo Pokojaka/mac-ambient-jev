@@ -230,7 +230,8 @@ struct MeasureLiveLatencyCommand {
         }
         let segmentationRunID = try await processor.startLiveTranscription(
             sessionID: sessionID,
-            sampleRate: CanonicalAudio.sampleRate
+            sampleRate: CanonicalAudio.sampleRate,
+            onGenerationOpened: { _ in }
         )
         let vadSession = try await MacLiveVADSessionFactory.make(
             models: models,
@@ -323,7 +324,8 @@ struct MeasureLiveLatencyCommand {
             onUpdate: { segments, state in
                 await collector.update(segments)
                 await collector.recordFinalUpdate(segments, state: state)
-            }
+            },
+            onGenerationOpened: { _ in }
         )
         let collected = await collector.results(sampleRate: CanonicalAudio.sampleRate)
         let latencies = collected.records.map { $0.firstUpdateSeconds - $0.endSpeechSeconds }.sorted()

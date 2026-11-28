@@ -215,18 +215,21 @@ public sealed partial class ShellStoreTests
         private readonly Channel<bool> _wake = Channel.CreateUnbounded<bool>();
         private readonly object _gate = new(); private readonly List<EngineOutput> _events = [];
         private readonly TaskCompletionSource<EngineClientState> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private int _sentCount;
+        private int _sentCount, _sessionInspectSentCount;
         public Task<EngineResult> Hello { get; } = Task.FromResult<EngineResult>(new EngineResult.Hello(new EngineReadyPayload(new EngineCapabilities([EngineSource.Microphone], [EngineASRSize.Small], [EngineExecutionProvider.Cpu], 4, EngineUnavailableCapability.None, EngineUnavailableCapability.None), initial)));
         public Task<EngineResult> SettingsGetResponse { get; set; } = settingsGet;
         public Func<EngineCommand, EngineResult>? AutoResponse { get; set; }
-        public int SentCount => Volatile.Read(ref _sentCount); public Task<EngineClientState> Completion => _completion.Task;
+        public int SentCount => Volatile.Read(ref _sentCount);
+        public int SessionInspectSentCount => Volatile.Read(ref _sessionInspectSentCount);
+        public Task<EngineClientState> Completion => _completion.Task;
         public EngineClientState State { get; private set; } = EngineClientState.Running; public EngineClientFailure? Failure { get; private set; }
         public Task<EngineResult> SendAsync(EngineCommand command)
         {
             Interlocked.Increment(ref _sentCount);
+            if (command is EngineCommand.SessionInspect) Interlocked.Increment(ref _sessionInspectSentCount);
             if (command is EngineCommand.SettingsGet) return SettingsGetResponse;
             if (AutoResponse is not null) return Task.FromResult(AutoResponse(command));
-            if (command is not (EngineCommand.StateGet or EngineCommand.SettingsReplace or EngineCommand.RecordingStart or EngineCommand.RecordingStop or EngineCommand.SessionInspect or EngineCommand.SessionImport or EngineCommand.SessionExport or EngineCommand.ModelsPrepare or EngineCommand.ModelsInspect or EngineCommand.DiagnosticsGet or EngineCommand.TranscriptWatch or EngineCommand.TranscriptRead or EngineCommand.SessionList)) throw new NotSupportedException($"Unexpected command: {command.Name}.");
+            if (command is not (EngineCommand.StateGet or EngineCommand.SettingsReplace or EngineCommand.RecordingStart or EngineCommand.RecordingStop or EngineCommand.SessionInspect or EngineCommand.SessionReprocess or EngineCommand.SessionRetryDecisions or EngineCommand.SessionImport or EngineCommand.SessionExport or EngineCommand.ModelsPrepare or EngineCommand.ModelsInspect or EngineCommand.DiagnosticsGet or EngineCommand.TranscriptWatch or EngineCommand.TranscriptRead or EngineCommand.SessionList)) throw new NotSupportedException($"Unexpected command: {command.Name}.");
             var result = new TaskCompletionSource<EngineResult>(TaskCreationOptions.RunContinuationsAsynchronously);
             if (!_requests.Writer.TryWrite((command, result))) throw new InvalidOperationException("Request channel closed.");
             return result.Task;
@@ -247,5 +250,6 @@ public sealed partial class ShellStoreTests
     {
         public void Complete(EngineResult result) => Result.TrySetResult(result);
         public void Reject(EngineFailure failure) => Result.TrySetException(new EngineRequestException(failure));
+        public void Fail(Exception exception) => Result.TrySetException(exception);
     }
 }

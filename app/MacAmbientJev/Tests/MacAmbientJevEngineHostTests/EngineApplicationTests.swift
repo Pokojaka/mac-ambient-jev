@@ -161,6 +161,66 @@ import MacAmbientJevTestSupport
         #expect(try await h.shutdown() == .shutdownRequested)
     }
 
+    @Test func sessionExportRefusesBusyReprocessWithoutWritingBundle() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let h = try await prepared(root)
+        let input = root.appending(path: "busy-reprocess.wav")
+        try Data("fake wav".utf8).write(to: input)
+        guard case let .sessionImport(imported) = try await h.call(
+            "session.import", payload: "{\"input_path\":\(jsonString(input.path))}"
+        ) else {
+            Issue.record("session.import did not return a session")
+            return
+        }
+        _ = try await h.waitForSession(status: .finalized)
+
+        let sessionID = try #require(UUID(uuidString: imported.sessionID))
+        let sessionURL = try SessionDirectoryLocator(fileManager: .default).resolve(
+            sessionsRoot: h.paths.sessionsRoot, sessionID: sessionID
+        )
+        let metadata = ProcessingMetadataStore(sessionURL: sessionURL)
+        let previousGeneration = try #require(try metadata.load()?.generationID)
+        h.resources.setSignal(.pressure)
+
+        let reprocess = Task {
+            try await h.call("session.reprocess", payload: "{\"session_id\":\"\(imported.sessionID)\"}")
+        }
+        try await h.sink.changes.wait("reprocess held before opening its replacement generation") {
+            h.app.core.processingQueue.summaries.contains {
+                $0.sessionID == sessionID && $0.kind == .replacement
+                    && $0.holdReason == .inference(.resourcePressure)
+            }
+        }
+        #expect(try metadata.load()?.generationID == previousGeneration)
+
+        let destination = root.appending(path: "busy-export", directoryHint: .isDirectory)
+        do {
+            _ = try await h.call(
+                "session.export",
+                payload: "{\"session_id\":\"\(imported.sessionID)\",\"destination_path\":\(jsonString(destination.path))}"
+            )
+            Issue.record("session.export must refuse a session with held reprocess work")
+        } catch let error as CommandFailure {
+            #expect(error.failure.code == .busy)
+            #expect(error.failure.message == "このセッションは処理中のため書き出せません")
+            #expect(error.failure.stage == .exporting)
+            #expect(error.failure.sessionID == imported.sessionID)
+            #expect(error.failure.recoveryAction == .retry)
+        } catch {
+            Issue.record("expected busy, got \(error)")
+        }
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+
+        h.resources.setSignal(.healthy)
+        guard case .sessionReprocess = try await reprocess.value else {
+            Issue.record("session.reprocess did not return its terminal reply")
+            return
+        }
+        #expect(try metadata.load()?.generationID != previousGeneration)
+        #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
     @Test func aDeviceFailureAtStartIsReportedAndLeavesNoSession() async throws {
         let root = try ApplicationHarness.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -226,6 +286,54 @@ import MacAmbientJevTestSupport
         await h.awaitModels()
         #expect(h.app.core.modelsPrepared)
         #expect(try await h.shutdown() == .shutdownRequested)
+    }
+
+    @Test func startupAutoExportUsesTheCatalogAfterRecordingCompaction() async throws {
+        let root = try ApplicationHarness.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = try await prepared(root)
+        guard case let .recordingStart(started) = try await first.call(
+            "recording.start", payload: "{\"source\":\"microphone\",\"device\":{\"kind\":\"default\"}}"
+        ) else {
+            Issue.record("recording.start did not return a session")
+            return
+        }
+        try await first.capture.session?.appendSpeech(seconds: 2)
+        try await first.call("recording.stop", payload: "{\"session_id\":\"\(started.sessionID)\"}")
+        _ = try await first.waitForSession(status: .finalized)
+        let sessionUUID = try #require(UUID(uuidString: started.sessionID))
+        let sessionURL = try await first.app.core.readableSession(sessionUUID).sessionURL
+        let layout = SessionLayout(sessionURL: sessionURL)
+        let pcmWriter = try DurableAudioWriter(
+            directory: layout.processingDirectory, chunkDurationSeconds: 0.5, sessionURL: sessionURL
+        )
+        try await pcmWriter.append(samples: FakeCaptureSession.tone(seconds: 2))
+        _ = try await pcmWriter.finish()
+        try SessionAudioStorageStore(layout: layout).save(.recordingPCM)
+
+        let destination = root.appending(path: "startup-exports", directoryHint: .isDirectory)
+        try await first.replaceSettings(
+            engineTestSettings(automaticExport: true, exportPath: destination.path), expectedRevision: 1
+        )
+        #expect(try await first.shutdown() == .shutdownRequested)
+
+        let second = ApplicationHarness(root: root)
+        let cached = try #require(try await second.app.core.currentSessions().first)
+        guard case .readable(let cachedSession) = cached,
+              case .recordedPCM = cachedSession.audioSource else {
+            Issue.record("the startup test must cache the pre-compaction PCM source")
+            return
+        }
+        second.start()
+        try await second.hello()
+        await second.app.waitForStartupRecovery()
+        let sessionID = try #require(UUID(uuidString: started.sessionID))
+        guard case .exported(let folder)? = second.app.core.savedSessionOperations.exports[sessionID] else {
+            Issue.record("startup auto-export did not use the compacted recording source")
+            return
+        }
+        #expect(FileManager.default.fileExists(atPath: folder.appending(path: "audio.flac").path))
+        #expect(try await second.shutdown() == .shutdownRequested)
     }
 
     @Test func shutdownStopsTheRecordingDurablyAndTheNextLaunchRecoversIt() async throws {

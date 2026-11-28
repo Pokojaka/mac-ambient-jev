@@ -29,7 +29,7 @@ func savedTranscriptLoaderKeepsRawFillerTextForPresentationAndExport() async thr
     let asrEventsBefore = try asrEventLines(at: layout.eventsURL)
 
     let beforeResponse = try SavedTranscriptLoader.load(sessionURL: session.sessionURL)
-    guard case .segments(let rawSegments) = beforeResponse else {
+    guard case .segments(_, let rawSegments) = beforeResponse else {
         Issue.record("expected saved transcript segments before boundary response")
         return
     }
@@ -40,7 +40,7 @@ func savedTranscriptLoaderKeepsRawFillerTextForPresentationAndExport() async thr
 
     let assessedSession = try await fixture.saveFillerAssessment(session: session, rawText: raw)
     let afterResponse = try SavedTranscriptLoader.load(sessionURL: assessedSession.sessionURL)
-    guard case .segments(let segments) = afterResponse else {
+    guard case .segments(_, let segments) = afterResponse else {
         Issue.record("expected saved transcript segments after boundary response")
         return
     }

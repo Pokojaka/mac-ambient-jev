@@ -3,7 +3,7 @@ import MacAmbientJevCore
 
 public enum SavedTranscript: Sendable, Equatable {
     case unavailable
-    case segments([MaterializedTranscriptSegment])
+    case segments(generationID: UUID, [MaterializedTranscriptSegment])
 }
 
 public enum SavedTranscriptLoader {
@@ -17,6 +17,7 @@ public enum SavedTranscriptLoader {
             return .unavailable
         }
         return .segments(
+            generationID: stored.state.generation.id,
             try TranscriptMaterializer(sampleRate: stored.state.generation.sampleRate)
                 .materialize(events: stored.events, activeRuns: stored.state.runs)
         )

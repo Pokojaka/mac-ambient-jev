@@ -21,22 +21,19 @@ extension EngineApplicationCore {
     }
 
     /// The catalog, re-read after anything that may have changed it.
-    func currentSessions() throws -> [SavedSessionSummary] {
-        if savedSessionsAreStale {
-            do {
-                try savedSessionOperations.refresh(sessionsRoot: paths.sessionsRoot)
-            } catch {
-                throw EngineFailures.commandError(
-                    from: error, fallback: .filesystem, stage: .recovery, recoveryAction: .retry
-                )
-            }
+    func currentSessions() async throws -> [SavedSessionSummary] {
+        while savedSessionsAreStale {
+            let version = savedSessionsVersion
+            let sessions = try await sessionCatalogLookup(paths.sessionsRoot)
+            guard savedSessionsVersion == version else { continue }
+            savedSessionOperations.replaceSessions(sessions)
             savedSessionsAreStale = false
         }
         return savedSessionOperations.sessions
     }
 
-    func readableSession(_ sessionID: UUID) throws -> SavedSession {
-        _ = try currentSessions()
+    func readableSession(_ sessionID: UUID) async throws -> SavedSession {
+        _ = try await currentSessions()
         guard let session = savedSessionOperations.readableSession(sessionID) else {
             throw EngineFailures.commandError(
                 .sessionNotFound, "保存済み録音が見つからないか、読み取れません", stage: .recovery,
@@ -131,11 +128,8 @@ extension EngineApplicationCore: EngineSessionHandling {
             }
 
             let sessionID = session.sessionID
-            let busySession = processingQueue.sessionIDs.contains(sessionID)
-            let processingCount = processingQueue.pending.count
-                + processingQueue.held.count
-                + processingQueue.modelHeld.count
-                + (processingQueue.currentSessionID == nil ? 0 : 1)
+            let busySession = isSessionBusy(sessionID)
+            let processingCount = processingQueue.summaries.count
             let processingAdmissible = !isShuttingDown
                 && !processingQueue.isMaintainingStorage
                 && recording.phase == .idle
@@ -143,6 +137,8 @@ extension EngineApplicationCore: EngineSessionHandling {
                 && inference != nil
                 && processingCount < Self.queueLimit
             let canReprocess = processingAdmissible && !busySession && session.audioSource != nil
+                && monitorFailureError(sessionID: sessionID) == nil
+                && modelPreparationError(sessionID: sessionID) == nil
             let canRetryDecisions = processingAdmissible
                 && !busySession
                 && settings?.decisionsEnabled == true
@@ -240,7 +236,8 @@ extension EngineApplicationCore: EngineSessionHandling {
         let isFirstPage = payload.cursor == nil
         if isFirstPage {
             savedSessionsAreStale = true
-            let sessions = try currentSessions().map { try sessionSummary($0) }
+            savedSessionsVersion += 1
+            let sessions = try await currentSessions().map { try sessionSummary($0) }
             snapshot = try EngineSessionListSnapshot(
                 sessions: sessions,
                 navigation: EnginePageNavigation(limit: payload.limit)
@@ -275,7 +272,8 @@ extension EngineApplicationCore: EngineSessionHandling {
         context: EngineRequestContext
     ) async throws -> EngineSessionSummary {
         savedSessionsAreStale = true
-        guard let catalogSummary = try currentSessions().first(where: {
+        savedSessionsVersion += 1
+        guard let catalogSummary = try await currentSessions().first(where: {
             $0.sessionURL.lastPathComponent == payload.folderID
         }) else {
             throw EngineFailures.commandError(
@@ -306,6 +304,12 @@ extension EngineApplicationCore: EngineSessionHandling {
         return summary
     }
 
+    private func isSessionBusy(_ sessionID: UUID) -> Bool {
+        processingQueue.containsProcessing(sessionID)
+            || recording.sessionID == sessionID
+            || liveCoordinator.hasWork(sessionID: sessionID)
+    }
+
     func importSession(_ payload: EngineImportPayload, context: EngineRequestContext) async throws -> EngineSessionPayload {
         try await performMutation { [self] in
             try await importRetained(payload, context: context)
@@ -330,12 +334,16 @@ extension EngineApplicationCore: EngineSessionHandling {
         defer {
             recording.finish()
             stateDidChange()
+            processingCoordinator.resumeModelHeldProcessing()
         }
         let audioURL = URL(fileURLWithPath: payload.inputPath)
         let importer = RetainedSessionImporter(paths: .trustedApplication(paths), timeZone: timeZone)
+        let importRetainedSession = self.importRetainedSession
         let retained: RetainedSession
         do {
-            retained = try await Task.detached(executorPreference: BlockingIOExecutor.shared) { try importer.importRetainedSession(audioURL: audioURL) }.value
+            retained = try await Task.detached(executorPreference: BlockingIOExecutor.shared) {
+                try await importRetainedSession(audioURL, importer)
+            }.value
             setRecordingStatus("「\(audioURL.lastPathComponent)」を読み込みました", tone: .neutral)
         } catch {
             var statusText = "音声ファイルを読み込めませんでした: \(error.localizedDescription)"
@@ -360,39 +368,42 @@ extension EngineApplicationCore: EngineSessionHandling {
             )
         }
         savedSessionsAreStale = true
+        savedSessionsVersion += 1
         processingCoordinator.enqueue(retained.finalize)
         return try EngineSessionPayload(sessionID: EngineFailures.wireID(retained.sessionID))
     }
 
-    func reprocess(_ payload: EngineSessionPayload, context: EngineRequestContext) async throws -> EngineSessionPayload {
-        let sessionID = try EngineFailures.sessionID(payload.sessionID, stage: .finalization)
+    private func requireReprocessAdmissible(sessionID: UUID) throws {
+        try Task.checkCancellation()
+        if recording.sessionID == sessionID {
+            throw EngineFailures.commandError(
+                .busy, "このセッションは録音中のため再処理できません",
+                stage: .finalization, sessionID: sessionID, recoveryAction: .retry
+            )
+        }
         try requireAcceptingProcessing(stage: .finalization)
-        _ = try requireSettings(stage: .finalization)
-        _ = try requireConfiguredInference(stage: .finalization)
         guard recording.phase == .idle else {
             throw EngineFailures.commandError(
-                .busy, "録音中は再処理できません", stage: .finalization, sessionID: sessionID, recoveryAction: .retry
+                .busy, "録音中または録音・読み込み処理中は再処理できません",
+                stage: .finalization, sessionID: sessionID, recoveryAction: .retry
             )
         }
-        let session = try readableSession(sessionID)
-        guard session.audioSource != nil else {
+        if processingQueue.containsProcessing(sessionID) {
             throw EngineFailures.commandError(
-                .filesystem, "保存済み音声がないため再処理できません", stage: .finalization, sessionID: sessionID,
-                recoveryAction: .inspectSession
+                .busy, "このセッションは処理待ち・保留中または実行中のため再処理できません",
+                stage: .finalization, sessionID: sessionID, recoveryAction: .retry
             )
         }
-        guard !processingQueue.containsForReprocessing(sessionID), processingQueue.claimReprocessing(sessionID) else {
+        if liveCoordinator.hasWork(sessionID: sessionID) {
             throw EngineFailures.commandError(
-                .busy, "このセッションは処理待ちまたは処理中です", stage: .finalization, sessionID: sessionID, recoveryAction: .retry
+                .busy, "このセッションのライブ文字起こし処理中は再処理できません",
+                stage: .finalization, sessionID: sessionID, recoveryAction: .retry
             )
         }
-        processingCoordinator.enqueue(.finalize(sessionID: sessionID, metadataPolicy: .replace))
-        stateDidChange()
-        return try await awaitCompletion(sessionID: sessionID, kind: .finalization, payload: payload, stage: .finalization)
     }
 
-    func retryDecisions(_ payload: EngineSessionPayload, context: EngineRequestContext) async throws -> EngineSessionPayload {
-        let sessionID = try EngineFailures.sessionID(payload.sessionID, stage: .decisions)
+    private func requireDecisionRetryAdmissible(sessionID: UUID) throws {
+        try Task.checkCancellation()
         try requireAcceptingProcessing(stage: .decisions)
         let settings = try requireSettings(stage: .decisions)
         _ = try requireConfiguredInference(stage: .decisions)
@@ -401,7 +412,9 @@ extension EngineApplicationCore: EngineSessionHandling {
                 .busy, "録音中は判定を再試行できません", stage: .decisions, sessionID: sessionID, recoveryAction: .retry
             )
         }
-        guard !processingQueue.containsForReprocessing(sessionID) else {
+        guard !processingQueue.containsProcessing(sessionID),
+              recording.sessionID != sessionID,
+              !liveCoordinator.hasWork(sessionID: sessionID) else {
             throw EngineFailures.commandError(
                 .busy, "このセッションは処理待ちまたは処理中です", stage: .decisions,
                 sessionID: sessionID, recoveryAction: .retry
@@ -413,21 +426,88 @@ extension EngineApplicationCore: EngineSessionHandling {
                 recoveryAction: .replaceSettings
             )
         }
-        _ = try readableSession(sessionID)
-        let sessionsRoot = paths.sessionsRoot
-        let candidates: [RecoverableSession]
-        do {
-            candidates = try SessionRecoveryScanner(sessionsRoot: sessionsRoot).pendingSessions().candidates
-        } catch {
-            throw EngineFailures.commandError(from: error, fallback: .filesystem, stage: .decisions, sessionID: sessionID, recoveryAction: .retry)
+    }
+
+    func reprocess(_ payload: EngineSessionPayload, context: EngineRequestContext) async throws -> EngineSessionPayload {
+        let sessionID = try EngineFailures.sessionID(payload.sessionID, stage: .finalization)
+        try requireReprocessAdmissible(sessionID: sessionID)
+        _ = try requireSettings(stage: .finalization)
+        let session = try await readableSession(sessionID)
+        try requireReprocessAdmissible(sessionID: sessionID)
+        _ = try requireSettings(stage: .finalization)
+        guard session.audioSource != nil else {
+            throw EngineFailures.commandError(
+                .filesystem, "保存済み音声がないため再処理できません", stage: .finalization, sessionID: sessionID,
+                recoveryAction: .inspectSession
+            )
         }
-        let requests = candidates
-            .filter { $0.manifest.sessionID == sessionID }
-            .compactMap { SessionRecoveryPlan($0.action).decisionRetryRequest(sessionID: sessionID) }
-        guard !requests.isEmpty else { return payload }
-        for request in requests { processingCoordinator.enqueue(request) }
+        if let error = monitorFailureError(sessionID: sessionID) { throw error }
+        if let error = modelPreparationError(sessionID: sessionID) { throw error }
+        _ = try requireConfiguredInference(stage: .finalization)
+
+        let requestID: UUID
+        do {
+            requestID = try processingCoordinator.enqueueReprocess(sessionID: sessionID)
+        } catch let error as SessionProcessingAdmissionError {
+            guard case .busy(let message) = error else { throw error }
+            throw EngineFailures.commandError(
+                .busy, message, stage: .finalization, sessionID: sessionID, recoveryAction: .retry
+            )
+        }
+        completions.register(requestID: requestID, terminalReplyClaim: context.claimTerminalReply)
         stateDidChange()
-        return try await awaitCompletion(sessionID: sessionID, kind: .decisionRetry, payload: payload, stage: .decisions)
+        return try await awaitCompletion(
+            requestID: requestID, sessionID: sessionID, kind: .finalization,
+            payload: payload, stage: .finalization
+        )
+    }
+
+    func retryDecisions(_ payload: EngineSessionPayload, context: EngineRequestContext) async throws -> EngineSessionPayload {
+        let sessionID = try EngineFailures.sessionID(payload.sessionID, stage: .decisions)
+        try requireDecisionRetryAdmissible(sessionID: sessionID)
+        _ = try await readableSession(sessionID)
+        let sessionsRoot = paths.sessionsRoot
+        while true {
+            let inspectedCompletionEpoch = processingCompletionEpoch
+            let inspection: SessionInspection
+            do {
+                inspection = try await Task.detached(executorPreference: BlockingIOExecutor.shared) {
+                    try SessionRecoveryScanner(sessionsRoot: sessionsRoot)
+                        .inspect(sessionID: sessionID, includeFailed: false)
+                }.value
+            } catch {
+                if processingCompletionEpoch != inspectedCompletionEpoch {
+                    try requireDecisionRetryAdmissible(sessionID: sessionID)
+                    continue
+                }
+                throw EngineFailures.commandError(
+                    from: error, fallback: .filesystem, stage: .decisions, sessionID: sessionID,
+                    recoveryAction: .retry
+                )
+            }
+            if processingCompletionEpoch != inspectedCompletionEpoch {
+                try requireDecisionRetryAdmissible(sessionID: sessionID)
+                continue
+            }
+
+            let requests = inspection.recovery
+                .flatMap { SessionRecoveryPlan($0.action).decisionRetryRequest(sessionID: sessionID) }
+                .map { [$0] } ?? []
+            try requireDecisionRetryAdmissible(sessionID: sessionID)
+            guard !requests.isEmpty else { return payload }
+            for request in requests {
+                completions.register(requestID: request.requestID, terminalReplyClaim: context.claimTerminalReply)
+            }
+            for request in requests { processingCoordinator.enqueue(request) }
+            stateDidChange()
+            for request in requests {
+                _ = try await awaitCompletion(
+                    requestID: request.requestID, sessionID: sessionID, kind: .decisionRetry,
+                    payload: payload, stage: .decisions
+                )
+            }
+            return payload
+        }
     }
 
     private func requireAcceptingProcessing(stage: EngineStage) throws {
@@ -439,10 +519,7 @@ extension EngineApplicationCore: EngineSessionHandling {
                 .busy, "起動時の保存データの整理が終わるまで処理を開始できません", stage: stage, recoveryAction: .retry
             )
         }
-        let processingCount = processingQueue.pending.count
-            + processingQueue.held.count
-            + processingQueue.modelHeld.count
-            + (processingQueue.currentSessionID == nil ? 0 : 1)
+        let processingCount = processingQueue.summaries.count
         guard processingCount < EngineApplicationCore.queueLimit else {
             throw EngineFailures.commandError(
                 .busy, "処理待ちが上限に達しているため処理を開始できません", stage: stage, recoveryAction: .retry
@@ -451,9 +528,10 @@ extension EngineApplicationCore: EngineSessionHandling {
     }
 
     private func awaitCompletion(
-        sessionID: UUID, kind: EngineCompletionRegistry.Kind, payload: EngineSessionPayload, stage: EngineStage
+        requestID: UUID, sessionID: UUID, kind: EngineCompletionRegistry.Kind,
+        payload: EngineSessionPayload, stage: EngineStage
     ) async throws -> EngineSessionPayload {
-        switch try await completions.wait(sessionID: sessionID, kind: kind) {
+        switch try await completions.wait(requestID: requestID) {
         case .completed:
             return payload
         case let .failed(message):
@@ -461,6 +539,8 @@ extension EngineApplicationCore: EngineSessionHandling {
                 .processingFailure, message, stage: stage, sessionID: sessionID,
                 recoveryAction: kind == .finalization ? .reprocess : .retryDecisions
             )
+        case .commandFailure(let error):
+            throw error
         case .paused:
             throw EngineFailures.commandError(
                 .cancelled, "処理は中断されました。次回の起動時に再開できます", stage: stage, sessionID: sessionID,
@@ -480,8 +560,18 @@ extension EngineApplicationCore: EngineSessionHandling {
                 stage: .exporting, sessionID: sessionID
             )
         }
-        let session = try readableSession(sessionID)
-        let folder = try await exportBundle(session, to: URL(fileURLWithPath: payload.destinationPath, isDirectory: true))
+        let session = try await readableSession(sessionID)
+        let folder = try await performMutation { [self] in
+            guard !isSessionBusy(session.sessionID) else {
+                throw EngineFailures.commandError(
+                    .busy, "このセッションは処理中のため書き出せません", stage: .exporting,
+                    sessionID: session.sessionID, recoveryAction: .retry
+                )
+            }
+            return try await exportTrackedBundle(
+                session, to: URL(fileURLWithPath: payload.destinationPath, isDirectory: true)
+            )
+        }
         return try EngineExportResult(sessionID: payload.sessionID, destinationPath: folder.path)
     }
 
@@ -506,7 +596,7 @@ extension EngineApplicationCore: EngineSessionHandling {
             break
         }
         do {
-            let folder = try await Task.detached(executorPreference: BlockingIOExecutor.shared) { try SessionExporter().export(session: session, to: directory) }.value
+            let folder = try await exportSessionBundle(session, directory)
             savedSessionOperations.completeExport(sessionID: session.sessionID, folder: folder)
             return folder
         } catch {

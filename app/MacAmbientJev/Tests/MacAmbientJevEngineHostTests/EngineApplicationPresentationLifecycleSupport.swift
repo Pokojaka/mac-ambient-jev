@@ -280,7 +280,7 @@ final class EngineApplicationPresentationLifecycleFixture {
             inference: inference,
             events: events
         )
-        context = EngineRequestContext(requestID: try EngineID(1), events: events)
+        context = EngineRequestContext(requestID: try EngineID(1), events: events, terminalReplyClaim: {})
     }
 
     func start() async throws {

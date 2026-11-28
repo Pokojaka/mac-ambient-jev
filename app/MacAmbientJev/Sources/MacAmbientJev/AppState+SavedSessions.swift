@@ -55,7 +55,7 @@ extension AppState {
             switch try SavedTranscriptLoader.load(sessionURL: sessionURL) {
             case .unavailable:
                 transcriptViewModel.setStatus("この録音には確定文字起こしがありません")
-            case .segments(let segments):
+            case .segments(_, let segments):
                 try transcriptViewModel.update(segments: segments)
                 transcriptViewModel.setDisplayState(.finalized)
                 transcriptViewModel.setStatus(

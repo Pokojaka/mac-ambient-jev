@@ -13,24 +13,36 @@ public struct SessionProcessingResult: Sendable {
     public let message: String?
     public let noSpeech: Bool
     public let retainedTranscript: RetainedTranscript?
+    public let replacementGeneration: ReplacementGeneration
     /// Why a paused run stopped; nil for a cancellation.
     public var pauseReason: InferenceHoldReason? = nil
 
-    public static func completed(metrics: ASRBatchMetrics?, noSpeech: Bool) -> SessionProcessingResult {
+    public static func completed(
+        metrics: ASRBatchMetrics?, noSpeech: Bool,
+        replacementGeneration: ReplacementGeneration
+    ) -> SessionProcessingResult {
         SessionProcessingResult(disposition: .completed, metrics: metrics, message: nil,
-                                noSpeech: noSpeech, retainedTranscript: nil)
+                                noSpeech: noSpeech, retainedTranscript: nil,
+                                replacementGeneration: replacementGeneration)
     }
 
-    public static func paused(metrics: ASRBatchMetrics?, retained: RetainedTranscript,
-                               message: String, reason: InferenceHoldReason? = nil) -> SessionProcessingResult {
+    public static func paused(
+        metrics: ASRBatchMetrics?, retained: RetainedTranscript, message: String,
+        reason: InferenceHoldReason? = nil,
+        replacementGeneration: ReplacementGeneration
+    ) -> SessionProcessingResult {
         SessionProcessingResult(disposition: .paused, metrics: metrics, message: message,
-                                noSpeech: false, retainedTranscript: retained, pauseReason: reason)
+                                noSpeech: false, retainedTranscript: retained,
+                                replacementGeneration: replacementGeneration, pauseReason: reason)
     }
 
-    public static func failed(message: String, metrics: ASRBatchMetrics?,
-                              retained: RetainedTranscript?) -> SessionProcessingResult {
+    public static func failed(
+        message: String, metrics: ASRBatchMetrics?, retained: RetainedTranscript?,
+        replacementGeneration: ReplacementGeneration
+    ) -> SessionProcessingResult {
         SessionProcessingResult(disposition: .failed, metrics: metrics, message: message,
-                                noSpeech: false, retainedTranscript: retained)
+                                noSpeech: false, retainedTranscript: retained,
+                                replacementGeneration: replacementGeneration)
     }
 }
 
@@ -66,8 +78,10 @@ public actor NativeSessionProcessor {
 
     public typealias DecisionCoordinatorFactory = @Sendable () throws -> DecisionCoordinator
     public typealias DecisionEventWriterFactory = @Sendable (URL) throws -> any DecisionEventWriting
+    public typealias ProcessingMetadataSave = @Sendable (URL, ProcessingMetadata) throws -> Void
     public typealias StatusHandler = @Sendable (Status) async -> Void
     public typealias UpdateHandler = @Sendable ([MaterializedTranscriptSegment], ProcessingState) async -> Void
+    public typealias GenerationOpenedHandler = @MainActor @Sendable (UUID) async -> Void
     public typealias PauseCheck = InferenceGate
     public typealias PhaseHandler = @Sendable (RunPhase) async -> Void
 
@@ -85,13 +99,24 @@ public actor NativeSessionProcessor {
 
     /// How one drain ended. A drained generation always carries what it reports after storage finishes.
     private enum Drained {
-        case completed(CompletionReport, metrics: ASRBatchMetrics?, noSpeech: Bool)
+        case completed(
+            CompletionReport, metrics: ASRBatchMetrics?, noSpeech: Bool,
+            replacementGeneration: ReplacementGeneration
+        )
         case ended(SessionProcessingResult)
     }
 
     private struct OpenedGeneration {
         let state: ProcessingLogState
         let startedNew: Bool
+        let replacementGeneration: ReplacementGeneration
+    }
+
+    private struct GenerationOpeningFailure: LocalizedError {
+        let message: String
+        let replacementGeneration: ReplacementGeneration
+
+        var errorDescription: String? { message }
     }
 
     private let sessionsRoot: URL
@@ -101,6 +126,7 @@ public actor NativeSessionProcessor {
     private let contentPriority: ContentPriorityAccess
     private let sleep: @Sendable (Duration) async throws -> Void
     private let makeDecisionEventWriter: DecisionEventWriterFactory
+    private let saveProcessingMetadata: ProcessingMetadataSave
     private var liveASRSessions: [UUID: LiveASRSession] = [:]
     private var liveContentPrioritySessions: [UUID: LiveContentPrioritySession] = [:]
     private var startingLiveSessions: Set<UUID> = []
@@ -113,7 +139,10 @@ public actor NativeSessionProcessor {
         audioHandling: any SessionProcessingAudioHandling,
         contentPriority: ContentPriorityAccess,
         sleep: @escaping @Sendable (Duration) async throws -> Void,
-        makeDecisionEventWriter: @escaping DecisionEventWriterFactory = { try SessionWriter(sessionURL: $0) }
+        makeDecisionEventWriter: @escaping DecisionEventWriterFactory = { try SessionWriter(sessionURL: $0) },
+        saveProcessingMetadata: @escaping ProcessingMetadataSave = { sessionURL, metadata in
+            try ProcessingMetadataStore(sessionURL: sessionURL).save(metadata)
+        }
     ) {
         sessionsRoot = paths.sessionsRoot
         asr = engines.asr
@@ -122,6 +151,7 @@ public actor NativeSessionProcessor {
         self.contentPriority = contentPriority
         self.sleep = sleep
         self.makeDecisionEventWriter = makeDecisionEventWriter
+        self.saveProcessingMetadata = saveProcessingMetadata
     }
 
     public func prepareASR(onProgress: @escaping @Sendable (Double, String) -> Void) async throws {
@@ -134,7 +164,8 @@ public actor NativeSessionProcessor {
     /// that the live VAD session must use.
     public func startLiveTranscription(
         sessionID: UUID,
-        sampleRate: Double
+        sampleRate: Double,
+        onGenerationOpened: @escaping GenerationOpenedHandler
     ) async throws -> String {
         guard !activeFinalizations.contains(sessionID), !activeDecisionRetries.contains(sessionID),
               !liveASRSessions.keys.contains(sessionID), !liveContentPrioritySessions.keys.contains(sessionID),
@@ -146,7 +177,7 @@ public actor NativeSessionProcessor {
         let writer = try SessionWriter(sessionURL: sessionLayout.sessionURL)
         let opened = try await openGeneration(
             sessionID: sessionID, layout: sessionLayout, writer: writer, sampleRate: sampleRate,
-            metadataPolicy: .reject, allowFailed: false
+            metadataPolicy: .reject, allowFailed: false, onGenerationOpened: onGenerationOpened
         )
         try await ensureSegmentationStarted(opened.state, sessionID: sessionID, writer: writer)
         let liveASR = try await LiveASRSession.open(
@@ -288,14 +319,15 @@ public actor NativeSessionProcessor {
         pacingMode: ASRPacingMode,
         shouldPause: @escaping PauseCheck,
         onPhase: @escaping PhaseHandler,
-        metadataPolicy: UnreadableMetadataPolicy,
+        metadataPolicy: SessionFinalizationPolicy,
         onStatus: @escaping StatusHandler,
-        onUpdate: @escaping UpdateHandler
+        onUpdate: @escaping UpdateHandler,
+        onGenerationOpened: @escaping GenerationOpenedHandler
     ) async -> SessionProcessingResult {
         await finalize(
             sessionID: sessionID, metadataPolicy: metadataPolicy, allowFailed: false,
             pacingMode: pacingMode, shouldPause: shouldPause, onPhase: onPhase,
-            onStatus: onStatus, onUpdate: onUpdate
+            onStatus: onStatus, onUpdate: onUpdate, onGenerationOpened: onGenerationOpened
         )
     }
 
@@ -307,12 +339,13 @@ public actor NativeSessionProcessor {
         shouldPause: @escaping PauseCheck,
         onPhase: @escaping PhaseHandler,
         onStatus: @escaping StatusHandler,
-        onUpdate: @escaping UpdateHandler
+        onUpdate: @escaping UpdateHandler,
+        onGenerationOpened: @escaping GenerationOpenedHandler
     ) async -> SessionProcessingResult {
         await finalize(
             sessionID: sessionID, metadataPolicy: .reject, allowFailed: true,
             pacingMode: pacingMode, shouldPause: shouldPause, onPhase: onPhase,
-            onStatus: onStatus, onUpdate: onUpdate
+            onStatus: onStatus, onUpdate: onUpdate, onGenerationOpened: onGenerationOpened
         )
     }
 
@@ -449,7 +482,7 @@ public actor NativeSessionProcessor {
             await onUpdate(selectedRows, .complete)
             await onStatus(selected.pendingDecisions.pendingTargets.isEmpty
                            ? .message("保留中の判定を更新しました") : .activity(.decisionDeferred))
-            return .completed(metrics: nil, noSpeech: false)
+            return .completed(metrics: nil, noSpeech: false, replacementGeneration: .notOpened)
         } catch {
             let retained: RetainedTranscript = hasRetainedRows ? .finalized : .nothing
             let isDefinitiveRetryFailure: Bool
@@ -462,7 +495,10 @@ public actor NativeSessionProcessor {
             if !isDefinitiveRetryFailure && (error is CancellationError || Task.isCancelled) {
                 let message = "処理は中断されました。次回の起動時に再開できます"
                 await onStatus(.message(message))
-                return .paused(metrics: nil, retained: retained, message: message)
+                return .paused(
+                    metrics: nil, retained: retained, message: message,
+                    replacementGeneration: .notOpened
+                )
             }
             let message = "発話文の判定を再試行できませんでした: \(error.localizedDescription)"
             if let processorError = error as? NativeSessionProcessorError,
@@ -471,19 +507,22 @@ public actor NativeSessionProcessor {
             } else {
                 await onStatus(.message(message))
             }
-            return .failed(message: message, metrics: nil, retained: retained)
+            return .failed(
+                message: message, metrics: nil, retained: retained, replacementGeneration: .notOpened
+            )
         }
     }
 
     private func finalize(
         sessionID: UUID,
-        metadataPolicy: UnreadableMetadataPolicy,
+        metadataPolicy: SessionFinalizationPolicy,
         allowFailed: Bool,
         pacingMode: ASRPacingMode,
         shouldPause: @escaping PauseCheck,
         onPhase: @escaping PhaseHandler,
         onStatus: @escaping StatusHandler,
-        onUpdate: @escaping UpdateHandler
+        onUpdate: @escaping UpdateHandler,
+        onGenerationOpened: @escaping GenerationOpenedHandler
     ) async -> SessionProcessingResult {
         guard !startingLiveSessions.contains(sessionID), !activeDecisionRetries.contains(sessionID),
               activeFinalizations.insert(sessionID).inserted else {
@@ -494,7 +533,10 @@ public actor NativeSessionProcessor {
             await onPhase(.complete)
             await onStatus(.message(message))
             await onUpdate(rows, .partialFailure(message))
-            return .failed(message: message, metrics: nil, retained: rows.isEmpty ? .nothing : .finalized)
+            return .failed(
+                message: message, metrics: nil, retained: rows.isEmpty ? .nothing : .finalized,
+                replacementGeneration: metadataPolicy.replacementGeneration
+            )
         }
         defer { activeFinalizations.remove(sessionID) }
         var resolvedLayout: SessionLayout?
@@ -508,7 +550,8 @@ public actor NativeSessionProcessor {
             let drained = await runFinalization(
                 sessionID: sessionID, layout: sessionLayout, source: source,
                 metadataPolicy: metadataPolicy, allowFailed: allowFailed, pacingMode: pacingMode,
-                shouldPause: shouldPause, onPhase: onPhase, onStatus: onStatus, onUpdate: onUpdate
+                shouldPause: shouldPause, onPhase: onPhase, onStatus: onStatus, onUpdate: onUpdate,
+                onGenerationOpened: onGenerationOpened
             )
             return await closeStorage(
                 drained, sessionID: sessionID, layout: sessionLayout, manifest: manifest,
@@ -526,7 +569,10 @@ public actor NativeSessionProcessor {
             await onPhase(.complete)
             await onStatus(.message(reportedMessage))
             await onUpdate(rows, .partialFailure(reportedMessage))
-            return .failed(message: reportedMessage, metrics: nil, retained: rows.isEmpty ? .nothing : .finalized)
+            return .failed(
+                message: reportedMessage, metrics: nil, retained: rows.isEmpty ? .nothing : .finalized,
+                replacementGeneration: metadataPolicy.replacementGeneration
+            )
         }
     }
 
@@ -535,19 +581,21 @@ public actor NativeSessionProcessor {
         sessionID: UUID,
         layout: SessionLayout,
         source: SessionAudioSource,
-        metadataPolicy: UnreadableMetadataPolicy,
+        metadataPolicy: SessionFinalizationPolicy,
         allowFailed: Bool,
         pacingMode: ASRPacingMode,
         shouldPause: @escaping PauseCheck,
         onPhase: @escaping PhaseHandler,
         onStatus: @escaping StatusHandler,
-        onUpdate: @escaping UpdateHandler
+        onUpdate: @escaping UpdateHandler,
+        onGenerationOpened: @escaping GenerationOpenedHandler
     ) async -> Drained {
         let live = takeLiveWorker(sessionID: sessionID)
         let result = await drain(
             sessionID: sessionID, layout: layout, source: source, live: live,
             metadataPolicy: metadataPolicy, allowFailed: allowFailed, pacingMode: pacingMode,
-            shouldPause: shouldPause, onPhase: onPhase, onStatus: onStatus, onUpdate: onUpdate
+            shouldPause: shouldPause, onPhase: onPhase, onStatus: onStatus, onUpdate: onUpdate,
+            onGenerationOpened: onGenerationOpened
         )
         await live?.decisions?.stop()
         return result
@@ -558,15 +606,17 @@ public actor NativeSessionProcessor {
         layout: SessionLayout,
         source: SessionAudioSource,
         live: LiveWorker?,
-        metadataPolicy: UnreadableMetadataPolicy,
+        metadataPolicy: SessionFinalizationPolicy,
         allowFailed: Bool,
         pacingMode: ASRPacingMode,
         shouldPause: @escaping PauseCheck,
         onPhase: @escaping PhaseHandler,
         onStatus: @escaping StatusHandler,
-        onUpdate: @escaping UpdateHandler
+        onUpdate: @escaping UpdateHandler,
+        onGenerationOpened: @escaping GenerationOpenedHandler
     ) async -> Drained {
         var attemptGenerationID: UUID?
+        var replacementGeneration = metadataPolicy.replacementGeneration
         var metrics: ASRBatchMetrics?
         do {
             await onPhase(.preparing)
@@ -579,13 +629,15 @@ public actor NativeSessionProcessor {
             }
             let opened = try await openGeneration(
                 sessionID: sessionID, layout: layout, writer: writer, sampleRate: sampleRate,
-                metadataPolicy: metadataPolicy, allowFailed: allowFailed
+                metadataPolicy: metadataPolicy, allowFailed: allowFailed,
+                onGenerationOpened: onGenerationOpened
             )
             if !opened.state.segmentationCompleted {
                 await onStatus(.activity(.detectingSpeech))
             }
             let generationID = opened.state.generation.id
             attemptGenerationID = generationID
+            replacementGeneration = opened.replacementGeneration
             if opened.startedNew {
                 await onUpdate([], .running)
             } else {
@@ -651,14 +703,19 @@ public actor NativeSessionProcessor {
                     await onUpdate(rows, .backlogged)
                     return .ended(.paused(
                         metrics: metrics, retained: rows.isEmpty ? .nothing : .finalized,
-                        message: reportedMessage, reason: reason
+                        message: reportedMessage, reason: reason,
+                        replacementGeneration: replacementGeneration
                     ))
                 case .failed(let failure):
                     let message = failure.localizedDescription
                     try saveStatus(sessionID: sessionID, layout: layout, generationID: generationID, state: .failed, reason: message)
                     let (rows, reportedMessage) = rowsForFailure(layout: layout, sessionID: sessionID, message: message)
                     await onPhase(.complete); await onStatus(.message("確定処理に失敗しました: \(reportedMessage)")); await onUpdate(rows, .partialFailure(reportedMessage))
-                    return .ended(.failed(message: reportedMessage, metrics: metrics, retained: rows.isEmpty ? .nothing : .finalized))
+                    return .ended(.failed(
+                        message: reportedMessage, metrics: metrics,
+                        retained: rows.isEmpty ? .nothing : .finalized,
+                        replacementGeneration: replacementGeneration
+                    ))
                 case .completed: break
                 }
             }
@@ -708,9 +765,16 @@ public actor NativeSessionProcessor {
             }
             return .completed(
                 CompletionReport(rows: finalRows, status: finalStatus),
-                metrics: metrics, noSpeech: completion.completedCount == 0
+                metrics: metrics, noSpeech: completion.completedCount == 0,
+                replacementGeneration: replacementGeneration
             )
         } catch {
+            if let openingFailure = error as? GenerationOpeningFailure {
+                replacementGeneration = openingFailure.replacementGeneration
+                if case .opened(let generationID) = replacementGeneration {
+                    attemptGenerationID = generationID
+                }
+            }
             if let cancellation = error as? ASRRunCancellation { metrics = cancellation.metrics }
             // The error decides: only a cancellation pauses. A read, validation or saved failure stays
             // failed even when a shutdown cancelled the task meanwhile.
@@ -733,8 +797,15 @@ public actor NativeSessionProcessor {
             await onStatus(.message(statusText))
             await onUpdate(rows, cancelled ? .backlogged : .partialFailure(reportedMessage))
             return .ended(cancelled
-                ? .paused(metrics: metrics, retained: rows.isEmpty ? .nothing : .finalized, message: reportedMessage)
-                : .failed(message: reportedMessage, metrics: metrics, retained: rows.isEmpty ? .nothing : .finalized))
+                ? .paused(
+                    metrics: metrics, retained: rows.isEmpty ? .nothing : .finalized,
+                    message: reportedMessage, replacementGeneration: replacementGeneration
+                )
+                : .failed(
+                    message: reportedMessage, metrics: metrics,
+                    retained: rows.isEmpty ? .nothing : .finalized,
+                    replacementGeneration: replacementGeneration
+                ))
         }
     }
 
@@ -785,24 +856,34 @@ public actor NativeSessionProcessor {
         layout: SessionLayout,
         writer: SessionWriter,
         sampleRate: Double,
-        metadataPolicy: UnreadableMetadataPolicy,
-        allowFailed: Bool
+        metadataPolicy: SessionFinalizationPolicy,
+        allowFailed: Bool,
+        onGenerationOpened: @escaping GenerationOpenedHandler
     ) async throws -> OpenedGeneration {
         guard sampleRate.isFinite, sampleRate > 0 else { throw ProcessingLogStateError.incompatibleSettings }
         let metadataStore = ProcessingMetadataStore(sessionURL: layout.sessionURL)
+        let isUnopenedReplacement = metadataPolicy.isReplacement
+            && metadataPolicy.replacementGeneration == .notOpened
         let metadata: ProcessingMetadata?
         do {
             metadata = try metadataStore.load()
         } catch let error as ProcessingMetadataStoreError {
-            if metadataPolicy == .replace, case .unreadable = error { metadata = nil }
+            if isUnopenedReplacement, case .unreadable = error { metadata = nil }
             else { throw error }
         }
 
         let previousState: ProcessingLogState?
-        if metadataPolicy == .reject {
-            previousState = try ProcessingLogState(eventsURL: layout.eventsURL, sessionID: sessionID)
-        } else {
+        if isUnopenedReplacement {
             previousState = nil
+        } else {
+            previousState = try ProcessingLogState(eventsURL: layout.eventsURL, sessionID: sessionID)
+        }
+        if metadataPolicy.isReplacement,
+           case .opened(let expectedID) = metadataPolicy.replacementGeneration,
+           previousState?.generation.id != expectedID {
+            throw NativeSessionProcessorError.generationChanged(
+                expected: expectedID, actual: previousState?.generation.id
+            )
         }
         if metadataPolicy == .reject, case nil = previousState, metadata != nil {
             throw ProcessingLogStateError.missingGeneration
@@ -818,13 +899,18 @@ public actor NativeSessionProcessor {
             }
             if state.hasUnresolvedASRFailure && !allowFailed {
                 let error = NativeSessionProcessorError.unresolvedASRFailure
-                try metadataStore.save(ProcessingMetadata(
+                try saveProcessingMetadata(layout.sessionURL, ProcessingMetadata(
                     generationID: state.generation.id, state: .failed, failureReason: error.localizedDescription
                 ))
                 throw error
             }
-            try metadataStore.save(ProcessingMetadata(generationID: state.generation.id, state: .running, failureReason: nil))
-            return OpenedGeneration(state: state, startedNew: false)
+            try saveProcessingMetadata(
+                layout.sessionURL, ProcessingMetadata(generationID: state.generation.id, state: .running, failureReason: nil)
+            )
+            return OpenedGeneration(
+                state: state, startedNew: false,
+                replacementGeneration: metadataPolicy.replacementGeneration
+            )
         }
 
         let suffix = UUID().uuidString.lowercased()
@@ -844,12 +930,38 @@ public actor NativeSessionProcessor {
             id: UUID(), runs: runs, sampleRate: sampleRate,
             segmentationProvenance: finalTranscriptVAD.provenance, asrProvenance: asr.provenance
         )
-        try await writer.append(generation.startEvent(sessionID: sessionID))
-        try metadataStore.save(ProcessingMetadata(generationID: generation.id, state: .running, failureReason: nil))
-        guard let state = try ProcessingLogState(eventsURL: layout.eventsURL, sessionID: sessionID) else {
-            throw ProcessingLogStateError.missingGeneration
+        if isUnopenedReplacement {
+            try metadataPolicy.reserveReplacementGeneration(generation.id)
         }
-        return OpenedGeneration(state: state, startedNew: true)
+        do {
+            try await writer.append(generation.startEvent(sessionID: sessionID))
+        } catch is CancellationError {
+            if isUnopenedReplacement {
+                metadataPolicy.replacementGenerationDidNotAppend(generation.id)
+            }
+            throw CancellationError()
+        }
+        if isUnopenedReplacement {
+            metadataPolicy.replacementGenerationDidAppend(generation.id)
+        }
+        await onGenerationOpened(generation.id)
+        do {
+            try saveProcessingMetadata(
+                layout.sessionURL, ProcessingMetadata(generationID: generation.id, state: .running, failureReason: nil)
+            )
+            guard let state = try ProcessingLogState(eventsURL: layout.eventsURL, sessionID: sessionID) else {
+                throw ProcessingLogStateError.missingGeneration
+            }
+            return OpenedGeneration(
+                state: state, startedNew: true,
+                replacementGeneration: isUnopenedReplacement ? .opened(generation.id) : .notOpened
+            )
+        } catch {
+            guard isUnopenedReplacement else { throw error }
+            throw GenerationOpeningFailure(
+                message: error.localizedDescription, replacementGeneration: .opened(generation.id)
+            )
+        }
     }
 
     private func settingsMatch(_ generation: PipelineGeneration, sampleRate: Double) -> Bool {
@@ -925,8 +1037,10 @@ public actor NativeSessionProcessor {
         var result: SessionProcessingResult
         var report: CompletionReport?
         switch drained {
-        case .completed(let completion, let metrics, let noSpeech):
-            result = .completed(metrics: metrics, noSpeech: noSpeech)
+        case .completed(let completion, let metrics, let noSpeech, let replacementGeneration):
+            result = .completed(
+                metrics: metrics, noSpeech: noSpeech, replacementGeneration: replacementGeneration
+            )
             report = completion
         case .ended(let ended):
             result = ended
@@ -943,14 +1057,20 @@ public actor NativeSessionProcessor {
                     layout: layout, sessionID: sessionID, message: "文字起こしは完了しましたが、音声の保存整理が中断されました"
                 )
                 await onPhase(.complete); await onStatus(.message(message)); await onUpdate(rows, .backlogged)
-                result = .paused(metrics: result.metrics, retained: .finalized, message: message)
+                result = .paused(
+                    metrics: result.metrics, retained: .finalized, message: message,
+                    replacementGeneration: result.replacementGeneration
+                )
             } catch {
                 let (rows, message) = rowsForFailure(
                     layout: layout, sessionID: sessionID,
                     message: "文字起こしは保存しましたが、録音を FLAC にできませんでした: \(error.localizedDescription)"
                 )
                 await onPhase(.complete); await onStatus(.message(message)); await onUpdate(rows, .partialFailure(message))
-                result = .failed(message: message, metrics: result.metrics, retained: .finalized)
+                result = .failed(
+                    message: message, metrics: result.metrics, retained: .finalized,
+                    replacementGeneration: result.replacementGeneration
+                )
             }
         }
         do {
@@ -963,17 +1083,23 @@ public actor NativeSessionProcessor {
                 let (rows, reportedMessage) = rowsForFailure(
                     layout: layout, sessionID: sessionID, message: "文字起こしは保存しましたが、\(message)"
                 )
-                result = .failed(message: reportedMessage, metrics: result.metrics, retained: .finalized)
+                result = .failed(
+                    message: reportedMessage, metrics: result.metrics, retained: .finalized,
+                    replacementGeneration: result.replacementGeneration
+                )
                 await onPhase(.complete)
                 await onStatus(.message(reportedMessage))
                 await onUpdate(rows, .partialFailure(reportedMessage))
             case .failed:
-                result = .failed(message: message, metrics: result.metrics, retained: result.retainedTranscript)
+                result = .failed(
+                    message: message, metrics: result.metrics, retained: result.retainedTranscript,
+                    replacementGeneration: result.replacementGeneration
+                )
                 await onStatus(.message(message))
             case .paused:
                 result = .paused(
                     metrics: result.metrics, retained: result.retainedTranscript ?? .nothing,
-                    message: message, reason: result.pauseReason
+                    message: message, reason: result.pauseReason, replacementGeneration: result.replacementGeneration
                 )
                 await onStatus(.message(message))
             }
@@ -1006,6 +1132,7 @@ enum NativeSessionProcessorError: LocalizedError {
     case unresolvedASRFailure
     case failedGenerationRequiresResume
     case sessionProcessingInProgress
+    case generationChanged(expected: UUID, actual: UUID?)
     case decisionCoordinatorInitializationFailed(String)
 
     var errorDescription: String? {
@@ -1018,6 +1145,8 @@ enum NativeSessionProcessorError: LocalizedError {
         case .unresolvedASRFailure: "未解決の durable ASR 失敗があるため処理を継続できません"
         case .failedGenerationRequiresResume: "失敗した世代は明示的な resume でのみ再開できます"
         case .sessionProcessingInProgress: "セッションの処理がすでに進行中です"
+        case .generationChanged(let expected, let actual):
+            "再処理の対象世代が変わりました（要求: \(expected.uuidString)、現在: \(actual?.uuidString ?? "なし")）"
         case .decisionCoordinatorInitializationFailed(let reason): "判定エンジンを初期化できませんでした: \(reason)"
         }
     }
