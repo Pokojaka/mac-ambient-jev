@@ -240,7 +240,7 @@ private actor ScriptedSessionProcessingExecutor: SessionProcessingExecuting {
         } catch is CancellationError {
             record("gateCancelled:\(sessionID.uuidString)")
             return .paused(
-                metrics: nil, retained: .nothing, message: "処理を中断しました", reason: nil,
+                metrics: nil, message: "処理を中断しました", reason: nil,
                 replacementGeneration: .notOpened
             )
         } catch {
@@ -324,13 +324,9 @@ private actor ScriptedSessionProcessingExecutor: SessionProcessingExecuting {
         onStatus: NativeSessionProcessor.StatusHandler
     ) async -> SessionProcessingResult {
         guard result.disposition == .paused, let holdReason else { return result }
-        guard let retainedTranscript = result.retainedTranscript else {
-            preconditionFailure("一時停止結果に保持する transcript がありません")
-        }
         await onStatus(.paused(holdReason))
         return .paused(
             metrics: result.metrics,
-            retained: retainedTranscript,
             message: holdReason.finalizationExplanation,
             replacementGeneration: result.replacementGeneration
         )
@@ -350,7 +346,6 @@ private func makeCoordinatorTestPauseResult() -> SessionProcessingResult {
         metrics: nil,
         message: "処理を一時停止しました",
         noSpeech: false,
-        retainedTranscript: .nothing,
         replacementGeneration: .notOpened
     )
 }
@@ -361,7 +356,7 @@ private func makeCoordinatorTestCompletedResult() -> SessionProcessingResult {
 
 private func makeCoordinatorTestFailedResult() -> SessionProcessingResult {
     .failed(
-        message: "確定処理に失敗しました", metrics: nil, retained: nil, replacementGeneration: .notOpened
+        message: "文字起こし処理に失敗しました", metrics: nil, replacementGeneration: .notOpened
     )
 }
 
@@ -818,7 +813,7 @@ func retryFailureIsForwardedUnchangedWithoutExport() async throws {
     let processor = ScriptedSessionProcessingExecutor(
         scriptedResults: [
             .failed(
-                message: failureMessage, metrics: nil, retained: .finalized, replacementGeneration: .notOpened
+                message: failureMessage, metrics: nil, replacementGeneration: .notOpened
             )
         ],
         eventLog: eventLog
@@ -844,7 +839,7 @@ func retryFailureIsForwardedUnchangedWithoutExport() async throws {
     #expect(result.disposition == .failed)
     #expect(result.message == failureMessage)
     #expect(result.metrics == nil)
-    #expect(result.retainedTranscript == .finalized)
+
     #expect(!result.noSpeech)
     #expect(effects.eventOrder.contains("finished:\(sessionID.uuidString):failed"))
     #expect(effects.exportCount == 0)
@@ -860,7 +855,7 @@ func postRetryPauseDoesNotHoldOrReplaceFailure() async throws {
     let processor = ScriptedSessionProcessingExecutor(
         scriptedResults: [
             .failed(
-                message: failureMessage, metrics: nil, retained: .finalized, replacementGeneration: .notOpened
+                message: failureMessage, metrics: nil, replacementGeneration: .notOpened
             )
         ],
         eventLog: eventLog
@@ -887,7 +882,7 @@ func postRetryPauseDoesNotHoldOrReplaceFailure() async throws {
     #expect(effects.pausesProcessing)
     #expect(result.disposition == .failed)
     #expect(result.message == failureMessage)
-    #expect(result.retainedTranscript == .finalized)
+
     #expect(effects.eventOrder.contains("finished:\(sessionID.uuidString):failed"))
     #expect(effects.processingQueue.held.isEmpty)
     #expect(effects.processingQueue.pending.isEmpty)
@@ -908,7 +903,7 @@ private func terminalRetryOutcomeWinsOverLatePause(
     switch outcome {
     case .failed:
         scriptedResult = .failed(
-                message: failureMessage, metrics: nil, retained: .finalized, replacementGeneration: .notOpened
+                message: failureMessage, metrics: nil, replacementGeneration: .notOpened
             )
     case .completed:
         scriptedResult = makeCoordinatorTestCompletedResult()
@@ -1058,7 +1053,7 @@ func recoveryFilteringExcludesRecordingMaintenanceFailuresPendingAndPublishedRet
         #expect(sessionID == finalizeID)
         #expect(metadataPolicy == .reject)
     } else {
-        #expect(Bool(false), "復旧候補は確定処理へ変換されます")
+        #expect(Bool(false), "復旧候補は文字起こし処理へ変換されます")
     }
     if case .retryContentPriority(_, let sessionID, let mappedBoundarySegments, let mappedClauses) = requests[1] {
         #expect(sessionID == recoverDecisionID)
@@ -1451,7 +1446,7 @@ func aPauseThatCooledBeforeTheHoldResumesAtOnce() async {
     let eventLog = CoordinatorTestEventLog()
     let effects = CoordinatorEffectsFake(pausesProcessing: false, liveFailure: nil, eventLog: eventLog)
     let pausedByHeat = SessionProcessingResult.paused(
-        metrics: nil, retained: .nothing, message: "発熱のため一時停止", reason: .thermal,
+        metrics: nil, message: "発熱のため一時停止", reason: .thermal,
         replacementGeneration: .notOpened
     )
     let processor = ScriptedSessionProcessingExecutor(

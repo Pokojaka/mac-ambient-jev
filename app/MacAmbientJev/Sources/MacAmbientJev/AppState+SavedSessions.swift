@@ -43,7 +43,6 @@ extension AppState {
             transcriptViewModel.setStatus("文字起こし表示を初期化できませんでした: \(error.localizedDescription)")
             return
         }
-        transcriptViewModel.setDisplayState(.empty)
         transcriptViewModel.setStatus("保存済みの文字起こしを読み込んでいます")
 
         guard case .readable(let session) = summary,
@@ -54,12 +53,11 @@ extension AppState {
         do {
             switch try SavedTranscriptLoader.load(sessionURL: sessionURL) {
             case .unavailable:
-                transcriptViewModel.setStatus("この録音には確定文字起こしがありません")
+                transcriptViewModel.setStatus("この録音には文字起こしがありません")
             case .segments(_, let segments):
                 try transcriptViewModel.update(segments: segments)
-                transcriptViewModel.setDisplayState(.finalized)
                 transcriptViewModel.setStatus(
-                    segments.isEmpty ? "確定文字起こしはありません" : "保存済み文字起こしを表示中"
+                    segments.isEmpty ? "文字起こしはありません" : "保存済み文字起こしを表示中"
                 )
                 Task { await probeExistingExport(sessionID: session.sessionID) }
             }

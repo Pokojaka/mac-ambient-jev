@@ -1,18 +1,11 @@
 import Foundation
 import MacAmbientJevCore
 
-public enum RetainedTranscript: Sendable, Equatable {
-    case finalized
-    case provisional
-    case nothing
-}
-
 public struct SessionProcessingResult: Sendable {
     public let disposition: BatchDisposition
     public let metrics: ASRBatchMetrics?
     public let message: String?
     public let noSpeech: Bool
-    public let retainedTranscript: RetainedTranscript?
     public let replacementGeneration: ReplacementGeneration
     /// Why a paused run stopped; nil for a cancellation.
     public var pauseReason: InferenceHoldReason? = nil
@@ -22,27 +15,24 @@ public struct SessionProcessingResult: Sendable {
         replacementGeneration: ReplacementGeneration
     ) -> SessionProcessingResult {
         SessionProcessingResult(disposition: .completed, metrics: metrics, message: nil,
-                                noSpeech: noSpeech, retainedTranscript: nil,
-                                replacementGeneration: replacementGeneration)
+                                noSpeech: noSpeech, replacementGeneration: replacementGeneration)
     }
 
     public static func paused(
-        metrics: ASRBatchMetrics?, retained: RetainedTranscript, message: String,
+        metrics: ASRBatchMetrics?, message: String,
         reason: InferenceHoldReason? = nil,
         replacementGeneration: ReplacementGeneration
     ) -> SessionProcessingResult {
         SessionProcessingResult(disposition: .paused, metrics: metrics, message: message,
-                                noSpeech: false, retainedTranscript: retained,
-                                replacementGeneration: replacementGeneration, pauseReason: reason)
+                                noSpeech: false, replacementGeneration: replacementGeneration, pauseReason: reason)
     }
 
     public static func failed(
-        message: String, metrics: ASRBatchMetrics?, retained: RetainedTranscript?,
+        message: String, metrics: ASRBatchMetrics?,
         replacementGeneration: ReplacementGeneration
     ) -> SessionProcessingResult {
         SessionProcessingResult(disposition: .failed, metrics: metrics, message: message,
-                                noSpeech: false, retainedTranscript: retained,
-                                replacementGeneration: replacementGeneration)
+                                noSpeech: false, replacementGeneration: replacementGeneration)
     }
 }
 
@@ -357,7 +347,6 @@ public actor NativeSessionProcessor {
         onUpdate: @escaping UpdateHandler
     ) async -> SessionProcessingResult {
         var retainedRows: [MaterializedTranscriptSegment] = []
-        var hasRetainedRows = false
         do {
             try Task.checkCancellation()
             guard !startingLiveSessions.contains(sessionID), !activeFinalizations.contains(sessionID),
@@ -377,7 +366,6 @@ public actor NativeSessionProcessor {
             }
             retainedRows = try TranscriptMaterializer(sampleRate: preview.state.generation.sampleRate)
                 .materialize(events: preview.events, activeRuns: preview.state.runs)
-            hasRetainedRows = true
             let stored = try reader.validateCompletion(
                 eventsURL: sessionLayout.eventsURL, sessionID: sessionID, frameCount: frameCount
             )
@@ -484,7 +472,6 @@ public actor NativeSessionProcessor {
                            ? .message("保留中の判定を更新しました") : .activity(.decisionDeferred))
             return .completed(metrics: nil, noSpeech: false, replacementGeneration: .notOpened)
         } catch {
-            let retained: RetainedTranscript = hasRetainedRows ? .finalized : .nothing
             let isDefinitiveRetryFailure: Bool
             switch error as? DecisionEnrichmentError {
             case .retryFailedDurably?, .retryCompletionPersistenceFailed?, .selectionConflict?,
@@ -496,7 +483,7 @@ public actor NativeSessionProcessor {
                 let message = "処理は中断されました。次回の起動時に再開できます"
                 await onStatus(.message(message))
                 return .paused(
-                    metrics: nil, retained: retained, message: message,
+                    metrics: nil, message: message,
                     replacementGeneration: .notOpened
                 )
             }
@@ -508,7 +495,7 @@ public actor NativeSessionProcessor {
                 await onStatus(.message(message))
             }
             return .failed(
-                message: message, metrics: nil, retained: retained, replacementGeneration: .notOpened
+                message: message, metrics: nil, replacementGeneration: .notOpened
             )
         }
     }
@@ -534,8 +521,7 @@ public actor NativeSessionProcessor {
             await onStatus(.message(message))
             await onUpdate(rows, .partialFailure(message))
             return .failed(
-                message: message, metrics: nil, retained: rows.isEmpty ? .nothing : .finalized,
-                replacementGeneration: metadataPolicy.replacementGeneration
+                message: message, metrics: nil, replacementGeneration: metadataPolicy.replacementGeneration
             )
         }
         defer { activeFinalizations.remove(sessionID) }
@@ -558,7 +544,7 @@ public actor NativeSessionProcessor {
                 onPhase: onPhase, onStatus: onStatus, onUpdate: onUpdate
             )
         } catch {
-            var message = "確定処理を開始できませんでした: \(error.localizedDescription)"
+            var message = "文字起こし処理を開始できませんでした: \(error.localizedDescription)"
             if let resolvedLayout, let loadedManifest {
                 do { try SessionTransientAudio.remove(layout: resolvedLayout, source: loadedManifest.source) }
                 catch { message += "（音声の一時ファイルを削除できませんでした: \(error.localizedDescription)）" }
@@ -570,8 +556,7 @@ public actor NativeSessionProcessor {
             await onStatus(.message(reportedMessage))
             await onUpdate(rows, .partialFailure(reportedMessage))
             return .failed(
-                message: reportedMessage, metrics: nil, retained: rows.isEmpty ? .nothing : .finalized,
-                replacementGeneration: metadataPolicy.replacementGeneration
+                message: reportedMessage, metrics: nil, replacementGeneration: metadataPolicy.replacementGeneration
             )
         }
     }
@@ -702,18 +687,16 @@ public actor NativeSessionProcessor {
                     else { await onStatus(.message(reportedMessage)) }
                     await onUpdate(rows, .backlogged)
                     return .ended(.paused(
-                        metrics: metrics, retained: rows.isEmpty ? .nothing : .finalized,
-                        message: reportedMessage, reason: reason,
+                        metrics: metrics, message: reportedMessage, reason: reason,
                         replacementGeneration: replacementGeneration
                     ))
                 case .failed(let failure):
                     let message = failure.localizedDescription
                     try saveStatus(sessionID: sessionID, layout: layout, generationID: generationID, state: .failed, reason: message)
                     let (rows, reportedMessage) = rowsForFailure(layout: layout, sessionID: sessionID, message: message)
-                    await onPhase(.complete); await onStatus(.message("確定処理に失敗しました: \(reportedMessage)")); await onUpdate(rows, .partialFailure(reportedMessage))
+                    await onPhase(.complete); await onStatus(.message("文字起こし処理に失敗しました: \(reportedMessage)")); await onUpdate(rows, .partialFailure(reportedMessage))
                     return .ended(.failed(
                         message: reportedMessage, metrics: metrics,
-                        retained: rows.isEmpty ? .nothing : .finalized,
                         replacementGeneration: replacementGeneration
                     ))
                 case .completed: break
@@ -779,8 +762,8 @@ public actor NativeSessionProcessor {
             // The error decides: only a cancellation pauses. A read, validation or saved failure stays
             // failed even when a shutdown cancelled the task meanwhile.
             let cancelled = error is CancellationError || error is ASRRunCancellation
-            var message = cancelled ? "確定処理が中断されたため、一時停止しました"
-                : attemptGenerationID == nil ? "確定処理を開始できませんでした: \(error.localizedDescription)"
+            var message = cancelled ? "文字起こし処理が中断されたため、一時停止しました"
+                : attemptGenerationID == nil ? "文字起こし処理を開始できませんでした: \(error.localizedDescription)"
                 : error.localizedDescription
             if let generationID = attemptGenerationID {
                 do {
@@ -793,17 +776,15 @@ public actor NativeSessionProcessor {
             await onPhase(.complete)
             let statusText = cancelled || attemptGenerationID == nil
                 ? reportedMessage
-                : "確定処理に失敗しました: \(reportedMessage)"
+                : "文字起こし処理に失敗しました: \(reportedMessage)"
             await onStatus(.message(statusText))
             await onUpdate(rows, cancelled ? .backlogged : .partialFailure(reportedMessage))
             return .ended(cancelled
                 ? .paused(
-                    metrics: metrics, retained: rows.isEmpty ? .nothing : .finalized,
-                    message: reportedMessage, replacementGeneration: replacementGeneration
+                    metrics: metrics, message: reportedMessage, replacementGeneration: replacementGeneration
                 )
                 : .failed(
                     message: reportedMessage, metrics: metrics,
-                    retained: rows.isEmpty ? .nothing : .finalized,
                     replacementGeneration: replacementGeneration
                 ))
         }
@@ -1058,7 +1039,7 @@ public actor NativeSessionProcessor {
                 )
                 await onPhase(.complete); await onStatus(.message(message)); await onUpdate(rows, .backlogged)
                 result = .paused(
-                    metrics: result.metrics, retained: .finalized, message: message,
+                    metrics: result.metrics, message: message,
                     replacementGeneration: result.replacementGeneration
                 )
             } catch {
@@ -1068,8 +1049,7 @@ public actor NativeSessionProcessor {
                 )
                 await onPhase(.complete); await onStatus(.message(message)); await onUpdate(rows, .partialFailure(message))
                 result = .failed(
-                    message: message, metrics: result.metrics, retained: .finalized,
-                    replacementGeneration: result.replacementGeneration
+                    message: message, metrics: result.metrics, replacementGeneration: result.replacementGeneration
                 )
             }
         }
@@ -1084,22 +1064,19 @@ public actor NativeSessionProcessor {
                     layout: layout, sessionID: sessionID, message: "文字起こしは保存しましたが、\(message)"
                 )
                 result = .failed(
-                    message: reportedMessage, metrics: result.metrics, retained: .finalized,
-                    replacementGeneration: result.replacementGeneration
+                    message: reportedMessage, metrics: result.metrics, replacementGeneration: result.replacementGeneration
                 )
                 await onPhase(.complete)
                 await onStatus(.message(reportedMessage))
                 await onUpdate(rows, .partialFailure(reportedMessage))
             case .failed:
                 result = .failed(
-                    message: message, metrics: result.metrics, retained: result.retainedTranscript,
-                    replacementGeneration: result.replacementGeneration
+                    message: message, metrics: result.metrics, replacementGeneration: result.replacementGeneration
                 )
                 await onStatus(.message(message))
             case .paused:
                 result = .paused(
-                    metrics: result.metrics, retained: result.retainedTranscript ?? .nothing,
-                    message: message, reason: result.pauseReason, replacementGeneration: result.replacementGeneration
+                    metrics: result.metrics, message: message, reason: result.pauseReason, replacementGeneration: result.replacementGeneration
                 )
                 await onStatus(.message(message))
             }
@@ -1138,7 +1115,7 @@ enum NativeSessionProcessorError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .liveASRSessionNotStarted: "録音中の文字起こしセッションが開始されていません"
-        case .transcriptNotPublished: "確定済みの文字起こし run がありません"
+        case .transcriptNotPublished: "文字起こし run がありません"
         case .duplicateDecisionRetryTarget: "判定の再試行対象が重複しています"
         case .noDecisionRetryTargets: "判定の再試行対象がありません"
         case .contentPriorityUnavailable: "判定エンジンが利用できません"

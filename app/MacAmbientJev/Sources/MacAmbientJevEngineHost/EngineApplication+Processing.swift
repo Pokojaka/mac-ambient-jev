@@ -146,7 +146,7 @@ extension EngineApplicationCore: SessionProcessingEffects {
             finalizationResourceHoldReason = nil
             if item.kind != .decisionRetry, item.sessionID == watchedSessionID { watchedSessionIsFinal = false }
         case let .liveFailed(message):
-            let notice = "ライブ文字起こしは停止しました。録音全体を確定処理します: \(message)"
+            let notice = "ライブ文字起こしは停止しました: \(message)"
             addLiveFailureNotice(notice)
             report(EngineFailures.failure(
                 code: .processingFailure, message: notice,

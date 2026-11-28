@@ -101,7 +101,7 @@ func thermalPauseIsSavedAsPausedRecoveredAndCompletedOnRerun() async throws {
 
     #expect(paused.disposition == .paused)
     #expect(paused.metrics?.initialPendingCount == 2)
-    #expect(paused.retainedTranscript == .finalized)
+
     #expect(await asr.calls == 1)
     #expect(await vad.calls == 1)
     let pausedMetadata = try #require(try ProcessingMetadataStore(sessionURL: sessionURL).load())

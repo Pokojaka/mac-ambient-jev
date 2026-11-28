@@ -66,16 +66,16 @@ extension AppState {
         { [weak self] segments, state in
             await MainActor.run {
                 guard let self,
-                      self.displayedSessionID == sessionID,
                       self.recordingSessionID == sessionID
                         || (self.processingQueue.currentSessionID == sessionID
                             && self.liveCoordinator.isDraining(sessionID: sessionID)) else { return }
+                if state == .complete {
+                    self.clearProcessingSession(sessionID)
+                }
+                guard self.displayedSessionID == sessionID else { return }
                 do {
                     try self.transcriptViewModel.update(segments: segments)
                     self.processingState = state
-                    self.transcriptViewModel.setDisplayState(
-                        self.recordingPhase == .recording ? .live : .finalizing
-                    )
                 } catch {
                     let message = "文字起こし表示を更新できませんでした: \(error.localizedDescription)"
                     self.processingState = .partialFailure(message)
@@ -116,7 +116,7 @@ extension AppState: LiveTranscriptionEffects {
     func liveDidChange(_ event: LiveTranscriptionEvent) {
         switch event {
         case .started:
-            transcriptViewModel.setDisplayState(.live)
+            break
         case .startFailed(let sessionID, let message):
             guard isCurrentRecording(sessionID) else { return }
             processingStatusText =

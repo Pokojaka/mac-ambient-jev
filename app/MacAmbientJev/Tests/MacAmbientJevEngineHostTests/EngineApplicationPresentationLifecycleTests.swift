@@ -695,8 +695,7 @@ private struct LifecycleScanFailure: Error, LocalizedError {
         fixture.app.core.processingDidChange(.finished(
             item,
             .failed(
-                message: cleanupFailure, metrics: nil, retained: .finalized,
-                replacementGeneration: .notOpened
+                message: cleanupFailure, metrics: nil, replacementGeneration: .notOpened
             )
         ))
         let partialFailure = try await fixture.waitForState(after: beforeFinished.revision.value) { state in

@@ -83,7 +83,7 @@ public enum SessionRecoveryScannerError: Error, LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .missingAudio:
-            "確定処理が途中のセッションに音声がありません"
+            "文字起こし処理が途中のセッションに音声がありません"
         case .unreadableManifest(let reason):
             "セッション情報を読めません: \(reason)"
         }

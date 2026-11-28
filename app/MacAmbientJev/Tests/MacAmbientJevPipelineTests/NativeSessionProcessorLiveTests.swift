@@ -1858,7 +1858,7 @@ func nativeRetryWithoutTargetsOrUnpublishedRunFailsAndRetainsPublishedSnapshot()
     let expectedMessage = "発話文の判定を再試行できませんでした: 判定の再試行対象がありません"
     #expect(result.disposition == .failed)
     #expect(result.message == expectedMessage)
-    #expect(result.retainedTranscript == .finalized)
+
     #expect(try store.load() == before)
     #expect(try fixture.rows() == publishedRows)
     #expect(await updates.snapshot().isEmpty)
@@ -1905,7 +1905,7 @@ func nativeRetryWithoutContentPriorityFailsAndRetainsPublishedSnapshot() async t
     let expectedMessage = "発話文の判定を再試行できませんでした: 判定エンジンが利用できません"
     #expect(result.disposition == .failed)
     #expect(result.message == expectedMessage)
-    #expect(result.retainedTranscript == .finalized)
+
     #expect(try store.load() == before)
     #expect(try fixture.rows() == publishedRows)
     #expect(await updates.snapshot().isEmpty)
@@ -1951,7 +1951,7 @@ func nativeRetryCoordinatorInitializationFailurePreservesDeferredEngineStatusAnd
     let expectedDeferredStatus = "\(UserFacingStatus.decisionDeferred.text)。\(engineFailure)"
     #expect(result.disposition == .failed)
     #expect(result.message == expectedMessage)
-    #expect(result.retainedTranscript == .finalized)
+
     #expect(await statuses.statuses == [.message(expectedDeferredStatus)])
     #expect(try store.load() == before)
     #expect(try fixture.rows() == publishedRows)

@@ -100,7 +100,7 @@ public struct ASRRunFailure: Error, LocalizedError, Sendable, Equatable {
         if let persistenceFailure {
             parts.append("イベントログへ保存できませんでした: \(persistenceFailure)")
         }
-        return "確定文字起こしで\(failedSegmentCount)区間失敗しました。" + parts.joined(separator: "。")
+        return "文字起こしで\(failedSegmentCount)区間失敗しました。" + parts.joined(separator: "。")
     }
 }
 

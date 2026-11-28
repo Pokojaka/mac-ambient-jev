@@ -30,7 +30,7 @@ extension EngineApplicationCore: EngineRecordingHandling {
         }
         guard !hasRunnableOrRunningProcessing else {
             throw EngineFailures.commandError(
-                .busy, "文字起こしの確定処理が実行中のため録音を開始できません", stage: .capture, recoveryAction: .retry
+                .busy, "文字起こしの文字起こし処理が実行中のため録音を開始できません", stage: .capture, recoveryAction: .retry
             )
         }
 

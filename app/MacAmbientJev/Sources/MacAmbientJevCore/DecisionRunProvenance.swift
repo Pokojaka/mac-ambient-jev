@@ -95,7 +95,7 @@ public enum DecisionEnrichmentError: LocalizedError, Sendable, Equatable {
         case .selectionOutcomeUnknown(let reason):
             "判定の選択を保存できたか確認できません。セッションを開き直してください（\(reason)）"
         case .missingPublishedTranscript:
-            "確定済みの文字起こしがありません"
+            "文字起こしがありません"
         case .invalidSourceTimeline:
             "音声認識の原文区間、範囲、または順序が不正です"
         case .retryRequestFailed(let message):

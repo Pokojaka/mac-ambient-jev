@@ -42,7 +42,7 @@ public enum UserFacingStatus: Sendable, Equatable {
         case .decisionDeferred:
             return "発話文の判定を保留しました"
         case .finalizationPausedForHeat:
-            return "発熱のため確定処理を一時停止中"
+            return "発熱のため残りの処理を一時停止中"
         }
     }
 }

@@ -300,7 +300,7 @@ extension EngineApplicationCore {
             switch try SavedTranscriptLoader.load(sessionURL: session.sessionURL) {
             case .unavailable:
                 throw EngineFailures.commandError(
-                    .processingFailure, "確定済みの文字起こしを読み込めませんでした", stage: .finalization,
+                    .processingFailure, "文字起こしを読み込めませんでした", stage: .finalization,
                     sessionID: sessionID, recoveryAction: .reprocess
                 )
             case let .segments(savedGenerationID, segments):

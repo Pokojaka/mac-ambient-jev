@@ -42,6 +42,19 @@ import MacAmbientJevRuntime
     #expect(state.selectedSavedSessionURL == first)
     #expect(state.displayedSessionID == id)
     #expect(state.readableSavedSession(id)?.sessionURL == first)
+    let otherID = UUID()
+    _ = try SessionBootstrapper(fileManager: .default).createSession(
+        paths: paths, sessionID: otherID, source: .recording(.microphone),
+        createdAt: Date(timeIntervalSince1970: 1_700_000_010), timeZone: TimeZone(secondsFromGMT: 0)!
+    )
+    state.refreshSavedSessions()
+    state.processingGenerationDidOpen(sessionID: id, generationID: UUID())
+    #expect(state.transcriptViewModel.isProcessingRemaining)
+    state.selectSavedSession(sessionID: otherID)
+    #expect(!state.transcriptViewModel.isProcessingRemaining)
+    state.selectSavedSession(sessionID: id)
+    #expect(state.transcriptViewModel.isProcessingRemaining)
+    state.clearProcessingSession(id)
     let second = try SessionBootstrapper(fileManager: .default).createSession(
         paths: paths, sessionID: id, source: .recording(.microphone),
         createdAt: Date(timeIntervalSince1970: 1_700_000_001), timeZone: TimeZone(secondsFromGMT: 0)!

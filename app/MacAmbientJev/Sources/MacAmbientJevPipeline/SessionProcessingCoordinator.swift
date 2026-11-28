@@ -583,8 +583,7 @@ public final class SessionProcessingCoordinator {
                     hold(request, for: reason)
                     finalization = SessionProcessingResult(
                         disposition: .paused, metrics: nil, message: reason?.finalizationExplanation,
-                        noSpeech: false, retainedTranscript: nil,
-                        replacementGeneration: metadataPolicy.replacementGeneration
+                        noSpeech: false, replacementGeneration: metadataPolicy.replacementGeneration
                     )
                     if let reason { await statusHandler(.paused(reason)) }
                     if !keepsWorker { await discardLiveWorker(sessionID: sessionID) }
@@ -624,7 +623,6 @@ public final class SessionProcessingCoordinator {
                         metrics: nil,
                         message: nil,
                         noSpeech: false,
-                        retainedTranscript: nil,
                         replacementGeneration: .notOpened
                     )
                 } else {
