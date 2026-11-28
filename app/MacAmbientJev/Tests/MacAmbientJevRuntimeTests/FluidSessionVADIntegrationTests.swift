@@ -20,7 +20,7 @@ private actor FinalizationSleepRecorder {
     func snapshot() -> [Duration] { durations }
 }
 
-private struct FakeFinalVAD: FinalTranscriptVADSegmenter {
+private struct FakeFinalVAD: SessionVADSegmenter {
     let provenance = RunProvenance(engine: "fake-vad", model: nil, version: "test", configuration: [:])
     let segments: [SegmentReference]
     let log: FinalizationCallLog
@@ -90,7 +90,7 @@ private func finalizationFixture(
 }
 
 @Test
-func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
+func sessionProcessingForwardsPacingAndPauseToASR() async throws {
     let sourceSessionID = UUID()
     let (paths, sourceSessionURL, checkpoint) = try await finalizationFixture(sessionID: sourceSessionID)
     defer { try? FileManager.default.removeItem(at: sourceSessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
@@ -119,7 +119,7 @@ func finalTranscriptPipelineForwardsPacingAndPauseToASR() async throws {
         paths: paths,
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: ["前半", "後半"]),
-            finalTranscriptVAD: FakeFinalVAD(
+            sessionVAD: FakeFinalVAD(
                 segments: [
                     SegmentReference(segmentationRunID: "ignored", segmentID: "vad_1", speechRanges: [0..<8_000]),
                     SegmentReference(segmentationRunID: "ignored", segmentID: "vad_2", speechRanges: [8_000..<16_000])

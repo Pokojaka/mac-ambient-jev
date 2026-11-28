@@ -16,7 +16,7 @@ private actor FileVADCallRecorder {
     func recordedRunIDs() -> [String] { runIDs }
 }
 
-private struct FakeFileVAD: FinalTranscriptVADSegmenter {
+private struct FakeFileVAD: SessionVADSegmenter {
     let provenance = RunProvenance(engine: "fake-file-vad", model: nil, version: "test", configuration: [:])
     let segments: [FileSegmentSpec]
     let recorder: FileVADCallRecorder

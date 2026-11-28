@@ -10,7 +10,7 @@ private let storageHarnessProvenance = RunProvenance(
     engine: "storage-harness", model: nil, version: "1", configuration: [:]
 )
 
-private struct StorageHarnessVAD: FinalTranscriptVADSegmenter {
+private struct StorageHarnessVAD: SessionVADSegmenter {
     let provenance = storageHarnessProvenance
 
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
@@ -131,7 +131,7 @@ func storageDiskUsageHarness() async throws {
     let processor = NativeSessionProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
-            asr: StorageHarnessASR(), finalTranscriptVAD: StorageHarnessVAD()
+            asr: StorageHarnessASR(), sessionVAD: StorageHarnessVAD()
         ),
         audioHandling: SessionProcessingAudio(timelineBuilder: AudioFileTimelineBuilder()),
         contentPriority: .disabled,

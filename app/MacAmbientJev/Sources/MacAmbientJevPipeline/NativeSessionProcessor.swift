@@ -38,11 +38,11 @@ public struct SessionProcessingResult: Sendable {
 
 public struct SessionProcessingEngines: Sendable {
     public let asr: any ASREngine
-    public let finalTranscriptVAD: any FinalTranscriptVADSegmenter
+    public let sessionVAD: any SessionVADSegmenter
 
-    public init(asr: any ASREngine, finalTranscriptVAD: any FinalTranscriptVADSegmenter) {
+    public init(asr: any ASREngine, sessionVAD: any SessionVADSegmenter) {
         self.asr = asr
-        self.finalTranscriptVAD = finalTranscriptVAD
+        self.sessionVAD = sessionVAD
     }
 }
 
@@ -111,7 +111,7 @@ public actor NativeSessionProcessor {
 
     private let sessionsRoot: URL
     private let asr: any ASREngine
-    private let finalTranscriptVAD: any FinalTranscriptVADSegmenter
+    private let sessionVAD: any SessionVADSegmenter
     private let audioHandling: any SessionProcessingAudioHandling
     private let contentPriority: ContentPriorityAccess
     private let sleep: @Sendable (Duration) async throws -> Void
@@ -136,7 +136,7 @@ public actor NativeSessionProcessor {
     ) {
         sessionsRoot = paths.sessionsRoot
         asr = engines.asr
-        finalTranscriptVAD = engines.finalTranscriptVAD
+        sessionVAD = engines.sessionVAD
         self.audioHandling = audioHandling
         self.contentPriority = contentPriority
         self.sleep = sleep
@@ -652,7 +652,7 @@ public actor NativeSessionProcessor {
             if worker == nil { await live?.decisions?.stop() }
             try await StoredSegmentation.finish(
                 state: state, sessionID: sessionID, audio: audio,
-                segmenter: finalTranscriptVAD, writer: writer
+                segmenter: sessionVAD, writer: writer
             )
             try Task.checkCancellation()
 
@@ -909,7 +909,7 @@ public actor NativeSessionProcessor {
         )
         let generation = PipelineGeneration(
             id: UUID(), runs: runs, sampleRate: sampleRate,
-            segmentationProvenance: finalTranscriptVAD.provenance, asrProvenance: asr.provenance
+            segmentationProvenance: sessionVAD.provenance, asrProvenance: asr.provenance
         )
         if isUnopenedReplacement {
             try metadataPolicy.reserveReplacementGeneration(generation.id)
@@ -947,7 +947,7 @@ public actor NativeSessionProcessor {
 
     private func settingsMatch(_ generation: PipelineGeneration, sampleRate: Double) -> Bool {
         generation.sampleRate == sampleRate
-            && generation.segmentationProvenance == finalTranscriptVAD.provenance
+            && generation.segmentationProvenance == sessionVAD.provenance
             && generation.asrProvenance == asr.provenance
             && ((generation.runs.clauseBoundary != nil) == hasDecisionPair)
             && ((generation.runs.contentPriority != nil) == hasDecisionPair)

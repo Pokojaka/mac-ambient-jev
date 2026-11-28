@@ -126,7 +126,7 @@ struct FakeASR: ASREngine {
     func unload() async { calls.increment("asr.unload") }
 }
 
-struct FakeFinalVAD: FinalTranscriptVADSegmenter {
+struct FakeFinalVAD: SessionVADSegmenter {
     let provenance = RunProvenance(engine: "host-test-vad", model: nil, version: "test", configuration: [:])
 
     /// Splits the recording into `segmentCount` segments; `FakeLiveVAD` and the multi-segment live VAD emit the same ones.
@@ -224,7 +224,7 @@ final class FakeInferenceProvider: EngineInferenceProviding, @unchecked Sendable
 
     func makeInference(settings: EngineSettings) throws -> EngineInference {
         EngineInference(
-            engines: SessionProcessingEngines(asr: FakeASR(calls: calls), finalTranscriptVAD: FakeFinalVAD()),
+            engines: SessionProcessingEngines(asr: FakeASR(calls: calls), sessionVAD: FakeFinalVAD()),
             contentPriority: .disabled,
             timelineBuilder: FakeTimelineBuilder(),
             makeLiveVADSession: { _, _, _, runID in FakeLiveVAD(segmentationRunID: runID) }

@@ -11,7 +11,7 @@ public protocol SessionProcessingAudioHandling: Sendable {
     func convergeStorage(layout: SessionLayout, manifest: SessionManifest) async throws
 }
 
-public protocol FinalTranscriptVADSegmenter: Sendable {
+public protocol SessionVADSegmenter: Sendable {
     var provenance: RunProvenance { get }
     func segment(
         reader: any TimelineAudioReading,
@@ -36,7 +36,7 @@ enum StoredSegmentation {
         state: ProcessingLogState,
         sessionID: UUID,
         audio: any TimelineAudioReading,
-        segmenter: any FinalTranscriptVADSegmenter,
+        segmenter: any SessionVADSegmenter,
         writer: SessionWriter
     ) async throws {
         let generationID = state.generation.id

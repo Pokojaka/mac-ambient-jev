@@ -42,12 +42,12 @@ public enum FileTranscriptionPipelineError: LocalizedError, Sendable, Equatable 
 public struct FileTranscriptionPipeline: Sendable {
     private let audio: any TimelineAudioReading
     private let asr: any ASREngine
-    private let vadSegmenter: any FinalTranscriptVADSegmenter
+    private let vadSegmenter: any SessionVADSegmenter
 
     public init(
         audio: any TimelineAudioReading,
         asr: any ASREngine,
-        vadSegmenter: any FinalTranscriptVADSegmenter
+        vadSegmenter: any SessionVADSegmenter
     ) {
         self.audio = audio
         self.asr = asr

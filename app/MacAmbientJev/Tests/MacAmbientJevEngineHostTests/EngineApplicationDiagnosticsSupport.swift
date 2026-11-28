@@ -119,7 +119,7 @@ final class DiagnosticsInferenceProvider: EngineInferenceProviding, @unchecked S
         return EngineInference(
             engines: SessionProcessingEngines(
                 asr: FakeASR(calls: calls),
-                finalTranscriptVAD: FakeFinalVAD()
+                sessionVAD: FakeFinalVAD()
             ),
             contentPriority: .localTagger({ try factory.makeCoordinator() }, usageCounter: usageCounter),
             timelineBuilder: FakeTimelineBuilder(),

@@ -8,7 +8,7 @@ private enum UnexpectedLiveTestFinalization: Error {
     case called
 }
 
-private struct UnusedLiveTestVAD: FinalTranscriptVADSegmenter {
+private struct UnusedLiveTestVAD: SessionVADSegmenter {
     let provenance = RunProvenance(engine: "unused-live-test-vad", model: nil, version: "test", configuration: [:])
 
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
@@ -133,7 +133,7 @@ func nativeSessionProcessorStreamsLiveSegmentsWithoutRealModel() async throws {
         paths: paths,
         engines: SessionProcessingEngines(
             asr: asr,
-            finalTranscriptVAD: UnusedLiveTestVAD()
+            sessionVAD: UnusedLiveTestVAD()
         ),
         audioHandling: RecordingTestAudioHandling(),
         contentPriority: .disabled,
@@ -212,7 +212,7 @@ private actor ScriptedStopASR: ASREngine {
     func setOnCall(_ callback: (@Sendable (Int) -> Void)?) { onCall = callback }
 }
 
-private actor CountingStopFinalVAD: FinalTranscriptVADSegmenter {
+private actor CountingStopFinalVAD: SessionVADSegmenter {
     nonisolated let provenance = RunProvenance(engine: "counting-reprocess-vad", model: nil, version: "test", configuration: [:])
     private var calls = 0
 
@@ -271,7 +271,7 @@ private func makeStopFixture(asr: ScriptedStopASR) async throws -> StopFixture {
     let finalVAD = CountingStopFinalVAD()
     let processor = NativeSessionProcessor(
         paths: paths,
-        engines: SessionProcessingEngines(asr: asr, finalTranscriptVAD: finalVAD),
+        engines: SessionProcessingEngines(asr: asr, sessionVAD: finalVAD),
         audioHandling: RecordingTestAudioHandling(), contentPriority: .disabled, sleep: { _ in }
     )
     // The live side runs through the real coordinator: its stop seals and completes the segmentation.
@@ -303,7 +303,7 @@ private func makeStopFixture(asr: ScriptedStopASR) async throws -> StopFixture {
                        checkpoint: checkpoint, segments: [first, segmentFor(runID, 2)], finalVAD: finalVAD)
 }
 
-private actor CountingStoredVAD: FinalTranscriptVADSegmenter {
+private actor CountingStoredVAD: SessionVADSegmenter {
     nonisolated let provenance = RunProvenance(engine: "counting-stored-vad", model: nil, version: "test", configuration: [:])
     private var calls = 0
 
@@ -360,7 +360,7 @@ func aVADThatFailedDoesNotCertifySegmentationAndStopReplaysTheStoredVAD() async 
     let storedVAD = CountingStoredVAD()
     let processor = NativeSessionProcessor(
         paths: paths,
-        engines: SessionProcessingEngines(asr: ScriptedStopASR(), finalTranscriptVAD: storedVAD),
+        engines: SessionProcessingEngines(asr: ScriptedStopASR(), sessionVAD: storedVAD),
         audioHandling: RecordingTestAudioHandling(), contentPriority: .disabled, sleep: { _ in }
     )
     let effects = await StopTestEffects(sessionID: sessionID, checkpoint: checkpoint)
@@ -810,7 +810,7 @@ func aBatchStoppedByHeatResumesItsOwnSegmentsWhileALaterSegmentWaitsForItsBatch(
     let asr = HeatingLiveASR(thermal: thermal)
     let processor = NativeSessionProcessor(
         paths: paths,
-        engines: SessionProcessingEngines(asr: asr, finalTranscriptVAD: UnusedLiveTestVAD()),
+        engines: SessionProcessingEngines(asr: asr, sessionVAD: UnusedLiveTestVAD()),
         audioHandling: RecordingTestAudioHandling(), contentPriority: .disabled, sleep: { _ in }
     )
     let runID = try await processor.startLiveTranscription(
@@ -932,7 +932,7 @@ func cancelledLiveTranscriptionDoesNotPublishInFlightResult() async throws {
         paths: paths,
         engines: SessionProcessingEngines(
             asr: asr,
-            finalTranscriptVAD: UnusedLiveTestVAD()
+            sessionVAD: UnusedLiveTestVAD()
         ),
         audioHandling: RecordingTestAudioHandling(),
         contentPriority: .disabled,
@@ -976,7 +976,7 @@ private actor ScriptedLiveProcessorASR: ASREngine {
     func unload() async {}
 }
 
-private struct LiveProcessorFinalVAD: FinalTranscriptVADSegmenter {
+private struct LiveProcessorFinalVAD: SessionVADSegmenter {
     let provenance = RunProvenance(engine: "fixture-vad", model: nil, version: "test", configuration: [:])
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
         [SegmentReference(segmentationRunID: runID, segmentID: "final", speechRanges: [0..<16_000])]
@@ -1106,7 +1106,7 @@ private struct NativeDecisionFixture {
         asr = ScriptedLiveProcessorASR(texts: texts)
         processor = NativeSessionProcessor(
             paths: paths,
-            engines: SessionProcessingEngines(asr: asr, finalTranscriptVAD: LiveProcessorFinalVAD()),
+            engines: SessionProcessingEngines(asr: asr, sessionVAD: LiveProcessorFinalVAD()),
             audioHandling: RecordingTestAudioHandling(),
             contentPriority: .localTagger(factory, usageCounter: counter),
             sleep: { _ in },
@@ -1238,7 +1238,7 @@ func aFirstDecisionPairMustCoverEveryRecognizedSource() async throws {
     defer { try? FileManager.default.removeItem(at: fixture.root) }
     let decisionsOff = NativeSessionProcessor(
         paths: fixture.paths,
-        engines: SessionProcessingEngines(asr: fixture.asr, finalTranscriptVAD: LiveProcessorFinalVAD()),
+        engines: SessionProcessingEngines(asr: fixture.asr, sessionVAD: LiveProcessorFinalVAD()),
         audioHandling: RecordingTestAudioHandling(), contentPriority: .disabled, sleep: { _ in }
     )
     _ = await decisionsOff.processSession(
@@ -1887,7 +1887,7 @@ func nativeRetryWithoutContentPriorityFailsAndRetainsPublishedSnapshot() async t
     let disabledProcessor = NativeSessionProcessor(
         paths: fixture.paths,
         engines: SessionProcessingEngines(
-            asr: fixture.asr, finalTranscriptVAD: LiveProcessorFinalVAD()
+            asr: fixture.asr, sessionVAD: LiveProcessorFinalVAD()
         ),
         audioHandling: RecordingTestAudioHandling(), contentPriority: .disabled, sleep: { _ in }
     )

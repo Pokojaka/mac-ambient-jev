@@ -3,7 +3,7 @@ import MacAmbientJevCore
 import MacAmbientJevONNX
 import MacAmbientJevPipeline
 
-public struct SileroFinalTranscriptVADSegmenter: FinalTranscriptVADSegmenter {
+public struct SileroSessionVADSegmenter: SessionVADSegmenter {
     private let environment: ONNXEnvironment
     private let modelURL: URL
     private let intraOpThreads: Int

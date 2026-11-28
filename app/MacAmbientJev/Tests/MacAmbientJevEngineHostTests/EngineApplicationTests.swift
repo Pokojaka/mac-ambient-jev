@@ -575,7 +575,7 @@ private actor OfflineFinalizationGate {
     }
 }
 
-private struct GatedOfflineFinalTranscriptVAD: FinalTranscriptVADSegmenter {
+private struct GatedOfflineSessionVAD: SessionVADSegmenter {
     let gate: OfflineFinalizationGate
     let provenance = RunProvenance(engine: "host-test-vad", model: nil, version: "test", configuration: [:])
 
@@ -631,7 +631,7 @@ private final class GatedFinalizationInferenceProvider: EngineInferenceProviding
         EngineInference(
             engines: SessionProcessingEngines(
                 asr: FakeASR(calls: calls),
-                finalTranscriptVAD: GatedOfflineFinalTranscriptVAD(gate: gate)
+                sessionVAD: GatedOfflineSessionVAD(gate: gate)
             ),
             contentPriority: .disabled,
             timelineBuilder: FakeTimelineBuilder(),

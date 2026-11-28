@@ -18,7 +18,7 @@ private func fluidExpectation(
         from: models.verifiedDirectory(.vad), config: FluidVADSegmentationEngine.vadConfig
     )
     let probabilities = try await manager.process(samples).map(\.probability)
-    let segments = try await FluidFinalTranscriptVADSegmenter(models: models).segment(
+    let segments = try await FluidSessionVADSegmenter(models: models).segment(
         reader: VADParityTimeline(samples: samples), runID: "parity"
     )
     return VADParityExpectation(
@@ -44,7 +44,7 @@ struct VADParityFixtureTests {
             cases.append(try await fluidExpectation(for: parityCase, clip: clip))
         }
         try VADParityFile(
-            generator: "\(FluidFinalTranscriptVADSegmenter.version) \(Repo.vad.rawValue)",
+            generator: "\(FluidSessionVADSegmenter.version) \(Repo.vad.rawValue)",
             cases: cases
         ).write()
     }

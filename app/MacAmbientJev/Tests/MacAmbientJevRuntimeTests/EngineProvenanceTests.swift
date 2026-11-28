@@ -53,5 +53,5 @@ func productionEngineProvenanceNamesHaasAndResolvedFluidAudioPin() throws {
             "maximum_input_seconds": "30.0",
         ]
     ))
-    #expect(production.finalTranscriptVAD.provenance.version == "FluidAudio@\(fluidAudio)")
+    #expect(production.sessionVAD.provenance.version == "FluidAudio@\(fluidAudio)")
 }

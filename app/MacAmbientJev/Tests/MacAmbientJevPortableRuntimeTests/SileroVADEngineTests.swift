@@ -110,7 +110,7 @@ struct SileroVADEngineTests {
 
     @Test
     func finalSegmenterRecordsSileroProvenance() {
-        let provenance = SileroFinalTranscriptVADSegmenter(
+        let provenance = SileroSessionVADSegmenter(
             environment: environment, modelURL: modelURL, intraOpThreads: 3
         ).provenance
         #expect(provenance.engine == "onnxruntime-silero-vad")

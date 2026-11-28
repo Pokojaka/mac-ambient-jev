@@ -25,7 +25,7 @@ private actor CountingASR: ASREngine {
     }
 }
 
-private struct UnusedVAD: FinalTranscriptVADSegmenter {
+private struct UnusedVAD: SessionVADSegmenter {
     let provenance = RunProvenance(engine: "fake-vad", model: nil, version: "test", configuration: [:])
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] { [] }
 }
@@ -40,7 +40,7 @@ private func makeProcessor(asr: CountingASR) -> NativeSessionProcessor {
     )
     return NativeSessionProcessor(
         paths: paths,
-        engines: SessionProcessingEngines(asr: asr, finalTranscriptVAD: UnusedVAD()),
+        engines: SessionProcessingEngines(asr: asr, sessionVAD: UnusedVAD()),
         audioHandling: RecordingTestAudioHandling(),
         contentPriority: .disabled,
         sleep: { _ in }

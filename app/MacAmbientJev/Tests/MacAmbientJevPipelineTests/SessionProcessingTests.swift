@@ -49,7 +49,7 @@ private actor FinalizationStateRecorder {
     func snapshot() -> [Entry] { values }
 }
 
-private struct FakeFinalVAD: FinalTranscriptVADSegmenter {
+private struct FakeFinalVAD: SessionVADSegmenter {
     let provenance = RunProvenance(engine: "fake-vad", model: nil, version: "test", configuration: [:])
     let segments: [SegmentReference]
     let log: FinalizationCallLog
@@ -155,7 +155,7 @@ private actor CancellationGatedFinalASR: ASREngine {
     func unload() async {}
 }
 
-private struct CancellationGatedFinalVAD: FinalTranscriptVADSegmenter {
+private struct CancellationGatedFinalVAD: SessionVADSegmenter {
     let provenance = RunProvenance(engine: "fake-vad", model: nil, version: "test", configuration: [:])
     let gate: CancellationGate
 
@@ -304,7 +304,7 @@ private func recoveryProcessor(
         paths: paths,
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: ["再開した本文"]),
-            finalTranscriptVAD: FakeFinalVAD(
+            sessionVAD: FakeFinalVAD(
                 segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
                 log: log
             )
@@ -382,7 +382,7 @@ func nativeProcessorCancellationDuringASRPausesDurablyAndRecoversOnRelaunch() as
         paths: paths,
         engines: SessionProcessingEngines(
             asr: CancellationGatedFinalASR(gate: gate),
-            finalTranscriptVAD: FakeFinalVAD(
+            sessionVAD: FakeFinalVAD(
                 segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
                 log: log
             )
@@ -422,7 +422,7 @@ func nativeProcessorCancellationDuringVADPausesDurablyAndRecoversOnRelaunch() as
         paths: paths,
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: ["認識されない"]),
-            finalTranscriptVAD: CancellationGatedFinalVAD(gate: gate)
+            sessionVAD: CancellationGatedFinalVAD(gate: gate)
         ),
         audioHandling: RecordingTestAudioHandling(),
         contentPriority: resumableDecisionPriority(),
@@ -460,7 +460,7 @@ func nativeProcessorCancellationDuringPacingPausesDurablyAndRecoversOnRelaunch()
         paths: paths,
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: ["前半", "後半"]),
-            finalTranscriptVAD: FakeFinalVAD(
+            sessionVAD: FakeFinalVAD(
                 segments: [
                     SegmentReference(segmentationRunID: "ignored", segmentID: "first", speechRanges: [0..<8_000]),
                     SegmentReference(segmentationRunID: "ignored", segmentID: "second", speechRanges: [8_000..<16_000])
@@ -523,7 +523,7 @@ func nativeProcessorCancellationDuringCompactionKeepsTheCompleteTranscriptForMai
 }
 
 @Test
-func finalTranscriptPipelinePreservesVADContextForASR() async throws {
+func sessionProcessingPreservesVADContextForASR() async throws {
     let sessionID = UUID()
     let (paths, sessionURL, _) = try await finalizationFixture(sessionID: sessionID)
     defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
@@ -537,7 +537,7 @@ func finalTranscriptPipelinePreservesVADContextForASR() async throws {
         paths: paths,
         engines: SessionProcessingEngines(
             asr: asr,
-            finalTranscriptVAD: vad
+            sessionVAD: vad
         ),
         audioHandling: RecordingTestAudioHandling(),
         contentPriority: .disabled,
@@ -592,7 +592,7 @@ private struct UnavailableTagger: LocalizedError {
 }
 
 @Test
-func decisionsSkipWhitespaceOnlyFinalTranscript() async throws {
+func decisionsSkipWhitespaceOnlyTranscript() async throws {
     let sessionID = UUID()
     let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
     defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
@@ -602,7 +602,7 @@ func decisionsSkipWhitespaceOnlyFinalTranscript() async throws {
         paths: paths,
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: [" \n\t"]),
-            finalTranscriptVAD: FakeFinalVAD(
+            sessionVAD: FakeFinalVAD(
                 segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "seg_empty", speechRanges: [0..<16_000])],
                 log: log
             )
@@ -634,7 +634,7 @@ func failedASRMarksTheGenerationFailedAndKeepsTheRecognizedRows() async throws {
         paths: paths,
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: ["最初の確定", "失敗"], failOnCall: 1),
-            finalTranscriptVAD: FakeFinalVAD(
+            sessionVAD: FakeFinalVAD(
                 segments: [
                     SegmentReference(segmentationRunID: "ignored", segmentID: "vad_1", speechRanges: [0..<8_000]),
                     SegmentReference(segmentationRunID: "ignored", segmentID: "vad_2", speechRanges: [8_000..<16_000])
@@ -678,7 +678,7 @@ func stoppingALiveRecordingEndsWithFinalizationStatus() async throws {
         paths: paths,
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: ["確定文"]),
-            finalTranscriptVAD: FakeFinalVAD(
+            sessionVAD: FakeFinalVAD(
                 segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
                 log: log
             )
@@ -719,7 +719,7 @@ func noSpeechFinalizationSkipsASRPreparationAndCompletesZeroCountRun() async thr
         paths: paths,
         engines: SessionProcessingEngines(
             asr: asr,
-            finalTranscriptVAD: FakeFinalVAD(segments: [], log: log)
+            sessionVAD: FakeFinalVAD(segments: [], log: log)
         ),
         audioHandling: RecordingTestAudioHandling(),
         contentPriority: .localTagger({
@@ -771,7 +771,7 @@ func deferredDecisionsKeepFinalizationRunningUntilLocalTranscriptIsVisible() asy
         paths: paths,
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: ["表示する本文"]),
-            finalTranscriptVAD: FakeFinalVAD(
+            sessionVAD: FakeFinalVAD(
                 segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "seg_000001", speechRanges: [0..<16_000])],
                 log: log
             )
@@ -823,7 +823,7 @@ func failedModelRequestsDeferFinalizationAndRetryDecisions() async throws {
         paths: paths,
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: ["一つ目", "二つ目"]),
-            finalTranscriptVAD: FakeFinalVAD(
+            sessionVAD: FakeFinalVAD(
                 segments: [
                     SegmentReference(segmentationRunID: "ignored", segmentID: "seg_000001", speechRanges: [0..<8_000]),
                     SegmentReference(segmentationRunID: "ignored", segmentID: "seg_000002", speechRanges: [8_000..<16_000])
@@ -873,7 +873,7 @@ func failedModelRequestsDeferFinalizationAndRetryDecisions() async throws {
 }
 
 @Test
-func finalTranscriptPipelineEmitsASRPhaseBeforeTranscription() async throws {
+func sessionProcessingEmitsASRPhaseBeforeTranscription() async throws {
     let sessionID = UUID()
     let (paths, sessionURL, checkpoint) = try await finalizationFixture(sessionID: sessionID)
     defer { try? FileManager.default.removeItem(at: sessionURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
@@ -882,7 +882,7 @@ func finalTranscriptPipelineEmitsASRPhaseBeforeTranscription() async throws {
         paths: paths,
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: ["えー、本文"]),
-            finalTranscriptVAD: FakeFinalVAD(
+            sessionVAD: FakeFinalVAD(
                 segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
                 log: log
             )
@@ -917,7 +917,7 @@ func everyRunRecordsItsProvenanceOnceAndRepeatedProcessingReusesTheGeneration() 
         paths: paths,
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: ["一回目", "二回目"]),
-            finalTranscriptVAD: FakeFinalVAD(
+            sessionVAD: FakeFinalVAD(
                 segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
                 log: log
             )
@@ -972,7 +972,7 @@ func unreadableMetadataIsReplacedOnlyByExplicitReprocessing() async throws {
         paths: paths,
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: ["再処理"]),
-            finalTranscriptVAD: FakeFinalVAD(
+            sessionVAD: FakeFinalVAD(
                 segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "vad", speechRanges: [0..<16_000])],
                 log: log
             )
@@ -1018,7 +1018,7 @@ func reprocessDiscardsAllStageResults() async throws {
         paths: paths,
         engines: SessionProcessingEngines(
             asr: asr,
-            finalTranscriptVAD: FakeFinalVAD(segments: [
+            sessionVAD: FakeFinalVAD(segments: [
                 SegmentReference(segmentationRunID: "ignored", segmentID: "first", speechRanges: [0..<8_000]),
                 SegmentReference(segmentationRunID: "ignored", segmentID: "second", speechRanges: [8_000..<16_000])
             ], log: log)
@@ -1091,7 +1091,7 @@ func boundReplacementFailsIfItsGenerationChanged() async throws {
         paths: paths,
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: ["初回"]),
-            finalTranscriptVAD: FakeFinalVAD(
+            sessionVAD: FakeFinalVAD(
                 segments: [SegmentReference(segmentationRunID: "ignored", segmentID: "first", speechRanges: [0..<16_000])],
                 log: log
             )
@@ -1200,7 +1200,7 @@ func validatedEmptyVADCompletesWithoutSpeechInference() async throws {
         paths: paths,
         engines: SessionProcessingEngines(
             asr: asr,
-            finalTranscriptVAD: FakeFinalVAD(segments: [], log: log)
+            sessionVAD: FakeFinalVAD(segments: [], log: log)
         ),
         audioHandling: RecordingTestAudioHandling(),
         contentPriority: .disabled,
@@ -1269,7 +1269,7 @@ func validatedEmptyVADCompletesWithoutSpeechInference() async throws {
     }
 }
 
-private struct ThrowingFinalVAD: FinalTranscriptVADSegmenter {
+private struct ThrowingFinalVAD: SessionVADSegmenter {
     let provenance = RunProvenance(engine: "failing-vad", model: nil, version: "test", configuration: [:])
 
     func segment(reader: any TimelineAudioReading, runID: String) async throws -> [SegmentReference] {
@@ -1288,7 +1288,7 @@ func failedVADDoesNotCompleteSegmentationOrReportNoSpeech() async throws {
         paths: paths,
         engines: SessionProcessingEngines(
             asr: PreparationFailingASR(),
-            finalTranscriptVAD: ThrowingFinalVAD()
+            sessionVAD: ThrowingFinalVAD()
         ),
         audioHandling: RecordingTestAudioHandling(),
         contentPriority: .disabled,
@@ -1322,7 +1322,7 @@ func failedVADDoesNotCompleteSegmentationOrReportNoSpeech() async throws {
         paths: paths,
         engines: SessionProcessingEngines(
             asr: FakeFinalASR(log: log, values: []),
-            finalTranscriptVAD: FakeFinalVAD(segments: [], log: log)
+            sessionVAD: FakeFinalVAD(segments: [], log: log)
         ),
         audioHandling: RecordingTestAudioHandling(),
         contentPriority: .disabled,
