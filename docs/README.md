@@ -19,5 +19,6 @@
 - [v1-live-latency-results-2026-09-25.md](records/v1-live-latency-results-2026-09-25.md): ライブ遅延の測定記録。
 - [continuous-speech-live-latency-2026-10-10.md](records/continuous-speech-live-latency-2026-10-10.md): 連続発話でのライブ遅延と投入ペースの測定記録。
 - [long-recording-live-2026-11-28.md](records/long-recording-live-2026-11-28.md): 89 分録音のライブ遅延、停止から完了までの時間、メモリの測定記録。
+- [haas-dialogue-2026-11-29.md](records/haas-dialogue-2026-11-29.md): 会話向け追加学習版 Haas-ja を講義録音で元のモデルと比べた記録。
 - [aozora-audio-fixtures-2026-09-25.md](records/aozora-audio-fixtures-2026-09-25.md): 朗読素材の取得元とハッシュ。
 - [nemotron3-diarization-test-2026-09-27.md](records/nemotron3-diarization-test-2026-09-27.md): 話者交代検出の測定記録。
