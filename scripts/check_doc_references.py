@@ -26,19 +26,22 @@ CLI_SOURCES = {
     name: (f"{SWIFT_SOURCES}/{name}/main.swift",)
     for name in (
         "MacAmbientJevCaptureSystemAudio", "MacAmbientJevProcessRecording",
-        "MacAmbientJevMeasureLiveLatency", "MacAmbientJevEvaluateSession",
+        "MacAmbientJevEvaluateSession",
         "MacAmbientJevEvaluateASR",
     )
 }
 CLI_SOURCES.update({
     'MacAmbientJevTranscribeFile': (f'{SWIFT_SOURCES}/MacAmbientJevTranscribeFile/TranscribeFileCommand.swift',),
+    "MacAmbientJevMeasureLiveLatency": (
+        f"{SWIFT_SOURCES}/MacAmbientJevMeasureLiveLatency/MeasureLiveLatencyCommand.swift",
+    ),
     "tools/linux-audio/run_suite.py": ("tools/linux-audio/run_suite.py",),
     "tools/linux-audio/prepare_fixture.py": ("tools/linux-audio/prepare_fixture.py",),
     "asr.qwen3_asr": ("tools/linux-audio/asr/qwen3_asr.py",),
     "common.voicevox_cli": ("tools/linux-audio/common/voicevox_cli.py",),
     "scripts/verify_linux_audio.sh": ("tools/linux-audio/run_suite.py",),
     "scripts/measure_live_latency.sh": (
-        f"{SWIFT_SOURCES}/MacAmbientJevMeasureLiveLatency/main.swift",
+        f"{SWIFT_SOURCES}/MacAmbientJevMeasureLiveLatency/MeasureLiveLatencyCommand.swift",
     ),
 })
 for module in ("asr.qwen3_asr", "common.voicevox_cli"):
