@@ -79,7 +79,7 @@ ASR の計測 phase は推論完了時に終了します。その後の `postpro
 
 `MacAmbientJevProcessRecording` の file import、`--inspect-session`、`--resume-session` の全てで `--sessions-root DIRECTORY` は必須です。CLI は保存場所を暗黙に選ばず、root を検証してからセッション検索・作成・モデル処理を始めます。
 
-Mac の CLI に開始時の熱 gate はありません。通常の import / resume は各 ASR 区間の直前にアプリと同じ共有 gate を通し、`serious` では 750 ms 待機して判定し直し、`critical` または状態不明では `paused` を保存して非 0 終了します。計測 run（`--run-id`、`--metrics-output`、`--thermal-output`、`--memory-output` の4つを指定）は計測結果を変えないよう `RunMonitor` の判定を使い、`critical` の間だけ同じく pause します。どちらも冷却後に `--resume-session` で再開します。CLI のプロセスが冷却を待って自動再開するわけではありません。
+Mac の CLI は、モデルを準備する前に熱状態を確かめます。`nominal` か `fair` でなければ「熱状態が落ち着くまで開始できません」で非 0 終了します。開始後、通常の import / resume は各 ASR 区間の直前にアプリと同じ共有 gate を通し、`serious` では 750 ms 待機して判定し直し、`critical` または状態不明では `paused` を保存して非 0 終了します。計測 run（`--run-id`、`--metrics-output`、`--thermal-output`、`--memory-output` の4つを指定）は計測結果を変えないよう `RunMonitor` の判定を使い、`critical` の間だけ同じく pause します。どちらも冷却後に `--resume-session` で再開します。CLI のプロセスが冷却を待って自動再開するわけではありません。
 
 ## リソース監視による確定処理の保留
 
